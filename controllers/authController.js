@@ -2,7 +2,12 @@ const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 
 // Generate JWT Token
+// Generate JWT Token
 const generateToken = (id) => {
+  if (!process.env.JWT_SECRET) {
+      console.error('ERROR: JWT_SECRET is not defined in environment variables!');
+      throw new Error('JWT_SECRET is missing');
+  }
   return jwt.sign({ id }, process.env.JWT_SECRET, {
     expiresIn: '30d'
   });
@@ -60,7 +65,8 @@ exports.register = async (req, res) => {
         return res.status(400).json({ message: 'User or Email already exists' });
     }
 
-    res.status(500).json({ message: 'Server error during registration' });
+    console.error('CRITICAL SERVER ERROR during registration:', error);
+    res.status(500).json({ message: 'Server error during registration', error: error.message });
   }
 };
 
