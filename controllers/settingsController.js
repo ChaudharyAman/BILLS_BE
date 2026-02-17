@@ -47,7 +47,7 @@ exports.updateSettings = async (req, res) => {
       }
     }
 
-    const { username, loginEmail, ...settingsUpdate } = req.body;
+    const { username, loginEmail, user, ...settingsUpdate } = req.body; // Exclude user from settingsUpdate
 
     // Update User model if username/loginEmail provided
     if (username || loginEmail) {
@@ -70,6 +70,11 @@ exports.updateSettings = async (req, res) => {
              });
              
              if (existingUser) {
+                 console.error('Update Settings: Username/Email taken', { 
+                     username, 
+                     email: loginEmail, 
+                     existingId: existingUser._id 
+                 });
                  if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
                  return res.status(400).json({ message: 'Username or Email already taken' });
              }

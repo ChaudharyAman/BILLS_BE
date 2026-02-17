@@ -66,7 +66,7 @@ exports.createInvoice = async (req, res) => {
     const counter = await Counter.findOneAndUpdate(
         { id: 'invoiceNo' },
         { $inc: { seq: 1 } },
-        { new: true, upsert: true }
+        { returnDocument: 'after', upsert: true }
     );
 
     const invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
