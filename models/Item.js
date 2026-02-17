@@ -1,0 +1,55 @@
+const mongoose = require('mongoose');
+
+const ItemSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+  type: {
+    type: String,
+    enum: ['Goods', 'Service'],
+    default: 'Goods',
+  },
+  description: String,
+  hsnCode: {
+    type: String,
+    trim: true,
+  },
+  sku: {
+    type: String,
+    trim: true,
+  },
+  openingQuantity: {
+    type: Number,
+    default: 0,
+  },
+  salesInfo: {
+    price: { type: Number, default: 0 },
+    currency: { type: String, default: 'INR' },
+    cessPercent: { type: Number, default: 0 },
+    cessAmount: { type: Number, default: 0 },
+  },
+  purchaseInfo: {
+    price: { type: Number, default: 0 },
+    currency: { type: String, default: 'INR' },
+    cessPercent: { type: Number, default: 0 },
+    cessAmount: { type: Number, default: 0 },
+  },
+  // Keep rate/taxRate for backward compatibility or simple usage if needed, 
+  // but UI will primarily use salesInfo/purchaseInfo
+  rate: {
+    type: Number,
+    default: 0,
+  },
+  defaultTaxRate: {
+    type: Number,
+    default: 0, 
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+module.exports = mongoose.model('Item', ItemSchema);
