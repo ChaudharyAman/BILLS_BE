@@ -24,7 +24,7 @@ app.use('/api/invoices', require('./routes/invoiceRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
 
 app.get('/', (req, res) => {
-  res.send('API is running...');
+  res.send('API is working fine 👍...');
 });
 
 app.listen(PORT, () => {
