@@ -5,9 +5,12 @@ const Settings = require('../models/Settings');
 // Get Settings (Create default if not exists)
 exports.getSettings = async (req, res) => {
   try {
-    let settings = await Settings.findOne();
+    if (!req.user || !req.user._id) {
+        return res.status(401).json({ message: 'Not authorized' });
+    }
+    let settings = await Settings.findOne({ user: req.user._id });
     if (!settings) {
-      settings = new Settings();
+      settings = new Settings({ user: req.user._id });
       await settings.save();
     }
     res.json(settings);
@@ -19,26 +22,40 @@ exports.getSettings = async (req, res) => {
 // Update Settings
 exports.updateSettings = async (req, res) => {
   try {
-    let settings = await Settings.findOne();
-    if (!settings) {
-      settings = new Settings(req.body);
-    } else {
-      // If file uploaded, upload to Cloudinary
-      if (req.file) {
+    if (!req.user || !req.user._id) {
+        return res.status(401).json({ message: 'Not authorized' });
+    }
+    let settings = await Settings.findOne({ user: req.user._id });
+
+    // Handle file upload first to get URL
+    let newLogoUrl = undefined;
+    if (req.file) {
+      try {
         const result = await cloudinary.uploader.upload(req.file.path, {
           folder: 'mybill_logos',
           allowed_formats: ['jpg', 'png', 'jpeg', 'webp'],
         });
-        
-        // Update logoUrl
-        req.body.logoUrl = result.secure_url;
-        
-        // Remove local file
-        fs.unlinkSync(req.file.path);
+        newLogoUrl = result.secure_url;
+        fs.unlinkSync(req.file.path); // Clean up local file
+      } catch (uploadError) {
+        console.error('Cloudinary Upload Error:', uploadError);
+        // Clean up even if upload fails
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(500).json({ message: 'Image upload failed' });
       }
+    }
 
+    if (!settings) {
+      // Create new if not exists
+      const settingsData = { ...req.body, user: req.user._id };
+      if (newLogoUrl) settingsData.logoUrl = newLogoUrl;
+      settings = new Settings(settingsData);
+    } else {
+      // Update existing
+      if (newLogoUrl) req.body.logoUrl = newLogoUrl;
       Object.assign(settings, req.body);
     }
+    
     await settings.save();
     res.json(settings);
   } catch (error) {

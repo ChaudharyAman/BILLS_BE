@@ -1,7 +1,10 @@
 const mongoose = require('mongoose');
 
+
+
 // Sub-schema for Invoice Items (Snapshot)
 const InvoiceItemSchema = new mongoose.Schema({
+
   itemRef: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Item',
@@ -27,6 +30,11 @@ const InvoiceItemSchema = new mongoose.Schema({
 });
 
 const InvoiceSchema = new mongoose.Schema({
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    required: true,
+    ref: 'User',
+  },
   invoiceNo: {
     type: String,
     required: true,

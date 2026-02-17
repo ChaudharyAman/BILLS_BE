@@ -6,7 +6,15 @@ const Counter = require('../models/Counter');
 // Get all invoices
 exports.getInvoices = async (req, res) => {
   try {
-    const invoices = await Invoice.find().sort({ createdAt: -1 });
+    // Explicitly filter by user ID
+    // Explicitly filter by user ID
+    if (!req.user || !req.user._id) {
+        console.log('Use not authorized (missing req.user)');
+        return res.status(401).json({ message: 'Not authorized' });
+    }
+    console.log(`Fetching invoices for User ID: ${req.user._id}`);
+    const invoices = await Invoice.find({ user: req.user._id }).sort({ createdAt: -1 });
+    console.log(`Found ${invoices.length} invoices for this user.`);
     res.json(invoices);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -18,6 +26,12 @@ exports.getInvoiceById = async (req, res) => {
   try {
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+    
+    // Check for user
+    if (invoice.user.toString() !== req.user.id) {
+        return res.status(401).json({ message: 'User not authorized' });
+    }
+
     res.json(invoice);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -42,12 +56,13 @@ exports.createInvoice = async (req, res) => {
       packagingCharges,
       customChargeLabel,
       discountTotal,
-      radiusDiscount, // "Add discount to all" logic handled frontend side usually, but passing simple value if needed
+      radiusDiscount,
       advancePaid,
       balanceDue, 
     } = req.body;
 
-    // Generate Invoice Number
+    // Generate Invoice Number (Scoped globally for now, but ideally per user if needed)
+    // For now, let's keep global sequence or we need UserCounter
     const counter = await Counter.findOneAndUpdate(
         { id: 'invoiceNo' },
         { $inc: { seq: 1 } },
@@ -59,6 +74,11 @@ exports.createInvoice = async (req, res) => {
     // 1. Fetch Client Snapshot
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
+    
+    // Check client user
+    if (client.user.toString() !== req.user.id) {
+        return res.status(401).json({ message: 'User not authorized to use this client' });
+    }
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -68,7 +88,6 @@ exports.createInvoice = async (req, res) => {
     };
 
     // 2. GST Logic
-    // Hardcoded Company State for now (TODO: Move to Config)
     const COMPANY_STATE = 'Delhi'; 
     const clientState = placeOfSupply || client.placeOfSupply || client.address?.state || '';
     
@@ -136,6 +155,7 @@ exports.createInvoice = async (req, res) => {
     const finalBalance = grandTotal - finalAdvance;
 
     const invoice = new Invoice({
+      user: req.user._id,
       invoiceNo,
       date,
       dueDate,
@@ -196,10 +216,20 @@ exports.updateInvoice = async (req, res) => {
 
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+    
+    // Check for user
+    if (invoice.user.toString() !== req.user.id) {
+        return res.status(401).json({ message: 'User not authorized' });
+    }
 
     // 1. Fetch Client Snapshot (if client changed or just refresh it)
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
+    
+    // Check client user
+    if (client.user.toString() !== req.user.id) {
+        return res.status(401).json({ message: 'User not authorized to use this client' });
+    }
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -313,6 +343,11 @@ exports.deleteInvoice = async (req, res) => {
   try {
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+    
+    // Check for user
+    if (invoice.user.toString() !== req.user.id) {
+        return res.status(401).json({ message: 'User not authorized' });
+    }
 
     await invoice.deleteOne();
     res.json({ message: 'Invoice deleted successfully' });

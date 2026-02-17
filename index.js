@@ -22,6 +22,7 @@ app.use('/api/clients', require('./routes/clientRoutes'));
 app.use('/api/items', require('./routes/itemRoutes'));
 app.use('/api/invoices', require('./routes/invoiceRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
+app.use('/api/auth', require('./routes/authRoutes'));
 
 app.get('/', (req, res) => {
   res.send('API is working fine 👍...');

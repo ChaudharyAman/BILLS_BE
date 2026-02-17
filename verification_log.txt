@@ -1,0 +1,15 @@
+--- Starting Auth Verification ---
+--- Starting Auth Verification ---
+
+1. Testing Registration for user: testuser_1771317946911
+✅ Registration Successful
+Response: {"_id":"69942aba8411aed9035586a7","username":"testuser_1771317946911","token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5OTQyYWJhODQxMWFlZDkwMzU1ODZhNyIsImlhdCI6MTc3MTMxNzk0NywiZXhwIjoxNzczOTA5OTQ3fQ.nhjz1M3djzgTCuJ2FqOWu_Gpq6ZRHOm2Xg4WJLa_ERs"}
+
+2. Testing Login for user: testuser_1771317946911
+✅ Login Successful
+Response: {"_id":"69942aba8411aed9035586a7","username":"testuser_1771317946911","token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5OTQyYWJhODQxMWFlZDkwMzU1ODZhNyIsImlhdCI6MTc3MTMxNzk0NywiZXhwIjoxNzczOTA5OTQ3fQ.nhjz1M3djzgTCuJ2FqOWu_Gpq6ZRHOm2Xg4WJLa_ERs"}
+
+3. Testing Login with invalid password
+✅ Login with wrong password Failed as expected (401)
+
+--- Auth Verification Completed Successfully ---
