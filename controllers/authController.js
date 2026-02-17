@@ -16,10 +16,13 @@ exports.register = async (req, res) => {
     const { username, email, password } = req.body;
 
     // Check if user or email already exists
-    const userExists = await User.findOne({ $or: [{ username }, { email }] });
+    const existingUser = await User.findOne({ $or: [{ username }, { email }] });
 
-    if (userExists) {
-      return res.status(400).json({ message: 'User or Email already exists' });
+    if (existingUser) {
+      if (existingUser.email === email) {
+        return res.status(400).json({ message: 'Email is already registered' });
+      }
+      return res.status(400).json({ message: 'Username is already taken' });
     }
 
     // Create user
@@ -32,7 +35,6 @@ exports.register = async (req, res) => {
     if (user) {
       res.status(201).json({
         _id: user._id,
-        _id: user._id,
         username: user.username,
         email: user.email,
         token: generateToken(user._id)
@@ -41,8 +43,20 @@ exports.register = async (req, res) => {
       res.status(400).json({ message: 'Invalid user data' });
     }
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: error.message });
+    console.error('Registration Error:', error);
+    
+    // Handle Mongoose Validation Errors
+    if (error.name === 'ValidationError') {
+        const messages = Object.values(error.errors).map(val => val.message);
+        return res.status(400).json({ message: messages.join(', ') });
+    }
+    
+    // Handle Duplicate Key Error (fallback)
+    if (error.code === 11000) {
+        return res.status(400).json({ message: 'User or Email already exists' });
+    }
+
+    res.status(500).json({ message: 'Server error during registration' });
   }
 };
 
