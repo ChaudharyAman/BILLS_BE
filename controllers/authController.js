@@ -13,25 +13,28 @@ const generateToken = (id) => {
 // @access  Public
 exports.register = async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, email, password } = req.body;
 
-    // Check if user already exists
-    const userExists = await User.findOne({ username });
+    // Check if user or email already exists
+    const userExists = await User.findOne({ $or: [{ username }, { email }] });
 
     if (userExists) {
-      return res.status(400).json({ message: 'User already exists' });
+      return res.status(400).json({ message: 'User or Email already exists' });
     }
 
     // Create user
     const user = await User.create({
       username,
+      email,
       password
     });
 
     if (user) {
       res.status(201).json({
         _id: user._id,
+        _id: user._id,
         username: user.username,
+        email: user.email,
         token: generateToken(user._id)
       });
     } else {
@@ -51,12 +54,20 @@ exports.login = async (req, res) => {
     const { username, password } = req.body;
 
     // Check for user
-    const user = await User.findOne({ username });
+    // Check for user by username or email
+    const user = await User.findOne({ 
+        $or: [
+            { username: username }, 
+            { email: username } // Allow login with email
+        ] 
+    });
 
     if (user && (await user.matchPassword(password))) {
       res.json({
         _id: user._id,
+        _id: user._id,
         username: user.username,
+        email: user.email,
         token: generateToken(user._id)
       });
     } else {
