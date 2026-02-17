@@ -53,7 +53,7 @@ exports.updateSettings = async (req, res) => {
     if (username || loginEmail) {
         const userUpdate = {};
         if (username) userUpdate.username = username;
-        if (loginEmail) userUpdate.email = loginEmail;
+        if (loginEmail) userUpdate.email = loginEmail.toLowerCase();
         
         // Check for duplicates if changing
         if (Object.keys(userUpdate).length > 0) {
@@ -62,7 +62,7 @@ exports.updateSettings = async (req, res) => {
              // Check if username/email is taken by another user
              const checkingQuery = [];
              if (username) checkingQuery.push({ username });
-             if (loginEmail) checkingQuery.push({ email: loginEmail });
+             if (loginEmail) checkingQuery.push({ email: loginEmail.toLowerCase() });
 
              const existingUser = await User.findOne({ 
                  $or: checkingQuery,

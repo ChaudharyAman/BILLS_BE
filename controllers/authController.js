@@ -13,7 +13,11 @@ const generateToken = (id) => {
 // @access  Public
 exports.register = async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const { username, password } = req.body;
+    let { email } = req.body;
+    
+    // Enforce lowercase email
+    if (email) email = email.toLowerCase();
 
     // Check if user or email already exists
     const existingUser = await User.findOne({ $or: [{ username }, { email }] });
@@ -68,11 +72,11 @@ exports.login = async (req, res) => {
     const { username, password } = req.body;
 
     // Check for user
-    // Check for user by username or email
+    // Check for user by username or email (lowercase if checking email)
     const user = await User.findOne({ 
         $or: [
             { username: username }, 
-            { email: username } // Allow login with email
+            { email: username.toLowerCase() } // Allow login with email (case-insensitive)
         ] 
     });
 
