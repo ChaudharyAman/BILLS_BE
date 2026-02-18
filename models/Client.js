@@ -11,32 +11,41 @@ const ClientSchema = new mongoose.Schema({
     required: true,
     trim: true,
   },
-  email: {
-    type: String,
-    trim: true,
-    lowercase: true,
-  },
-  phone: {
-    type: String,
-    trim: true,
-  },
-  gstin: {
-    type: String,
-    trim: true,
-    uppercase: true,
-  },
-  address: {
+  // Basic Info
+  gstTreatment: { type: String, default: 'Registered Business' },
+  gstin: { type: String, trim: true, uppercase: true },
+  pan: { type: String, trim: true, uppercase: true },
+  tan: { type: String, trim: true, uppercase: true },
+  tin: { type: String, trim: true },
+  vat: { type: String, trim: true },
+  website: { type: String, trim: true },
+  currency: { type: String, default: 'INR' },
+  
+  // Flags
+  isVendor: { type: Boolean, default: false },
+  clientWiseItemPrice: { type: Boolean, default: false },
+
+  // Contact Info (Primary)
+  email: { type: String, trim: true, lowercase: true },
+  phone: { type: String, trim: true },
+
+  // Multiple Contact Persons
+  contacts: [{
+    firstName: String,
+    lastName: String,
+    email: String,
+    phone: String,
+  }],
+
+  // Addresses
+  billingAddress: {
     line1: String,
     line2: String,
     city: String,
     state: String,
     zip: String,
-    country: {
-      type: String,
-      default: 'India',
-    },
+    country: { type: String, default: 'India' },
   },
-  // Shipping Address (Optional)
   shippingAddress: {
     line1: String,
     line2: String,
@@ -45,12 +54,21 @@ const ClientSchema = new mongoose.Schema({
     zip: String,
     country: { type: String, default: 'India' },
   },
-  // Place of Supply (usually State) for GST
-  placeOfSupply: {
-    type: String,
-    required: true, 
-    default: 'Delhi' // Default to home state if not specified, should be validated
-  },
+  placeOfSupply: { type: String, default: 'Delhi' }, // Keep for backward compat or auto-fill from address
+
+  // Other Info Tab
+  facebook: String,
+  lst: String,
+  cst: String,
+  dlNo: String,
+
+  // Notes Tab
+  notes: String,
+
+  // Opening Balance Tab
+  openingBalance: { type: Number, default: 0 },
+  pendingPayment: { type: Number, default: 0 }, // Calculated or manual? Screenshot shows readonly-ish
+
   createdAt: {
     type: Date,
     default: Date.now,

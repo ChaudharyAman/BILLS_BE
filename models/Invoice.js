@@ -25,6 +25,12 @@ const InvoiceItemSchema = new mongoose.Schema({
   igst: { type: Number, default: 0 },
   taxAmount: { type: Number, default: 0 }, // Total Tax
   
+  // Excise per-item fields
+  bedPercent: { type: Number, default: 0 },
+  sedPercent: { type: Number, default: 0 },
+  cessPercent: { type: Number, default: 0 },
+  exciseAmount: { type: Number, default: 0 },
+  
   // Final amount for this line item
   amount: { type: Number, required: true }, 
 });
@@ -39,6 +45,11 @@ const InvoiceSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true,
+  },
+  invoiceType: {
+    type: String,
+    enum: ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'],
+    default: 'Tax Invoice',
   },
   date: {
     type: Date,
@@ -131,6 +142,18 @@ const InvoiceSchema = new mongoose.Schema({
   
   notes: String,
   terms: String,
+
+  // Excise Invoice specific
+  exciseDuty: {
+    bedPercent: { type: Number, default: 0 },   // Basic Excise Duty %
+    sedPercent: { type: Number, default: 0 },   // Special Excise Duty %
+    cessPercent: { type: Number, default: 0 },  // Education Cess %
+    totalExcise: { type: Number, default: 0 },
+    manufacturerName: String,
+    manufacturerAddress: String,
+    clearanceDate: Date,
+    rangeCode: String,
+  },
 
   createdAt: {
     type: Date,

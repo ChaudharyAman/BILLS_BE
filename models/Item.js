@@ -29,6 +29,11 @@ const ItemSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  unit: {
+    type: String,
+    default: 'pcs',
+    trim: true,
+  },
   salesInfo: {
     price: { type: Number, default: 0 },
     currency: { type: String, default: 'INR' },

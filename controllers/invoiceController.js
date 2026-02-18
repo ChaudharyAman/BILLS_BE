@@ -3,51 +3,114 @@ const Client = require('../models/Client');
 const Item = require('../models/Item');
 const Counter = require('../models/Counter');
 
-// Get all invoices
+// ─── Shared: process items based on invoice type ──────────────────────────────
+function processItems(items, invoiceType, isIntraState) {
+  const hasTax = invoiceType === 'Tax Invoice' || invoiceType === 'Excise Invoice';
+  const hasExcise = invoiceType === 'Excise Invoice';
+
+  let subTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0, taxTotal = 0, totalExcise = 0;
+  const processedItems = [];
+
+  for (const item of items) {
+    const qty = Number(item.qty) || 0;
+    const rate = Number(item.rate) || 0;
+    const discountPct = Number(item.discount) || 0; // discount is a PERCENTAGE
+
+    const taxableValue = qty * rate * (1 - discountPct / 100);
+
+    let cgst = 0, sgst = 0, igst = 0, itemTax = 0;
+    if (hasTax) {
+      const taxRate = Number(item.taxRate) || 0;
+      itemTax = taxableValue * (taxRate / 100);
+      if (isIntraState) {
+        cgst = itemTax / 2;
+        sgst = itemTax / 2;
+      } else {
+        igst = itemTax;
+      }
+    }
+
+    let exciseAmount = 0;
+    if (hasExcise) {
+      const bed = taxableValue * (Number(item.bedPercent) / 100 || 0);
+      const sed = taxableValue * (Number(item.sedPercent) / 100 || 0);
+      const cess = (bed + sed) * (Number(item.cessPercent) / 100 || 0);
+      exciseAmount = bed + sed + cess;
+    }
+
+    const total = taxableValue + itemTax + exciseAmount;
+
+    subTotal += taxableValue;
+    taxTotal += itemTax;
+    totalCGST += cgst;
+    totalSGST += sgst;
+    totalIGST += igst;
+    totalExcise += exciseAmount;
+
+    processedItems.push({
+      itemRef: item.itemRef,
+      name: item.name,
+      description: item.description,
+      hsnCode: item.hsnCode,
+      qty,
+      unit: item.unit,
+      rate,
+      discount: discountPct,
+      taxRate: Number(item.taxRate) || 0,
+      taxAmount: itemTax,
+      cgst,
+      sgst,
+      igst,
+      // Excise per-item fields stored as metadata
+      bedPercent: Number(item.bedPercent) || 0,
+      sedPercent: Number(item.sedPercent) || 0,
+      cessPercent: Number(item.cessPercent) || 0,
+      exciseAmount,
+      amount: total,
+    });
+  }
+
+  return { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise };
+}
+
+// ─── GET all invoices ─────────────────────────────────────────────────────────
 exports.getInvoices = async (req, res) => {
   try {
-    // Explicitly filter by user ID
-    // Explicitly filter by user ID
     if (!req.user || !req.user._id) {
-        console.log('Use not authorized (missing req.user)');
-        return res.status(401).json({ message: 'Not authorized' });
+      return res.status(401).json({ message: 'Not authorized' });
     }
-    console.log(`Fetching invoices for User ID: ${req.user._id}`);
     const invoices = await Invoice.find({ user: req.user._id }).sort({ createdAt: -1 });
-    console.log(`Found ${invoices.length} invoices for this user.`);
     res.json(invoices);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// Get single invoice
+// ─── GET single invoice ───────────────────────────────────────────────────────
 exports.getInvoiceById = async (req, res) => {
   try {
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
-    
-    // Check for user
     if (invoice.user.toString() !== req.user.id) {
-        return res.status(401).json({ message: 'User not authorized' });
+      return res.status(401).json({ message: 'User not authorized' });
     }
-
     res.json(invoice);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// Create a new invoice
+// ─── CREATE invoice ───────────────────────────────────────────────────────────
 exports.createInvoice = async (req, res) => {
   try {
-    const { 
-      clientRef, 
-      items, 
-      date, 
-      dueDate, 
-      shippingAddress, 
-      transport, 
+    const {
+      clientRef,
+      invoiceType = 'Tax Invoice',
+      items,
+      date,
+      dueDate,
+      shippingAddress,
+      transport,
       bankDetails,
       placeOfSupply,
       paymentMode,
@@ -56,28 +119,27 @@ exports.createInvoice = async (req, res) => {
       packagingCharges,
       customChargeLabel,
       discountTotal,
-      radiusDiscount,
       advancePaid,
-      balanceDue, 
+      status,
+      notes,
+      terms,
+      reverseCharge,
+      exciseDuty,
     } = req.body;
 
-    // Generate Invoice Number (Scoped globally for now, but ideally per user if needed)
-    // For now, let's keep global sequence or we need UserCounter
+    // Generate Invoice Number
     const counter = await Counter.findOneAndUpdate(
-        { id: 'invoiceNo' },
-        { $inc: { seq: 1 } },
-        { returnDocument: 'after', upsert: true }
+      { id: 'invoiceNo' },
+      { $inc: { seq: 1 } },
+      { returnDocument: 'after', upsert: true }
     );
-
     const invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
 
-    // 1. Fetch Client Snapshot
+    // Fetch Client Snapshot
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    
-    // Check client user
     if (client.user.toString() !== req.user.id) {
-        return res.status(401).json({ message: 'User not authorized to use this client' });
+      return res.status(401).json({ message: 'User not authorized to use this client' });
     }
 
     const clientSnapshot = {
@@ -87,76 +149,26 @@ exports.createInvoice = async (req, res) => {
       gstin: client.gstin,
     };
 
-    // 2. GST Logic
-    const COMPANY_STATE = 'Delhi'; 
+    // GST intra/inter state logic
+    const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.placeOfSupply || client.address?.state || '';
-    
     const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
 
-    // 3. Process Items & Calculate Totals
-    let subTotal = 0;
-    let totalCGST = 0;
-    let totalSGST = 0;
-    let totalIGST = 0;
-    let taxTotal = 0;
-    
-    const processedItems = [];
-
-    for (const item of items) {
-      const qty = Number(item.qty) || 0;
-      const rate = Number(item.rate) || 0;
-      const discount = Number(item.discount) || 0;
-      const taxRate = Number(item.taxRate) || 0;
-
-      const taxableValue = (rate * qty) - discount;
-      const totalItemTax = taxableValue * (taxRate / 100);
-      
-      let cgst = 0, sgst = 0, igst = 0;
-
-      if (isIntraState) {
-        cgst = totalItemTax / 2;
-        sgst = totalItemTax / 2;
-      } else {
-        igst = totalItemTax;
-      }
-
-      const total = taxableValue + totalItemTax;
-
-      subTotal += taxableValue;
-      taxTotal += totalItemTax;
-      totalCGST += cgst;
-      totalSGST += sgst;
-      totalIGST += igst;
-
-      processedItems.push({
-        itemRef: item.itemRef,
-        name: item.name,
-        description: item.description,
-        hsnCode: item.hsnCode,
-        qty,
-        unit: item.unit,
-        rate,
-        discount,
-        taxRate,
-        taxAmount: totalItemTax,
-        cgst,
-        sgst,
-        igst,
-        amount: total,
-      });
-    }
+    // Process items
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } =
+      processItems(items || [], invoiceType, isIntraState);
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
     const finalDiscountTotal = Number(discountTotal) || 0;
-    
-    const grandTotal = (subTotal + taxTotal + finalShipping + finalPackaging) - finalDiscountTotal;
+    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal;
     const finalAdvance = Number(advancePaid) || 0;
-    const finalBalance = grandTotal - finalAdvance;
+    const finalBalance = Math.max(0, grandTotal - finalAdvance);
 
     const invoice = new Invoice({
       user: req.user._id,
       invoiceNo,
+      invoiceType,
       date,
       dueDate,
       paymentMode,
@@ -168,39 +180,44 @@ exports.createInvoice = async (req, res) => {
       totalCGST,
       totalSGST,
       totalIGST,
-      totalIGST,
       shippingCharges: finalShipping,
       packagingCharges: finalPackaging,
-      customChargeLabel,
+      customChargeLabel: customChargeLabel || 'Custom Amount',
       discountTotal: finalDiscountTotal,
       grandTotal,
       advancePaid: finalAdvance,
       balanceDue: finalBalance,
-      status: 'DRAFT',
+      status: status || 'DRAFT',
       shippingAddress,
       transport,
       bankDetails,
       placeOfSupply: clientState,
+      reverseCharge: !!reverseCharge,
+      notes,
+      terms,
+      exciseDuty: exciseDuty || {},
     });
 
     const newInvoice = await invoice.save();
     res.status(201).json(newInvoice);
 
   } catch (error) {
+    console.error('createInvoice error:', error);
     res.status(400).json({ message: error.message });
   }
 };
 
-// Update Invoice
+// ─── UPDATE invoice ───────────────────────────────────────────────────────────
 exports.updateInvoice = async (req, res) => {
   try {
-    const { 
-      clientRef, 
-      items, 
-      date, 
-      dueDate, 
-      shippingAddress, 
-      transport, 
+    const {
+      clientRef,
+      invoiceType,
+      items,
+      date,
+      dueDate,
+      shippingAddress,
+      transport,
       bankDetails,
       placeOfSupply,
       paymentMode,
@@ -210,25 +227,24 @@ exports.updateInvoice = async (req, res) => {
       customChargeLabel,
       discountTotal,
       advancePaid,
-      // balanceDue, // Calculated
-      status // Allow updating status if needed
+      status,
+      notes,
+      terms,
+      reverseCharge,
+      exciseDuty,
     } = req.body;
 
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
-    
-    // Check for user
     if (invoice.user.toString() !== req.user.id) {
-        return res.status(401).json({ message: 'User not authorized' });
+      return res.status(401).json({ message: 'User not authorized' });
     }
 
-    // 1. Fetch Client Snapshot (if client changed or just refresh it)
+    // Fetch Client Snapshot
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    
-    // Check client user
     if (client.user.toString() !== req.user.id) {
-        return res.status(401).json({ message: 'User not authorized to use this client' });
+      return res.status(401).json({ message: 'User not authorized to use this client' });
     }
 
     const clientSnapshot = {
@@ -238,73 +254,24 @@ exports.updateInvoice = async (req, res) => {
       gstin: client.gstin,
     };
 
-    // 2. GST Logic
-    const COMPANY_STATE = 'Delhi'; 
+    const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.placeOfSupply || client.address?.state || '';
     const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
 
-    // 3. Process Items & Calculate Totals
-    let subTotal = 0;
-    let totalCGST = 0;
-    let totalSGST = 0;
-    let totalIGST = 0;
-    let taxTotal = 0;
-    
-    const processedItems = [];
+    const effectiveType = invoiceType || invoice.invoiceType || 'Tax Invoice';
 
-    for (const item of items) {
-      const qty = Number(item.qty) || 0;
-      const rate = Number(item.rate) || 0;
-      const discount = Number(item.discount) || 0;
-      const taxRate = Number(item.taxRate) || 0;
-
-      const taxableValue = (rate * qty) - discount;
-      const totalItemTax = taxableValue * (taxRate / 100);
-      
-      let cgst = 0, sgst = 0, igst = 0;
-
-      if (isIntraState) {
-        cgst = totalItemTax / 2;
-        sgst = totalItemTax / 2;
-      } else {
-        igst = totalItemTax;
-      }
-
-      const total = taxableValue + totalItemTax;
-
-      subTotal += taxableValue;
-      taxTotal += totalItemTax;
-      totalCGST += cgst;
-      totalSGST += sgst;
-      totalIGST += igst;
-
-      processedItems.push({
-        itemRef: item.itemRef,
-        name: item.name,
-        description: item.description,
-        hsnCode: item.hsnCode,
-        qty,
-        unit: item.unit,
-        rate,
-        discount,
-        taxRate,
-        taxAmount: totalItemTax,
-        cgst,
-        sgst,
-        igst,
-        amount: total,
-      });
-    }
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } =
+      processItems(items || [], effectiveType, isIntraState);
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
     const finalDiscountTotal = Number(discountTotal) || 0;
-    
-    const grandTotal = (subTotal + taxTotal + finalShipping + finalPackaging) - finalDiscountTotal;
+    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal;
     const finalAdvance = Number(advancePaid) || 0;
-    const finalBalance = grandTotal - finalAdvance;
+    const finalBalance = Math.max(0, grandTotal - finalAdvance);
 
-    // Update fields
+    // Apply updates
+    invoice.invoiceType = effectiveType;
     invoice.client = clientSnapshot;
     invoice.items = processedItems;
     invoice.date = date;
@@ -318,7 +285,7 @@ exports.updateInvoice = async (req, res) => {
     invoice.totalIGST = totalIGST;
     invoice.shippingCharges = finalShipping;
     invoice.packagingCharges = finalPackaging;
-    invoice.customChargeLabel = customChargeLabel;
+    invoice.customChargeLabel = customChargeLabel || 'Custom Amount';
     invoice.discountTotal = finalDiscountTotal;
     invoice.grandTotal = grandTotal;
     invoice.advancePaid = finalAdvance;
@@ -327,28 +294,29 @@ exports.updateInvoice = async (req, res) => {
     invoice.transport = transport;
     invoice.bankDetails = bankDetails;
     invoice.placeOfSupply = clientState;
-    
+    invoice.reverseCharge = !!reverseCharge;
+    invoice.notes = notes;
+    invoice.terms = terms;
+    invoice.exciseDuty = exciseDuty || invoice.exciseDuty || {};
     if (status) invoice.status = status;
 
     const updatedInvoice = await invoice.save();
     res.json(updatedInvoice);
 
   } catch (error) {
+    console.error('updateInvoice error:', error);
     res.status(400).json({ message: error.message });
   }
 };
 
-// Delete Invoice
+// ─── DELETE invoice ───────────────────────────────────────────────────────────
 exports.deleteInvoice = async (req, res) => {
   try {
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
-    
-    // Check for user
     if (invoice.user.toString() !== req.user.id) {
-        return res.status(401).json({ message: 'User not authorized' });
+      return res.status(401).json({ message: 'User not authorized' });
     }
-
     await invoice.deleteOne();
     res.json({ message: 'Invoice deleted successfully' });
   } catch (error) {
