@@ -21,6 +21,8 @@ connectDB();
 app.use('/api/clients', require('./routes/clientRoutes'));
 app.use('/api/items', require('./routes/itemRoutes'));
 app.use('/api/invoices', require('./routes/invoiceRoutes'));
+app.use('/api/quotes', require('./routes/quoteRoutes'));
+app.use('/api/proformas', require('./routes/proformaRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
 app.use('/api/auth', require('./routes/authRoutes'));
 

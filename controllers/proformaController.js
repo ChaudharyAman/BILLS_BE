@@ -1,0 +1,199 @@
+const Proforma = require('../models/Proforma');
+const Invoice = require('../models/Invoice');
+const Client = require('../models/Client');
+const Counter = require('../models/Counter');
+
+function processItems(items, isIntraState) {
+  let subTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0, taxTotal = 0;
+  const processedItems = [];
+
+  for (const item of items) {
+    const qty = Number(item.qty) || 0;
+    const rate = Number(item.rate) || 0;
+    const discountPct = Number(item.discount) || 0;
+    const taxRate = Number(item.taxRate) || 0;
+
+    const taxableValue = qty * rate * (1 - discountPct / 100);
+    const itemTax = taxableValue * (taxRate / 100);
+
+    let cgst = 0, sgst = 0, igst = 0;
+    if (isIntraState) { cgst = itemTax / 2; sgst = itemTax / 2; }
+    else { igst = itemTax; }
+
+    const total = taxableValue + itemTax;
+    subTotal += taxableValue;
+    taxTotal += itemTax;
+    totalCGST += cgst;
+    totalSGST += sgst;
+    totalIGST += igst;
+
+    processedItems.push({
+      itemRef: item.itemRef, name: item.name, description: item.description,
+      hsnCode: item.hsnCode, qty, unit: item.unit, rate, discount: discountPct,
+      taxRate, taxAmount: itemTax, cgst, sgst, igst, amount: total,
+    });
+  }
+  return { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST };
+}
+
+exports.getProformas = async (req, res) => {
+  try {
+    if (!req.user?._id) return res.status(401).json({ message: 'Not authorized' });
+    const proformas = await Proforma.find({ user: req.user._id }).sort({ createdAt: -1 });
+    res.json(proformas);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+exports.getProformaById = async (req, res) => {
+  try {
+    const proforma = await Proforma.findById(req.params.id);
+    if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
+    if (proforma.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    res.json(proforma);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+exports.createProforma = async (req, res) => {
+  try {
+    const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
+      placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
+      customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
+
+    const counter = await Counter.findOneAndUpdate(
+      { id: 'proformaNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+    );
+    const proformaNo = `PRF-${counter.seq.toString().padStart(3, '0')}`;
+
+    const client = await Client.findById(clientRef);
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+    if (client.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+
+    const clientSnapshot = { clientRef: client._id, name: client.name, address: client.address, gstin: client.gstin };
+
+    const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
+    const clientState = placeOfSupply || client.address?.state || '';
+    const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
+
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
+      processItems(items || [], isIntraState);
+
+    const finalShipping = Number(shippingCharges) || 0;
+    const finalPackaging = Number(packagingCharges) || 0;
+    const finalDiscount = Number(discountTotal) || 0;
+    const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+
+    const proforma = new Proforma({
+      user: req.user._id, proformaNo, invoiceType: invoiceType || 'Tax Invoice',
+      date, validUntil, paymentMode, paymentTerms,
+      client: clientSnapshot, items: processedItems,
+      subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
+      shippingCharges: finalShipping, packagingCharges: finalPackaging,
+      customChargeLabel: customChargeLabel || 'Custom Amount',
+      discountTotal: finalDiscount, grandTotal,
+      status: status || 'DRAFT', shippingAddress, transport,
+      placeOfSupply: clientState, reverseCharge: !!reverseCharge, notes, terms,
+    });
+
+    const saved = await proforma.save();
+    res.status(201).json(saved);
+  } catch (e) {
+    console.error('createProforma error:', e);
+    res.status(400).json({ message: e.message });
+  }
+};
+
+exports.updateProforma = async (req, res) => {
+  try {
+    const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
+      placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
+      customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
+
+    const proforma = await Proforma.findById(req.params.id);
+    if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
+    if (proforma.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+
+    const client = await Client.findById(clientRef);
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+    if (client.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+
+    const clientSnapshot = { clientRef: client._id, name: client.name, address: client.address, gstin: client.gstin };
+
+    const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
+    const clientState = placeOfSupply || client.address?.state || '';
+    const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
+
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
+      processItems(items || [], isIntraState);
+
+    const finalShipping = Number(shippingCharges) || 0;
+    const finalPackaging = Number(packagingCharges) || 0;
+    const finalDiscount = Number(discountTotal) || 0;
+    const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+
+    Object.assign(proforma, {
+      invoiceType: invoiceType || proforma.invoiceType,
+      client: clientSnapshot, items: processedItems, date, validUntil,
+      paymentMode, paymentTerms, subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
+      shippingCharges: finalShipping, packagingCharges: finalPackaging,
+      customChargeLabel: customChargeLabel || 'Custom Amount',
+      discountTotal: finalDiscount, grandTotal, shippingAddress, transport,
+      placeOfSupply: clientState, reverseCharge: !!reverseCharge, notes, terms,
+    });
+    if (status) proforma.status = status;
+
+    const saved = await proforma.save();
+    res.json(saved);
+  } catch (e) {
+    console.error('updateProforma error:', e);
+    res.status(400).json({ message: e.message });
+  }
+};
+
+exports.deleteProforma = async (req, res) => {
+  try {
+    const proforma = await Proforma.findById(req.params.id);
+    if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
+    if (proforma.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    await proforma.deleteOne();
+    res.json({ message: 'Proforma deleted' });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+exports.convertToInvoice = async (req, res) => {
+  try {
+    const proforma = await Proforma.findById(req.params.id);
+    if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
+    if (proforma.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (proforma.status === 'CONVERTED') return res.status(400).json({ message: 'Already converted' });
+
+    const counter = await Counter.findOneAndUpdate(
+      { id: 'invoiceNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+    );
+    const invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
+
+    const invoice = new Invoice({
+      user: proforma.user, invoiceNo, invoiceType: proforma.invoiceType,
+      date: new Date(), dueDate: proforma.validUntil,
+      paymentMode: proforma.paymentMode, paymentTerms: proforma.paymentTerms,
+      client: proforma.client, items: proforma.items,
+      subTotal: proforma.subTotal, taxTotal: proforma.taxTotal,
+      totalCGST: proforma.totalCGST, totalSGST: proforma.totalSGST, totalIGST: proforma.totalIGST,
+      shippingCharges: proforma.shippingCharges, packagingCharges: proforma.packagingCharges,
+      customChargeLabel: proforma.customChargeLabel, discountTotal: proforma.discountTotal,
+      grandTotal: proforma.grandTotal, balanceDue: proforma.grandTotal,
+      shippingAddress: proforma.shippingAddress, transport: proforma.transport,
+      placeOfSupply: proforma.placeOfSupply, reverseCharge: proforma.reverseCharge,
+      notes: proforma.notes, terms: proforma.terms, status: 'DRAFT',
+    });
+
+    const savedInvoice = await invoice.save();
+    proforma.status = 'CONVERTED';
+    proforma.convertedToInvoice = savedInvoice._id;
+    await proforma.save();
+
+    res.status(201).json({ invoice: savedInvoice, proforma });
+  } catch (e) {
+    console.error('convertToInvoice error:', e);
+    res.status(400).json({ message: e.message });
+  }
+};
