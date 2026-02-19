@@ -8,12 +8,12 @@ exports.getSettings = async (req, res) => {
     if (!req.user || !req.user._id) {
         return res.status(401).json({ message: 'Not authorized' });
     }
-    let settings = await Settings.findOne({ user: req.user._id }).populate('user', 'username email');
+    let settings = await Settings.findOne({ user: req.user._id }).populate('user', 'username email phone');
     if (!settings) {
       settings = new Settings({ user: req.user._id });
       await settings.save();
       // Re-fetch to populate after creation
-      settings = await Settings.findById(settings._id).populate('user', 'username email');
+      settings = await Settings.findById(settings._id).populate('user', 'username email phone');
     }
     res.json(settings);
   } catch (error) {
@@ -96,7 +96,7 @@ exports.updateSettings = async (req, res) => {
     
     await settings.save();
     // Return populated settings
-    const populatedSettings = await Settings.findById(settings._id).populate('user', 'username email');
+    const populatedSettings = await Settings.findById(settings._id).populate('user', 'username email phone');
     res.json(populatedSettings);
   } catch (error) {
     // Cleanup local file if error

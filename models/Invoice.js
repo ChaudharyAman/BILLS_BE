@@ -66,19 +66,25 @@ const InvoiceSchema = new mongoose.Schema({
     name: { type: String, required: true },
     address: {
       line1: String,
+      line2: String,
       city: String,
       state: String,
       zip: String,
+      country: String,
     },
     gstin: String,
+    phone: String,
+    email: String,
   },
   
   // Shipping Address (Snapshot)
   shippingAddress: {
     line1: String,
+    line2: String,
     city: String,
     state: String,
     zip: String,
+    country: String,
   },
 
   // Logistics / Transport Details

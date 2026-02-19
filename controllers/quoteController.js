@@ -72,10 +72,24 @@ exports.createQuote = async (req, res) => {
     if (!client) return res.status(404).json({ message: 'Client not found' });
     if (client.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
 
-    const clientSnapshot = { clientRef: client._id, name: client.name, address: client.address, gstin: client.gstin };
+    const clientSnapshot = {
+      clientRef: client._id,
+      name: client.name,
+      address: {
+        line1: client.billingAddress?.line1 || '',
+        line2: client.billingAddress?.line2 || '',
+        city: client.billingAddress?.city || '',
+        state: client.billingAddress?.state || '',
+        zip: client.billingAddress?.zip || '',
+        country: client.billingAddress?.country || 'India',
+      },
+      gstin: client.gstin || '',
+      phone: client.phone || '',
+      email: client.email || '',
+    };
 
     const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
-    const clientState = placeOfSupply || client.address?.state || '';
+    const clientState = placeOfSupply || client.billingAddress?.state || '';
     const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
@@ -121,10 +135,24 @@ exports.updateQuote = async (req, res) => {
     if (!client) return res.status(404).json({ message: 'Client not found' });
     if (client.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
 
-    const clientSnapshot = { clientRef: client._id, name: client.name, address: client.address, gstin: client.gstin };
+    const clientSnapshot = {
+      clientRef: client._id,
+      name: client.name,
+      address: {
+        line1: client.billingAddress?.line1 || '',
+        line2: client.billingAddress?.line2 || '',
+        city: client.billingAddress?.city || '',
+        state: client.billingAddress?.state || '',
+        zip: client.billingAddress?.zip || '',
+        country: client.billingAddress?.country || 'India',
+      },
+      gstin: client.gstin || '',
+      phone: client.phone || '',
+      email: client.email || '',
+    };
 
     const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
-    const clientState = placeOfSupply || client.address?.state || '';
+    const clientState = placeOfSupply || client.billingAddress?.state || '';
     const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =

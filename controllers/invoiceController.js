@@ -145,14 +145,35 @@ exports.createInvoice = async (req, res) => {
     const clientSnapshot = {
       clientRef: client._id,
       name: client.name,
-      address: client.address,
-      gstin: client.gstin,
+      address: {
+        line1: client.billingAddress?.line1 || '',
+        line2: client.billingAddress?.line2 || '',
+        city: client.billingAddress?.city || '',
+        state: client.billingAddress?.state || '',
+        zip: client.billingAddress?.zip || '',
+        country: client.billingAddress?.country || 'India',
+      },
+      gstin: client.gstin || '',
+      phone: client.phone || '',
+      email: client.email || '',
     };
 
     // GST intra/inter state logic
     const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
-    const clientState = placeOfSupply || client.placeOfSupply || client.address?.state || '';
+    const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
     const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
+
+    // Auto-use client's shipping address if not overridden in form
+    const resolvedShippingAddress = (shippingAddress?.line1)
+      ? shippingAddress
+      : (client.shippingAddress?.line1 ? {
+          line1: client.shippingAddress.line1,
+          line2: client.shippingAddress.line2 || '',
+          city: client.shippingAddress.city || '',
+          state: client.shippingAddress.state || '',
+          zip: client.shippingAddress.zip || '',
+          country: client.shippingAddress.country || 'India',
+        } : null);
 
     // Process items
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } =
@@ -188,7 +209,7 @@ exports.createInvoice = async (req, res) => {
       advancePaid: finalAdvance,
       balanceDue: finalBalance,
       status: status || 'DRAFT',
-      shippingAddress,
+      shippingAddress: resolvedShippingAddress,
       transport,
       bankDetails,
       placeOfSupply: clientState,
@@ -250,13 +271,33 @@ exports.updateInvoice = async (req, res) => {
     const clientSnapshot = {
       clientRef: client._id,
       name: client.name,
-      address: client.address,
-      gstin: client.gstin,
+      address: {
+        line1: client.billingAddress?.line1 || '',
+        line2: client.billingAddress?.line2 || '',
+        city: client.billingAddress?.city || '',
+        state: client.billingAddress?.state || '',
+        zip: client.billingAddress?.zip || '',
+        country: client.billingAddress?.country || 'India',
+      },
+      gstin: client.gstin || '',
+      phone: client.phone || '',
+      email: client.email || '',
     };
 
     const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
-    const clientState = placeOfSupply || client.placeOfSupply || client.address?.state || '';
+    const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
     const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
+
+    const resolvedShippingAddress = (shippingAddress?.line1)
+      ? shippingAddress
+      : (client.shippingAddress?.line1 ? {
+          line1: client.shippingAddress.line1,
+          line2: client.shippingAddress.line2 || '',
+          city: client.shippingAddress.city || '',
+          state: client.shippingAddress.state || '',
+          zip: client.shippingAddress.zip || '',
+          country: client.shippingAddress.country || 'India',
+        } : null);
 
     const effectiveType = invoiceType || invoice.invoiceType || 'Tax Invoice';
 
@@ -290,7 +331,7 @@ exports.updateInvoice = async (req, res) => {
     invoice.grandTotal = grandTotal;
     invoice.advancePaid = finalAdvance;
     invoice.balanceDue = finalBalance;
-    invoice.shippingAddress = shippingAddress;
+    invoice.shippingAddress = resolvedShippingAddress;
     invoice.transport = transport;
     invoice.bankDetails = bankDetails;
     invoice.placeOfSupply = clientState;

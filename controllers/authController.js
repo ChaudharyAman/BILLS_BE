@@ -77,18 +77,15 @@ exports.login = async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    // Check for user
-    // Check for user by username or email (lowercase if checking email)
     const user = await User.findOne({ 
         $or: [
             { username: username }, 
-            { email: username.toLowerCase() } // Allow login with email (case-insensitive)
+            { email: username.toLowerCase() }
         ] 
     });
 
     if (user && (await user.matchPassword(password))) {
       res.json({
-        _id: user._id,
         _id: user._id,
         username: user.username,
         email: user.email,
@@ -99,6 +96,50 @@ exports.login = async (req, res) => {
     }
   } catch (error) {
     console.error(error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Update logged-in user's profile (username, email, phone, password)
+// @route   PUT /api/auth/profile
+// @access  Private
+exports.updateProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const { username, email, phone, currentPassword, newPassword } = req.body;
+
+    // If changing password, verify current password first
+    if (newPassword) {
+      if (!currentPassword) return res.status(400).json({ message: 'Current password is required to set a new password' });
+      const match = await user.matchPassword(currentPassword);
+      if (!match) return res.status(400).json({ message: 'Current password is incorrect' });
+      user.password = newPassword;
+    }
+
+    // Check uniqueness for username/email if being changed
+    if (username && username !== user.username) {
+      const exists = await User.findOne({ username });
+      if (exists) return res.status(400).json({ message: 'Username already taken' });
+      user.username = username;
+    }
+    if (email && email.toLowerCase() !== user.email) {
+      const exists = await User.findOne({ email: email.toLowerCase() });
+      if (exists) return res.status(400).json({ message: 'Email already in use' });
+      user.email = email.toLowerCase();
+    }
+    if (phone !== undefined) user.phone = phone;
+
+    const updated = await user.save();
+    res.json({
+      _id: updated._id,
+      username: updated.username,
+      email: updated.email,
+      phone: updated.phone,
+    });
+  } catch (error) {
+    console.error('updateProfile error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
