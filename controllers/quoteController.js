@@ -206,17 +206,53 @@ exports.convertToInvoice = async (req, res) => {
     );
     const invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
 
+    // Fetch fresh client data to ensure correct address format specially for old quotes
+    const client = await Client.findById(quote.client.clientRef);
+    let clientSnapshot = quote.client;
+    let resolvedShipping = quote.shippingAddress;
+
+    if (client) {
+      // Rebuild snapshot from fresh data
+      clientSnapshot = {
+        clientRef: client._id,
+        name: client.name,
+        address: {
+          line1: client.billingAddress?.line1 || '',
+          line2: client.billingAddress?.line2 || '',
+          city: client.billingAddress?.city || '',
+          state: client.billingAddress?.state || '',
+          zip: client.billingAddress?.zip || '',
+          country: client.billingAddress?.country || 'India',
+        },
+        gstin: client.gstin || '',
+        phone: client.phone || '',
+        email: client.email || '',
+      };
+
+      // Auto-resolve shipping address if missing in quote
+      if (!resolvedShipping?.line1 && client.shippingAddress?.line1) {
+        resolvedShipping = {
+          line1: client.shippingAddress.line1,
+          line2: client.shippingAddress.line2 || '',
+          city: client.shippingAddress.city || '',
+          state: client.shippingAddress.state || '',
+          zip: client.shippingAddress.zip || '',
+          country: client.shippingAddress.country || 'India',
+        };
+      }
+    }
+
     const invoice = new Invoice({
       user: quote.user, invoiceNo, invoiceType: quote.invoiceType,
       date: new Date(), dueDate: quote.validUntil,
       paymentMode: quote.paymentMode, paymentTerms: quote.paymentTerms,
-      client: quote.client, items: quote.items,
+      client: clientSnapshot, items: quote.items,
       subTotal: quote.subTotal, taxTotal: quote.taxTotal,
       totalCGST: quote.totalCGST, totalSGST: quote.totalSGST, totalIGST: quote.totalIGST,
       shippingCharges: quote.shippingCharges, packagingCharges: quote.packagingCharges,
       customChargeLabel: quote.customChargeLabel, discountTotal: quote.discountTotal,
       grandTotal: quote.grandTotal, balanceDue: quote.grandTotal,
-      shippingAddress: quote.shippingAddress, transport: quote.transport,
+      shippingAddress: resolvedShipping, transport: quote.transport,
       placeOfSupply: quote.placeOfSupply, reverseCharge: quote.reverseCharge,
       notes: quote.notes, terms: quote.terms, status: 'DRAFT',
     });

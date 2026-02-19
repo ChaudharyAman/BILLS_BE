@@ -199,17 +199,53 @@ exports.convertToInvoice = async (req, res) => {
     );
     const invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
 
+    // Fetch fresh client data to ensure correct address format specially for old proformas
+    const client = await Client.findById(proforma.client.clientRef);
+    let clientSnapshot = proforma.client;
+    let resolvedShipping = proforma.shippingAddress;
+
+    if (client) {
+      // Rebuild snapshot from fresh data
+      clientSnapshot = {
+        clientRef: client._id,
+        name: client.name,
+        address: {
+          line1: client.billingAddress?.line1 || '',
+          line2: client.billingAddress?.line2 || '',
+          city: client.billingAddress?.city || '',
+          state: client.billingAddress?.state || '',
+          zip: client.billingAddress?.zip || '',
+          country: client.billingAddress?.country || 'India',
+        },
+        gstin: client.gstin || '',
+        phone: client.phone || '',
+        email: client.email || '',
+      };
+
+      // Auto-resolve shipping address if missing in proforma
+      if (!resolvedShipping?.line1 && client.shippingAddress?.line1) {
+        resolvedShipping = {
+          line1: client.shippingAddress.line1,
+          line2: client.shippingAddress.line2 || '',
+          city: client.shippingAddress.city || '',
+          state: client.shippingAddress.state || '',
+          zip: client.shippingAddress.zip || '',
+          country: client.shippingAddress.country || 'India',
+        };
+      }
+    }
+
     const invoice = new Invoice({
       user: proforma.user, invoiceNo, invoiceType: proforma.invoiceType,
       date: new Date(), dueDate: proforma.validUntil,
       paymentMode: proforma.paymentMode, paymentTerms: proforma.paymentTerms,
-      client: proforma.client, items: proforma.items,
+      client: clientSnapshot, items: proforma.items,
       subTotal: proforma.subTotal, taxTotal: proforma.taxTotal,
       totalCGST: proforma.totalCGST, totalSGST: proforma.totalSGST, totalIGST: proforma.totalIGST,
       shippingCharges: proforma.shippingCharges, packagingCharges: proforma.packagingCharges,
       customChargeLabel: proforma.customChargeLabel, discountTotal: proforma.discountTotal,
       grandTotal: proforma.grandTotal, balanceDue: proforma.grandTotal,
-      shippingAddress: proforma.shippingAddress, transport: proforma.transport,
+      shippingAddress: resolvedShipping, transport: proforma.transport,
       placeOfSupply: proforma.placeOfSupply, reverseCharge: proforma.reverseCharge,
       notes: proforma.notes, terms: proforma.terms, status: 'DRAFT',
     });
