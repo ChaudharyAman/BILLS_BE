@@ -29,22 +29,40 @@ exports.updateSettings = async (req, res) => {
     }
     let settings = await Settings.findOne({ user: req.user._id });
 
-    // Handle file upload first to get URL
+    // Handle file uploads (Logo & Signature)
     let newLogoUrl = undefined;
-    if (req.file) {
-      try {
-        const result = await cloudinary.uploader.upload(req.file.path, {
-          folder: 'mybill_logos',
-          allowed_formats: ['jpg', 'png', 'jpeg', 'webp'],
-        });
-        newLogoUrl = result.secure_url;
-        fs.unlinkSync(req.file.path); // Clean up local file
-      } catch (uploadError) {
-        console.error('Cloudinary Upload Error:', uploadError);
-        // Clean up even if upload fails
-        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-        return res.status(500).json({ message: 'Image upload failed' });
-      }
+    let newSignatureUrl = undefined;
+
+    if (req.files) {
+        // Logo Upload
+        if (req.files.logo) {
+            try {
+                const result = await cloudinary.uploader.upload(req.files.logo[0].path, {
+                    folder: 'mybill_logos',
+                    allowed_formats: ['jpg', 'png', 'jpeg', 'webp'],
+                });
+                newLogoUrl = result.secure_url;
+                fs.unlinkSync(req.files.logo[0].path);
+            } catch (error) {
+                console.error('Logo Upload Error:', error);
+                if (fs.existsSync(req.files.logo[0].path)) fs.unlinkSync(req.files.logo[0].path);
+            }
+        }
+
+        // Signature Upload
+        if (req.files.signature) {
+            try {
+                const result = await cloudinary.uploader.upload(req.files.signature[0].path, {
+                    folder: 'mybill_signatures',
+                    allowed_formats: ['jpg', 'png', 'jpeg', 'webp'],
+                });
+                newSignatureUrl = result.secure_url;
+                fs.unlinkSync(req.files.signature[0].path);
+            } catch (error) {
+                console.error('Signature Upload Error:', error);
+                if (fs.existsSync(req.files.signature[0].path)) fs.unlinkSync(req.files.signature[0].path);
+            }
+        }
     }
 
     const { username, loginEmail, user, ...settingsUpdate } = req.body; // Exclude user from settingsUpdate
@@ -75,7 +93,10 @@ exports.updateSettings = async (req, res) => {
                      email: loginEmail, 
                      existingId: existingUser._id 
                  });
-                 if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+                 if (req.files) {
+                    if (req.files.logo && fs.existsSync(req.files.logo[0].path)) fs.unlinkSync(req.files.logo[0].path);
+                    if (req.files.signature && fs.existsSync(req.files.signature[0].path)) fs.unlinkSync(req.files.signature[0].path);
+                 }
                  return res.status(400).json({ message: 'Username or Email already taken' });
              }
 
@@ -87,10 +108,12 @@ exports.updateSettings = async (req, res) => {
       // Create new if not exists
       const settingsData = { ...settingsUpdate, user: req.user._id };
       if (newLogoUrl) settingsData.logoUrl = newLogoUrl;
+      if (newSignatureUrl) settingsData.signatureUrl = newSignatureUrl;
       settings = new Settings(settingsData);
     } else {
       // Update existing
       if (newLogoUrl) settingsUpdate.logoUrl = newLogoUrl;
+      if (newSignatureUrl) settingsUpdate.signatureUrl = newSignatureUrl;
       Object.assign(settings, settingsUpdate);
     }
     
@@ -99,9 +122,10 @@ exports.updateSettings = async (req, res) => {
     const populatedSettings = await Settings.findById(settings._id).populate('user', 'username email phone');
     res.json(populatedSettings);
   } catch (error) {
-    // Cleanup local file if error
-    if (req.file && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
+    // Cleanup local files if error
+    if (req.files) {
+        if (req.files.logo && fs.existsSync(req.files.logo[0].path)) fs.unlinkSync(req.files.logo[0].path);
+        if (req.files.signature && fs.existsSync(req.files.signature[0].path)) fs.unlinkSync(req.files.signature[0].path);
     }
     console.error('Update Settings Error:', error);
     res.status(400).json({ message: error.message });

@@ -23,6 +23,7 @@ const SettingsSchema = new mongoose.Schema({
   phone: String,
   website: String,
   logoUrl: String, // Base64 or URL
+  signatureUrl: String, // Base64 or URL
 }, { timestamps: true });
 
 module.exports = mongoose.model('Settings', SettingsSchema);
