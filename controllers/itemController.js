@@ -1,4 +1,5 @@
 const Item = require('../models/Item');
+const Counter = require('../models/Counter');
 
 // Get all items
 exports.getItems = async (req, res) => {
@@ -15,8 +16,22 @@ exports.getItems = async (req, res) => {
 
 // Create a new item
 exports.createItem = async (req, res) => {
+  let { sku, name, type } = req.body;
+
+  if (!sku || sku.trim() === '') {
+    const counter = await Counter.findOneAndUpdate(
+      { id: 'skuSeq' },
+      { $inc: { seq: 1 } },
+      { returnDocument: 'after', upsert: true }
+    );
+    const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
+    const prefix = (name || 'ITM').substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, 'X').padEnd(3, 'X');
+    sku = `${resolvedType}-${prefix}-${counter.seq.toString().padStart(3, '0')}`;
+  }
+
   const item = new Item({
     ...req.body,
+    sku,
     user: req.user._id
   });
 
@@ -43,6 +58,20 @@ exports.getItemById = async (req, res) => {
 // Update item
 exports.updateItem = async (req, res) => {
   try {
+    let { sku, name, type } = req.body;
+
+    if (!sku || sku.trim() === '') {
+      const counter = await Counter.findOneAndUpdate(
+        { id: 'skuSeq' },
+        { $inc: { seq: 1 } },
+        { returnDocument: 'after', upsert: true }
+      );
+      const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
+      const prefix = (name || 'ITM').substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, 'X').padEnd(3, 'X');
+      sku = `${resolvedType}-${prefix}-${counter.seq.toString().padStart(3, '0')}`;
+      req.body.sku = sku;
+    }
+
     const item = await Item.findOneAndUpdate(
       { _id: req.params.id, user: req.user._id },
       req.body,

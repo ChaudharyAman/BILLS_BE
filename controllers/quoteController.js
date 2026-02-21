@@ -2,6 +2,7 @@ const Quote = require('../models/Quote');
 const Invoice = require('../models/Invoice');
 const Client = require('../models/Client');
 const Counter = require('../models/Counter');
+const Settings = require('../models/Settings');
 
 // ─── Shared item processor ────────────────────────────────────────────────────
 function processItems(items, isIntraState) {
@@ -88,9 +89,10 @@ exports.createQuote = async (req, res) => {
       email: client.email || '',
     };
 
-    const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
+    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
       processItems(items || [], isIntraState);
@@ -151,9 +153,10 @@ exports.updateQuote = async (req, res) => {
       email: client.email || '',
     };
 
-    const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
+    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
       processItems(items || [], isIntraState);
@@ -242,13 +245,20 @@ exports.convertToInvoice = async (req, res) => {
       }
     }
 
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const clientState = quote.placeOfSupply || clientSnapshot.address.state || '';
+    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(quote.items, isIntraState);
+
     const invoice = new Invoice({
       user: quote.user, invoiceNo, invoiceType: quote.invoiceType,
       date: new Date(), dueDate: quote.validUntil,
       paymentMode: quote.paymentMode, paymentTerms: quote.paymentTerms,
-      client: clientSnapshot, items: quote.items,
-      subTotal: quote.subTotal, taxTotal: quote.taxTotal,
-      totalCGST: quote.totalCGST, totalSGST: quote.totalSGST, totalIGST: quote.totalIGST,
+      client: clientSnapshot, items: processedItems,
+      subTotal, taxTotal,
+      totalCGST, totalSGST, totalIGST,
       shippingCharges: quote.shippingCharges, packagingCharges: quote.packagingCharges,
       customChargeLabel: quote.customChargeLabel, discountTotal: quote.discountTotal,
       grandTotal: quote.grandTotal, balanceDue: quote.grandTotal,

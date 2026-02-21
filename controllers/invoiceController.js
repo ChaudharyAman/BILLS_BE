@@ -2,6 +2,7 @@ const Invoice = require('../models/Invoice');
 const Client = require('../models/Client');
 const Item = require('../models/Item');
 const Counter = require('../models/Counter');
+const Settings = require('../models/Settings');
 
 // ─── Shared: process items based on invoice type ──────────────────────────────
 function processItems(items, invoiceType, isIntraState) {
@@ -159,9 +160,10 @@ exports.createInvoice = async (req, res) => {
     };
 
     // GST intra/inter state logic
-    const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
+    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
 
     // Auto-use client's shipping address if not overridden in form
     const resolvedShippingAddress = (shippingAddress?.line1)
@@ -284,7 +286,8 @@ exports.updateInvoice = async (req, res) => {
       email: client.email || '',
     };
 
-    const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
     const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
 

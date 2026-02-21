@@ -2,6 +2,7 @@ const Proforma = require('../models/Proforma');
 const Invoice = require('../models/Invoice');
 const Client = require('../models/Client');
 const Counter = require('../models/Counter');
+const Settings = require('../models/Settings');
 
 function processItems(items, isIntraState) {
   let subTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0, taxTotal = 0;
@@ -84,9 +85,10 @@ exports.createProforma = async (req, res) => {
       email: client.email || '',
     };
 
-    const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
+    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
       processItems(items || [], isIntraState);
@@ -146,9 +148,10 @@ exports.updateProforma = async (req, res) => {
       email: client.email || '',
     };
 
-    const COMPANY_STATE = process.env.COMPANY_STATE || 'Delhi';
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
+    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
       processItems(items || [], isIntraState);
@@ -235,13 +238,20 @@ exports.convertToInvoice = async (req, res) => {
       }
     }
 
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const clientState = proforma.placeOfSupply || clientSnapshot.address.state || '';
+    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(proforma.items, isIntraState);
+
     const invoice = new Invoice({
       user: proforma.user, invoiceNo, invoiceType: proforma.invoiceType,
       date: new Date(), dueDate: proforma.validUntil,
       paymentMode: proforma.paymentMode, paymentTerms: proforma.paymentTerms,
-      client: clientSnapshot, items: proforma.items,
-      subTotal: proforma.subTotal, taxTotal: proforma.taxTotal,
-      totalCGST: proforma.totalCGST, totalSGST: proforma.totalSGST, totalIGST: proforma.totalIGST,
+      client: clientSnapshot, items: processedItems,
+      subTotal, taxTotal,
+      totalCGST, totalSGST, totalIGST,
       shippingCharges: proforma.shippingCharges, packagingCharges: proforma.packagingCharges,
       customChargeLabel: proforma.customChargeLabel, discountTotal: proforma.discountTotal,
       grandTotal: proforma.grandTotal, balanceDue: proforma.grandTotal,

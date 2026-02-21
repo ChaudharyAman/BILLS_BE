@@ -11,6 +11,11 @@ const ClientSchema = new mongoose.Schema({
     required: true,
     trim: true,
   },
+  clientType: {
+    type: String,
+    enum: ['Company', 'Individual'],
+    default: 'Company',
+  },
   // Basic Info
   gstTreatment: { type: String, default: 'Registered Business' },
   gstin: { type: String, trim: true, uppercase: true },
