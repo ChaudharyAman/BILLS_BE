@@ -271,3 +271,81 @@ exports.convertToInvoice = async (req, res) => {
     res.status(400).json({ message: e.message });
   }
 };
+
+// ─── BULK create proformas ───────────────────────────────────────────────────
+exports.bulkCreateProformas = async (req, res) => {
+  try {
+    const proformas = req.body.proformas;
+    if (!Array.isArray(proformas) || proformas.length === 0) {
+      return res.status(400).json({ message: 'No proformas provided for bulk creation.' });
+    }
+
+    const Counter = require('../models/Counter');
+    const Settings = require('../models/Settings');
+
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+
+    const createdProformas = [];
+    for (const pData of proformas) {
+      let client = await Client.findOne({ name: pData.clientName, user: req.user._id });
+      if (!client) {
+         client = new Client({
+            name: pData.clientName || 'Unknown Client',
+            email: pData.clientEmail || '',
+            phone: pData.clientPhone || '',
+            billingAddress: { state: pData.clientState || '' },
+            user: req.user._id
+         });
+         await client.save();
+      }
+
+      const clientState = pData.placeOfSupply || client.billingAddress?.state || '';
+      const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+
+      const counter = await Counter.findOneAndUpdate(
+        { id: 'proformaNo' },
+        { $inc: { seq: 1 } },
+        { returnDocument: 'after', upsert: true }
+      );
+      const proformaNo = `PF-\${counter.seq.toString().padStart(3, '0')}`;
+
+      // processItems only takes two params: items, isIntraState
+      const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
+        processItems(pData.items || [], isIntraState);
+
+      const finalShipping = Number(pData.shippingCharges) || 0;
+      const finalPackaging = Number(pData.packagingCharges) || 0;
+      const finalDiscount = Number(pData.discountTotal) || 0;
+      const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+
+      const proforma = new Proforma({
+        ...pData,
+        proformaNo,
+        invoiceType: pData.invoiceType || 'Tax Invoice',
+        clientRef: client._id,
+        client: {
+           clientRef: client._id,
+           name: client.name,
+           email: client.email,
+           phone: client.phone,
+           billingAddress: client.billingAddress || {},
+           gstin: client.gstin || '',
+        },
+        items: processedItems,
+        subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
+        shippingCharges: finalShipping, packagingCharges: finalPackaging,
+        discountTotal: finalDiscount, grandTotal,
+        status: 'DRAFT',
+        user: req.user._id
+      });
+      
+      const savedProforma = await proforma.save();
+      createdProformas.push(savedProforma);
+    }
+
+    res.status(201).json({ message: `Successfully imported \${createdProformas.length} proformas.`, count: createdProformas.length });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};

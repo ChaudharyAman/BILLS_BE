@@ -42,6 +42,46 @@ exports.createItem = async (req, res) => {
     res.status(400).json({ message: error.message });
   }
 };
+
+// Bulk create items
+exports.bulkCreateItems = async (req, res) => {
+  try {
+    const items = req.body.items;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: 'No items provided for bulk creation.' });
+    }
+
+    const createdItems = [];
+    for (const itemData of items) {
+      let { sku, name, type } = itemData;
+
+      if (!sku || sku.trim() === '') {
+        const counter = await Counter.findOneAndUpdate(
+          { id: 'skuSeq' },
+          { $inc: { seq: 1 } },
+          { returnDocument: 'after', upsert: true }
+        );
+        const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
+        const prefix = (name || 'ITM').substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, 'X').padEnd(3, 'X');
+        sku = `\${resolvedType}-\${prefix}-\${counter.seq.toString().padStart(3, '0')}`;
+      }
+
+      const item = new Item({
+        ...itemData,
+        sku,
+        user: req.user._id
+      });
+      
+      const savedItem = await item.save();
+      createdItems.push(savedItem);
+    }
+
+    res.status(201).json({ message: `Successfully imported \${createdItems.length} items.`, count: createdItems.length });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // Get item by ID
 exports.getItemById = async (req, res) => {
   try {

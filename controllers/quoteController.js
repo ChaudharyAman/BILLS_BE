@@ -278,3 +278,81 @@ exports.convertToInvoice = async (req, res) => {
     res.status(400).json({ message: e.message });
   }
 };
+
+// ─── BULK create quotes ───────────────────────────────────────────────────
+exports.bulkCreateQuotes = async (req, res) => {
+  try {
+    const quotes = req.body.quotes;
+    if (!Array.isArray(quotes) || quotes.length === 0) {
+      return res.status(400).json({ message: 'No quotes provided for bulk creation.' });
+    }
+
+    const Counter = require('../models/Counter');
+    const Settings = require('../models/Settings');
+
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+
+    const createdQuotes = [];
+    for (const qData of quotes) {
+      let client = await Client.findOne({ name: qData.clientName, user: req.user._id });
+      if (!client) {
+         client = new Client({
+            name: qData.clientName || 'Unknown Client',
+            email: qData.clientEmail || '',
+            phone: qData.clientPhone || '',
+            billingAddress: { state: qData.clientState || '' },
+            user: req.user._id
+         });
+         await client.save();
+      }
+
+      const clientState = qData.placeOfSupply || client.billingAddress?.state || '';
+      const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+
+      const counter = await Counter.findOneAndUpdate(
+        { id: 'quoteNo' },
+        { $inc: { seq: 1 } },
+        { returnDocument: 'after', upsert: true }
+      );
+      const quoteNo = `QT-\${counter.seq.toString().padStart(3, '0')}`;
+
+      // quoteController processItems only takes two params: items, isIntraState
+      const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
+        processItems(qData.items || [], isIntraState);
+
+      const finalShipping = Number(qData.shippingCharges) || 0;
+      const finalPackaging = Number(qData.packagingCharges) || 0;
+      const finalDiscount = Number(qData.discountTotal) || 0;
+      const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+
+      const quote = new Quote({
+        ...qData,
+        quoteNo,
+        invoiceType: qData.invoiceType || 'Tax Invoice',
+        clientRef: client._id,
+        client: {
+           clientRef: client._id,
+           name: client.name,
+           email: client.email,
+           phone: client.phone,
+           billingAddress: client.billingAddress || {},
+           gstin: client.gstin || '',
+        },
+        items: processedItems,
+        subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
+        shippingCharges: finalShipping, packagingCharges: finalPackaging,
+        discountTotal: finalDiscount, grandTotal,
+        status: 'DRAFT',
+        user: req.user._id
+      });
+      
+      const savedQuote = await quote.save();
+      createdQuotes.push(savedQuote);
+    }
+
+    res.status(201).json({ message: `Successfully imported \${createdQuotes.length} quotes.`, count: createdQuotes.length });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};

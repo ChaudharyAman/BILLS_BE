@@ -367,3 +367,79 @@ exports.deleteInvoice = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// ─── BULK create invoices ───────────────────────────────────────────────────
+exports.bulkCreateInvoices = async (req, res) => {
+  try {
+    const invoices = req.body.invoices;
+    if (!Array.isArray(invoices) || invoices.length === 0) {
+      return res.status(400).json({ message: 'No invoices provided for bulk creation.' });
+    }
+
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+
+    const createdInvoices = [];
+    for (const invData of invoices) {
+      let client = await Client.findOne({ name: invData.clientName, user: req.user._id });
+      if (!client) {
+         client = new Client({
+            name: invData.clientName || 'Unknown Client',
+            email: invData.clientEmail || '',
+            phone: invData.clientPhone || '',
+            billingAddress: { state: invData.clientState || '' },
+            user: req.user._id
+         });
+         await client.save();
+      }
+
+      const clientState = invData.placeOfSupply || client.billingAddress?.state || '';
+      const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+
+      const counter = await Counter.findOneAndUpdate(
+        { id: 'invoiceNo' },
+        { $inc: { seq: 1 } },
+        { returnDocument: 'after', upsert: true }
+      );
+      const invoiceNo = `INV-\${counter.seq.toString().padStart(3, '0')}`;
+
+      const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
+        processItems(invData.items || [], invData.invoiceType || 'Tax Invoice', isIntraState);
+
+      const finalShipping = Number(invData.shippingCharges) || 0;
+      const finalPackaging = Number(invData.packagingCharges) || 0;
+      const finalDiscount = Number(invData.discountTotal) || 0;
+      const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+      const advancePaid = Number(invData.advancePaid) || 0;
+      const balanceDue = grandTotal - advancePaid;
+
+      const invoice = new Invoice({
+        ...invData,
+        invoiceNo,
+        invoiceType: invData.invoiceType || 'Tax Invoice',
+        clientRef: client._id,
+        client: {
+           clientRef: client._id,
+           name: client.name,
+           email: client.email,
+           phone: client.phone,
+           billingAddress: client.billingAddress || {},
+           gstin: client.gstin || '',
+        },
+        items: processedItems,
+        subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
+        shippingCharges: finalShipping, packagingCharges: finalPackaging,
+        discountTotal: finalDiscount, grandTotal, advancePaid, balanceDue,
+        status: balanceDue <= 0 ? 'PAID' : 'DRAFT',
+        user: req.user._id
+      });
+      
+      const savedInvoice = await invoice.save();
+      createdInvoices.push(savedInvoice);
+    }
+
+    res.status(201).json({ message: `Successfully imported \${createdInvoices.length} invoices.`, count: createdInvoices.length });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
