@@ -25,8 +25,8 @@ exports.createItem = async (req, res) => {
       { returnDocument: 'after', upsert: true }
     );
     const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
-    const prefix = (name || 'ITM').substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, 'X').padEnd(3, 'X');
-    sku = `${resolvedType}-${prefix}-${counter.seq.toString().padStart(3, '0')}`;
+    const prefix = 'TQ';
+    sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
   }
 
   const item = new Item({
@@ -62,8 +62,8 @@ exports.bulkCreateItems = async (req, res) => {
           { returnDocument: 'after', upsert: true }
         );
         const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
-        const prefix = (name || 'ITM').substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, 'X').padEnd(3, 'X');
-        sku = `\${resolvedType}-\${prefix}-\${counter.seq.toString().padStart(3, '0')}`;
+        const prefix = 'TQ';
+        sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
       }
 
       const item = new Item({
@@ -76,7 +76,7 @@ exports.bulkCreateItems = async (req, res) => {
       createdItems.push(savedItem);
     }
 
-    res.status(201).json({ message: `Successfully imported \${createdItems.length} items.`, count: createdItems.length });
+    res.status(201).json({ message: `Successfully imported ${createdItems.length} items.`, count: createdItems.length, items: createdItems });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -107,8 +107,8 @@ exports.updateItem = async (req, res) => {
         { returnDocument: 'after', upsert: true }
       );
       const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
-      const prefix = (name || 'ITM').substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, 'X').padEnd(3, 'X');
-      sku = `${resolvedType}-${prefix}-${counter.seq.toString().padStart(3, '0')}`;
+      const prefix = 'TQ';
+      sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
       req.body.sku = sku;
     }
 

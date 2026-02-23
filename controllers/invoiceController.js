@@ -4,6 +4,8 @@ const Item = require('../models/Item');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
 
+const User = require('../models/User');
+
 // ─── Shared: process items based on invoice type ──────────────────────────────
 function processItems(items, invoiceType, isIntraState) {
   const hasTax = invoiceType === 'Tax Invoice' || invoiceType === 'Excise Invoice';
@@ -127,6 +129,23 @@ exports.createInvoice = async (req, res) => {
       reverseCharge,
       exciseDuty,
     } = req.body;
+
+    // --- Subscription Plan Check ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    
+    if (plan === 'free') {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const invoiceCount = await Invoice.countDocuments({
+        user: req.user._id,
+        createdAt: { $gte: startOfMonth }
+      });
+      if (invoiceCount >= 15) {
+        return res.status(403).json({ message: 'Free plan limit reached. You can only create 15 Invoices/Proformas per month.' });
+      }
+    }
+    // -------------------------------
 
     // Generate Invoice Number
     const counter = await Counter.findOneAndUpdate(
@@ -376,6 +395,23 @@ exports.bulkCreateInvoices = async (req, res) => {
       return res.status(400).json({ message: 'No invoices provided for bulk creation.' });
     }
 
+    // --- Subscription Plan Check ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    
+    if (plan === 'free') {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const invoiceCount = await Invoice.countDocuments({
+        user: req.user._id,
+        createdAt: { $gte: startOfMonth }
+      });
+      if (invoiceCount + invoices.length > 15) {
+        return res.status(403).json({ message: `Free plan limit reached. You can only create 15 Invoices/Proformas per month. You currently have ${invoiceCount} and are trying to add ${invoices.length}.` });
+      }
+    }
+    // -------------------------------
+
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
 
@@ -401,7 +437,7 @@ exports.bulkCreateInvoices = async (req, res) => {
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
-      const invoiceNo = `INV-\${counter.seq.toString().padStart(3, '0')}`;
+      const invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
 
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
         processItems(invData.items || [], invData.invoiceType || 'Tax Invoice', isIntraState);
@@ -438,7 +474,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       createdInvoices.push(savedInvoice);
     }
 
-    res.status(201).json({ message: `Successfully imported \${createdInvoices.length} invoices.`, count: createdInvoices.length });
+    res.status(201).json({ message: `Successfully imported ${createdInvoices.length} invoices.`, count: createdInvoices.length });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

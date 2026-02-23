@@ -28,6 +28,27 @@ const userSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
+  },
+  subscription: {
+    plan: {
+      type: String,
+      enum: ['free', 'pro'],
+      default: 'free'
+    },
+    status: {
+      type: String,
+      enum: ['active', 'inactive', 'past_due', 'canceled', 'unpaid'],
+      default: 'active'
+    },
+    razorpayOrderId: String,
+    razorpayPaymentId: String,
+    razorpaySignature: String,
+    startDate: Date,
+    endDate: Date,
+    billingCycle: {
+      type: String, // 'monthly' or 'yearly'
+      enum: ['monthly', 'yearly']
+    }
   }
 });
 

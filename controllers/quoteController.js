@@ -4,6 +4,8 @@ const Client = require('../models/Client');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
 
+const User = require('../models/User');
+
 // ─── Shared item processor ────────────────────────────────────────────────────
 function processItems(items, isIntraState) {
   let subTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0, taxTotal = 0;
@@ -63,6 +65,23 @@ exports.createQuote = async (req, res) => {
     const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
+
+    // --- Subscription Plan Check ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    
+    if (plan === 'free') {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const quoteCount = await Quote.countDocuments({
+        user: req.user._id,
+        createdAt: { $gte: startOfMonth }
+      });
+      if (quoteCount >= 15) {
+        return res.status(403).json({ message: 'Free plan limit reached. You can only create 15 Quotes per month.' });
+      }
+    }
+    // -------------------------------
 
     const counter = await Counter.findOneAndUpdate(
       { id: 'quoteNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
@@ -287,6 +306,23 @@ exports.bulkCreateQuotes = async (req, res) => {
       return res.status(400).json({ message: 'No quotes provided for bulk creation.' });
     }
 
+    // --- Subscription Plan Check ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    
+    if (plan === 'free') {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const quoteCount = await Quote.countDocuments({
+        user: req.user._id,
+        createdAt: { $gte: startOfMonth }
+      });
+      if (quoteCount + quotes.length > 15) {
+        return res.status(403).json({ message: `Free plan limit reached. You can only create 15 Quotes per month. You currently have ${quoteCount} and are trying to add ${quotes.length}.` });
+      }
+    }
+    // -------------------------------
+
     const Counter = require('../models/Counter');
     const Settings = require('../models/Settings');
 
@@ -315,7 +351,7 @@ exports.bulkCreateQuotes = async (req, res) => {
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
-      const quoteNo = `QT-\${counter.seq.toString().padStart(3, '0')}`;
+      const quoteNo = `QT-${counter.seq.toString().padStart(3, '0')}`;
 
       // quoteController processItems only takes two params: items, isIntraState
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
@@ -351,7 +387,7 @@ exports.bulkCreateQuotes = async (req, res) => {
       createdQuotes.push(savedQuote);
     }
 
-    res.status(201).json({ message: `Successfully imported \${createdQuotes.length} quotes.`, count: createdQuotes.length });
+    res.status(201).json({ message: `Successfully imported ${createdQuotes.length} quotes.`, count: createdQuotes.length });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -25,6 +25,7 @@ app.use('/api/quotes', require('./routes/quoteRoutes'));
 app.use('/api/proformas', require('./routes/proformaRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
 app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
 
 app.get('/', (req, res) => {
   res.send('API is working fine 👍...');

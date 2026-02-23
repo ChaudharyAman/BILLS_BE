@@ -308,7 +308,7 @@ exports.bulkCreateProformas = async (req, res) => {
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
-      const proformaNo = `PF-\${counter.seq.toString().padStart(3, '0')}`;
+      const proformaNo = `PF-${counter.seq.toString().padStart(3, '0')}`;
 
       // processItems only takes two params: items, isIntraState
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
@@ -344,7 +344,7 @@ exports.bulkCreateProformas = async (req, res) => {
       createdProformas.push(savedProforma);
     }
 
-    res.status(201).json({ message: `Successfully imported \${createdProformas.length} proformas.`, count: createdProformas.length });
+    res.status(201).json({ message: `Successfully imported ${createdProformas.length} proformas.`, count: createdProformas.length });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
