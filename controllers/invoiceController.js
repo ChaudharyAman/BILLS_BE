@@ -479,3 +479,197 @@ exports.bulkCreateInvoices = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// ─── GET GST Report ───────────────────────────────────────────────────────────
+exports.getGSTReport = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    // Filter by user
+    const matchStage = { user: req.user._id };
+
+    // Apply date filters if provided
+    if (startDate || endDate) {
+      matchStage.date = {};
+      if (startDate) matchStage.date.$gte = new Date(startDate);
+      if (endDate) matchStage.date.$lte = new Date(endDate);
+    }
+
+    const report = await Invoice.aggregate([
+      { $match: matchStage },
+      { $sort: { date: -1, createdAt: -1 } },
+      { 
+        $facet: {
+          totals: [
+            {
+              $group: {
+                _id: null,
+                totalTaxableAmount: { $sum: "$subTotal" },
+                totalCGST: { $sum: "$totalCGST" },
+                totalSGST: { $sum: "$totalSGST" },
+                totalIGST: { $sum: "$totalIGST" },
+                totalTax: { $sum: "$taxTotal" },
+                totalGrandTotal: { $sum: "$grandTotal" }
+              }
+            }
+          ],
+          details: [
+            {
+              $project: {
+                invoiceNo: 1,
+                date: 1,
+                clientName: "$client.name",
+                clientState: "$client.address.state",
+                taxableAmount: "$subTotal",
+                cgst: "$totalCGST",
+                sgst: "$totalSGST",
+                igst: "$totalIGST",
+                totalTax: "$taxTotal",
+                grandTotal: 1,
+                status: 1
+              }
+            }
+          ]
+        }
+      }
+    ]);
+
+    const result = report[0];
+    const totals = result.totals.length > 0 ? result.totals[0] : {
+      totalTaxableAmount: 0,
+      totalCGST: 0,
+      totalSGST: 0,
+      totalIGST: 0,
+      totalTax: 0,
+      totalGrandTotal: 0
+    };
+
+    res.json({
+      totals,
+      details: result.details
+    });
+  } catch (error) {
+    console.error('Error fetching GST Report:', error);
+    res.status(500).json({ message: 'Error fetching GST Report', error: error.message });
+  }
+};
+
+// ─── GET Revenue Report ───────────────────────────────────────────────────────
+exports.getRevenueReport = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    // Filter by user
+    const matchStage = { user: req.user._id };
+
+    // Apply date filters if provided
+    if (startDate || endDate) {
+      matchStage.date = {};
+      if (startDate) matchStage.date.$gte = new Date(startDate);
+      if (endDate) matchStage.date.$lte = new Date(endDate);
+    }
+
+    const report = await Invoice.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: "$client.clientRef",
+          clientName: { $first: "$client.name" },
+          clientEmail: { $first: "$client.email" },
+          clientPhone: { $first: "$client.phone" },
+          totalInvoices: { $sum: 1 },
+          totalRevenue: { $sum: "$grandTotal" },
+          totalAdvancePaid: { $sum: "$advancePaid" },
+          totalBalanceDue: { $sum: "$balanceDue" }
+        }
+      },
+      { $sort: { totalRevenue: -1 } } // Sort by highest revenue
+    ]);
+
+    res.json(report);
+  } catch (error) {
+    console.error('Error fetching Revenue Report:', error);
+    res.status(500).json({ message: 'Error fetching Revenue Report', error: error.message });
+  }
+};
+
+// ─── GET Payment Collection (Unpaid Invoices) ─────────────────────────────────
+exports.getPaymentCollection = async (req, res) => {
+  try {
+    // Find all invoices where balance is > 0
+    const matchStage = { 
+      user: req.user._id,
+      balanceDue: { $gt: 0 }
+    };
+
+    const invoices = await Invoice.find(matchStage)
+      .sort({ dueDate: 1 }) // Soonest or most overdue first
+      .select('invoiceNo date dueDate client.name grandTotal advancePaid balanceDue status');
+
+    // Aggregate some top-level metrics
+    const totals = await Invoice.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: null,
+          totalOutstanding: { $sum: "$balanceDue" },
+          invoiceCount: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const summary = totals.length > 0 ? totals[0] : { totalOutstanding: 0, invoiceCount: 0 };
+    delete summary._id;
+
+    res.json({ summary, invoices });
+  } catch (error) {
+    console.error('Error fetching Payment Collection:', error);
+    res.status(500).json({ message: 'Error fetching Payment Collection', error: error.message });
+  }
+};
+
+// ─── GET Account Statement (Client Ledger) ────────────────────────────────────
+exports.getAccountStatement = async (req, res) => {
+  try {
+    const { clientId, startDate, endDate } = req.query;
+
+    if (!clientId) {
+      return res.status(400).json({ message: 'clientId is required for an account statement.' });
+    }
+
+    const matchStage = { 
+      user: req.user._id,
+      "client.clientRef": new require('mongoose').Types.ObjectId(clientId)
+    };
+
+    if (startDate || endDate) {
+      matchStage.date = {};
+      if (startDate) matchStage.date.$gte = new Date(startDate);
+      if (endDate) matchStage.date.$lte = new Date(endDate);
+    }
+
+    const invoices = await Invoice.find(matchStage)
+      .sort({ date: 1 }) // Chronological order
+      .select('invoiceNo date invoiceType grandTotal advancePaid balanceDue paymentMode status');
+
+    const totals = await Invoice.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: null,
+          totalBilled: { $sum: "$grandTotal" },
+          totalReceived: { $sum: { $subtract: ["$grandTotal", "$balanceDue"] } },
+          totalBalance: { $sum: "$balanceDue" }
+        }
+      }
+    ]);
+
+    const summary = totals.length > 0 ? totals[0] : { totalBilled: 0, totalReceived: 0, totalBalance: 0 };
+    delete summary._id;
+
+    res.json({ summary, invoices });
+  } catch (error) {
+    console.error('Error fetching Account Statement:', error);
+    res.status(500).json({ message: 'Error fetching Account Statement', error: error.message });
+  }
+};
