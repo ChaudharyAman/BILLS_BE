@@ -282,6 +282,52 @@ exports.updateInvoice = async (req, res) => {
       return res.status(401).json({ message: 'User not authorized' });
     }
 
+    // --- Subscription Plan Check for Edits ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    
+    if (plan === 'free') {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      
+      // Count documents edited this month (where updatedAt exists and is >= startOfMonth, 
+      // and ideally where it's not just a brand new document, although simple >= startOfM works 
+      // since creating counts against the 15 creation quota, and editing against the 5 edit quota)
+      // Actually, to be precise, an "edit" is when a document is modified after creation.
+      // Since Mongoose timestamps might set both to the same time on creation, 
+      // we check if the document was updated after its creation time.
+      const editedInvoicesCount = await Invoice.countDocuments({
+        user: req.user._id,
+        updatedAt: { $gte: startOfMonth },
+        $expr: { $gt: ["$updatedAt", "$createdAt"] } 
+      });
+
+      const { Quote } = require('../models/Quote'); // We need to check quotes too for the global limit
+      let editedQuotesCount = 0;
+      try {
+        const QuoteModel = require('../models/Quote');
+        editedQuotesCount = await QuoteModel.countDocuments({
+          user: req.user._id,
+          updatedAt: { $gte: startOfMonth },
+          $expr: { $gt: ["$updatedAt", "$createdAt"] }
+        });
+      } catch (e) {
+         // ignore if model not loaded yet
+      }
+      
+      const totalEditsThisMonth = editedInvoicesCount + editedQuotesCount;
+
+      // If they have 5 or more, ONLY allow the edit IF they are editing a document 
+      // that is ALREADY part of that 5 (i.e., this document was already edited this month).
+      // Otherwise, they are trying to edit a 6th distinct document.
+      const isAlreadyEditedThisMonth = invoice.updatedAt && invoice.updatedAt >= startOfMonth && invoice.updatedAt > invoice.createdAt;
+
+      if (totalEditsThisMonth >= 5 && !isAlreadyEditedThisMonth) {
+        return res.status(403).json({ message: 'You have reached the free plan limit of 5 document edits per month. Please upgrade to Pro.' });
+      }
+    }
+    // -----------------------------------------
+
     // Fetch Client Snapshot
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
@@ -380,6 +426,14 @@ exports.deleteInvoice = async (req, res) => {
     if (invoice.user.toString() !== req.user.id) {
       return res.status(401).json({ message: 'User not authorized' });
     }
+
+    // --- Subscription Plan Check for Deletes ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    if (plan === 'free') {
+       return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
+    }
+    // -------------------------------------------
     await invoice.deleteOne();
     res.json({ message: 'Invoice deleted successfully' });
   } catch (error) {

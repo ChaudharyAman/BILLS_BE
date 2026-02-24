@@ -152,6 +152,40 @@ exports.updateQuote = async (req, res) => {
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
     if (quote.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
 
+    // --- Subscription Plan Check for Edits ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    
+    if (plan === 'free') {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      
+      const editedQuotesCount = await Quote.countDocuments({
+        user: req.user._id,
+        updatedAt: { $gte: startOfMonth },
+        $expr: { $gt: ["$updatedAt", "$createdAt"] } 
+      });
+
+      let editedInvoicesCount = 0;
+      try {
+        const InvoiceModel = require('../models/Invoice');
+        editedInvoicesCount = await InvoiceModel.countDocuments({
+          user: req.user._id,
+          updatedAt: { $gte: startOfMonth },
+          $expr: { $gt: ["$updatedAt", "$createdAt"] }
+        });
+      } catch (e) {}
+      
+      const totalEditsThisMonth = editedInvoicesCount + editedQuotesCount;
+
+      const isAlreadyEditedThisMonth = quote.updatedAt && quote.updatedAt >= startOfMonth && quote.updatedAt > quote.createdAt;
+
+      if (totalEditsThisMonth >= 5 && !isAlreadyEditedThisMonth) {
+        return res.status(403).json({ message: 'You have reached the free plan limit of 5 document edits per month. Please upgrade to Pro.' });
+      }
+    }
+    // -----------------------------------------
+
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
     if (client.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
@@ -210,6 +244,14 @@ exports.deleteQuote = async (req, res) => {
     const quote = await Quote.findById(req.params.id);
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
     if (quote.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+
+    // --- Subscription Plan Check for Deletes ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    if (plan === 'free') {
+       return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
+    }
+    // -------------------------------------------
     await quote.deleteOne();
     res.json({ message: 'Quote deleted' });
   } catch (e) { res.status(500).json({ message: e.message }); }

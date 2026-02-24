@@ -25,7 +25,7 @@ exports.createOrder = async (req, res) => {
     let amount = 0;
     if (plan === 'pro') {
       if (billingCycle === 'monthly') {
-        amount = 999 * 100; // ₹999
+        amount = 1 * 100; // ₹999
       } else if (billingCycle === 'yearly') {
         amount = 9588 * 100; // ₹799 * 12
       }
@@ -153,9 +153,22 @@ exports.getUsageStats = async (req, res) => {
       createdAt: { $gte: startOfMonth }
     });
 
+    const editedInvoicesCount = await Invoice.countDocuments({
+      user: req.user._id,
+      updatedAt: { $gte: startOfMonth },
+      $expr: { $gt: ["$updatedAt", "$createdAt"] }
+    });
+
+    const editedQuotesCount = await Quote.countDocuments({
+      user: req.user._id,
+      updatedAt: { $gte: startOfMonth },
+      $expr: { $gt: ["$updatedAt", "$createdAt"] }
+    });
+
     res.json({
       invoices: { used: invoicesCount, limit: 15 },
-      quotes: { used: quotesCount, limit: 15 } // Quotes model includes Proformas
+      quotes: { used: quotesCount, limit: 15 }, // Quotes model includes Proformas
+      edits: { used: editedInvoicesCount + editedQuotesCount, limit: 5 }
     });
   } catch (error) {
     console.error('Error fetching usage stats:', error);

@@ -80,6 +80,6 @@ const QuoteSchema = new mongoose.Schema({
   notes: String,
   terms: String,
   createdAt: { type: Date, default: Date.now },
-});
+}, { timestamps: true });
 
 module.exports = mongoose.model('Quote', QuoteSchema);

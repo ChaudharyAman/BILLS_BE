@@ -15,12 +15,12 @@ exports.getClients = async (req, res) => {
 
 // Create a new client
 exports.createClient = async (req, res) => {
-  const client = new Client({
-    ...req.body,
-    user: req.user._id
-  });
-
   try {
+    const client = new Client({
+      ...req.body,
+      user: req.user._id
+    });
+
     const newClient = await client.save();
     res.status(201).json(newClient);
   } catch (error) {
