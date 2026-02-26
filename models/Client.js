@@ -27,8 +27,11 @@ const ClientSchema = new mongoose.Schema({
   currency: { type: String, default: 'INR' },
   
   // Flags
+  isClient: { type: Boolean, default: true },
   isVendor: { type: Boolean, default: false },
+  useForDispatch: { type: Boolean, default: false },
   clientWiseItemPrice: { type: Boolean, default: false },
+  vendorCode: { type: String, trim: true },
 
   // Contact Info (Primary)
   email: { type: String, trim: true, lowercase: true },

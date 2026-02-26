@@ -139,6 +139,7 @@ exports.getUsageStats = async (req, res) => {
   try {
     const Invoice = require('../models/Invoice');
     const Quote = require('../models/Quote');
+    const PurchaseOrder = require('../models/PurchaseOrder');
 
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -149,6 +150,11 @@ exports.getUsageStats = async (req, res) => {
     });
 
     const quotesCount = await Quote.countDocuments({
+      user: req.user._id,
+      createdAt: { $gte: startOfMonth }
+    });
+
+    const purchaseOrdersCount = await PurchaseOrder.countDocuments({
       user: req.user._id,
       createdAt: { $gte: startOfMonth }
     });
@@ -165,10 +171,17 @@ exports.getUsageStats = async (req, res) => {
       $expr: { $gt: ["$updatedAt", "$createdAt"] }
     });
 
+    const editedPurchaseOrdersCount = await PurchaseOrder.countDocuments({
+      user: req.user._id,
+      updatedAt: { $gte: startOfMonth },
+      $expr: { $gt: ["$updatedAt", "$createdAt"] }
+    });
+
     res.json({
       invoices: { used: invoicesCount, limit: 15 },
       quotes: { used: quotesCount, limit: 15 }, // Quotes model includes Proformas
-      edits: { used: editedInvoicesCount + editedQuotesCount, limit: 5 }
+      purchaseOrders: { used: purchaseOrdersCount, limit: 15 },
+      edits: { used: editedInvoicesCount + editedQuotesCount + editedPurchaseOrdersCount, limit: 5 }
     });
   } catch (error) {
     console.error('Error fetching usage stats:', error);
