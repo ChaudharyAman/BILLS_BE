@@ -25,7 +25,7 @@ exports.createOrder = async (req, res) => {
     let amount = 0;
     if (plan === 'pro') {
       if (billingCycle === 'monthly') {
-        amount = 1 * 100; // ₹999
+        amount = 999 * 100; // ₹999
       } else if (billingCycle === 'yearly') {
         amount = 9588 * 100; // ₹799 * 12
       }
