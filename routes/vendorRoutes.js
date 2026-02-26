@@ -5,6 +5,7 @@ const { protect } = require('../middleware/authMiddleware');
 
 router.get('/', protect, clientController.getVendors);
 router.post('/', protect, clientController.createClient);
+router.post('/bulk', protect, clientController.bulkCreateClients);
 router.get('/:id', protect, clientController.getClientById);
 router.put('/:id', protect, clientController.updateClient);
 router.delete('/:id', protect, clientController.deleteClient);

@@ -52,28 +52,42 @@ exports.bulkCreateItems = async (req, res) => {
     }
 
     const createdItems = [];
-    for (const itemData of items) {
-      let { sku, name, type } = itemData;
+    const errors = [];
+    for (const [index, itemData] of items.entries()) {
+      try {
+        let { sku, name, type } = itemData;
 
-      if (!sku || sku.trim() === '') {
-        const counter = await Counter.findOneAndUpdate(
-          { id: 'skuSeq' },
-          { $inc: { seq: 1 } },
-          { returnDocument: 'after', upsert: true }
-        );
-        const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
-        const prefix = 'TQ';
-        sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
+        if (!sku || sku.trim() === '') {
+          const counter = await Counter.findOneAndUpdate(
+            { id: 'skuSeq' },
+            { $inc: { seq: 1 } },
+            { returnDocument: 'after', upsert: true }
+          );
+          const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
+          const prefix = 'TQ';
+          sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
+        }
+
+        const item = new Item({
+          ...itemData,
+          sku,
+          user: req.user._id
+        });
+        
+        const savedItem = await item.save();
+        createdItems.push(savedItem);
+      } catch (err) {
+        errors.push({ index, item: itemData, error: err.message });
       }
+    }
 
-      const item = new Item({
-        ...itemData,
-        sku,
-        user: req.user._id
+    if (errors.length > 0) {
+      return res.status(207).json({ 
+        message: `Imported ${createdItems.length} items. ${errors.length} failed.`, 
+        count: createdItems.length, 
+        items: createdItems, 
+        errors 
       });
-      
-      const savedItem = await item.save();
-      createdItems.push(savedItem);
     }
 
     res.status(201).json({ message: `Successfully imported ${createdItems.length} items.`, count: createdItems.length, items: createdItems });
@@ -111,6 +125,9 @@ exports.updateItem = async (req, res) => {
       sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
       req.body.sku = sku;
     }
+
+    // Prevent overwriting the user field
+    delete req.body.user;
 
     const item = await Item.findOneAndUpdate(
       { _id: req.params.id, user: req.user._id },

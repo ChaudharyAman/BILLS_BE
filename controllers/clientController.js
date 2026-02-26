@@ -6,7 +6,11 @@ exports.getClients = async (req, res) => {
     if (!req.user || !req.user._id) {
         return res.status(401).json({ message: 'Not authorized' });
     }
-    const clients = await Client.find({ user: req.user._id, isClient: true }).sort({ createdAt: -1 });
+    // Handle legacy documents that don't have isClient explicitly set in the DB
+    const clients = await Client.find({ 
+      user: req.user._id, 
+      $or: [{ isClient: true }, { isClient: { $exists: false } }] 
+    }).sort({ createdAt: -1 });
     res.json(clients);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -40,6 +44,47 @@ exports.createClient = async (req, res) => {
     res.status(400).json({ message: error.message });
   }
 };
+
+// Bulk create clients/vendors
+exports.bulkCreateClients = async (req, res) => {
+  try {
+    const clients = req.body.clients;
+    if (!Array.isArray(clients) || clients.length === 0) {
+      return res.status(400).json({ message: 'No clients provided for bulk creation.' });
+    }
+
+    const createdClients = [];
+    const errors = [];
+    
+    for (const [index, clientData] of clients.entries()) {
+      try {
+        const client = new Client({
+          ...clientData,
+          user: req.user._id
+        });
+        
+        const savedClient = await client.save();
+        createdClients.push(savedClient);
+      } catch (err) {
+        errors.push({ index, client: clientData, error: err.message });
+      }
+    }
+
+    if (errors.length > 0) {
+      return res.status(207).json({ 
+        message: `Imported ${createdClients.length} clients. ${errors.length} failed.`, 
+        count: createdClients.length, 
+        clients: createdClients, 
+        errors 
+      });
+    }
+
+    res.status(201).json({ message: `Successfully imported ${createdClients.length} clients.`, count: createdClients.length, clients: createdClients });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // Get client by ID
 exports.getClientById = async (req, res) => {
   try {
