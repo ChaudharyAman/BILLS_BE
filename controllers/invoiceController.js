@@ -82,7 +82,7 @@ exports.getInvoices = async (req, res) => {
     if (!req.user || !req.user._id) {
       return res.status(401).json({ message: 'Not authorized' });
     }
-    const invoices = await Invoice.find({ user: req.user._id }).sort({ createdAt: -1 });
+    const invoices = await Invoice.find({ user: req.user._id }).select('-items -notes -terms -shippingAddress').lean().sort({ createdAt: -1 });
     res.json(invoices);
   } catch (error) {
     res.status(500).json({ message: error.message });

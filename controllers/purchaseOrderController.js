@@ -44,7 +44,7 @@ function processItems(items, isIntraState) {
 exports.getPurchaseOrders = async (req, res) => {
   try {
     if (!req.user?._id) return res.status(401).json({ message: 'Not authorized' });
-    const purchaseOrders = await PurchaseOrder.find({ user: req.user._id }).sort({ createdAt: -1 });
+    const purchaseOrders = await PurchaseOrder.find({ user: req.user._id }).select('-items -notes -terms -shippingAddress').lean().sort({ createdAt: -1 });
     res.json(purchaseOrders);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };

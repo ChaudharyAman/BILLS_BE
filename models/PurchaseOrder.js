@@ -18,7 +18,7 @@ const PurchaseOrderItemSchema = new mongoose.Schema({
 });
 
 const PurchaseOrderSchema = new mongoose.Schema({
-  user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User' },
+  user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
   poNumber: { type: String, required: true, unique: true },
   refNumber: String,
   date: { type: Date, default: Date.now, required: true },

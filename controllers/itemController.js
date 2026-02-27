@@ -7,7 +7,7 @@ exports.getItems = async (req, res) => {
     if (!req.user || !req.user._id) {
         return res.status(401).json({ message: 'Not authorized' });
     }
-    const items = await Item.find({ user: req.user._id }).sort({ createdAt: -1 });
+    const items = await Item.find({ user: req.user._id }).lean().sort({ createdAt: -1 });
     res.json(items);
   } catch (error) {
     res.status(500).json({ message: error.message });

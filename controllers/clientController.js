@@ -10,7 +10,7 @@ exports.getClients = async (req, res) => {
     const clients = await Client.find({ 
       user: req.user._id, 
       $or: [{ isClient: true }, { isClient: { $exists: false } }] 
-    }).sort({ createdAt: -1 });
+    }).lean().sort({ createdAt: -1 });
     res.json(clients);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -23,7 +23,7 @@ exports.getVendors = async (req, res) => {
     if (!req.user || !req.user._id) {
         return res.status(401).json({ message: 'Not authorized' });
     }
-    const vendors = await Client.find({ user: req.user._id, isVendor: true }).sort({ createdAt: -1 });
+    const vendors = await Client.find({ user: req.user._id, isVendor: true }).lean().sort({ createdAt: -1 });
     res.json(vendors);
   } catch (error) {
     res.status(500).json({ message: error.message });

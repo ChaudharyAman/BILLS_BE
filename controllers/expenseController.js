@@ -6,7 +6,7 @@ const Expense = require('../models/Expense');
 // @access  Private
 exports.getExpenses = async (req, res) => {
   try {
-    const expenses = await Expense.find({ user: req.user._id }).sort({ date: -1, createdAt: -1 });
+    const expenses = await Expense.find({ user: req.user._id }).select('-items -terms -privateNotes').lean().sort({ date: -1, createdAt: -1 });
     res.json(expenses);
   } catch (error) {
     res.status(500).json({ message: 'Server Error fetching expenses' });

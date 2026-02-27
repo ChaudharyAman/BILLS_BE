@@ -13,7 +13,7 @@ const ExpenseItemSchema = new mongoose.Schema({
 });
 
 const ExpenseSchema = new mongoose.Schema({
-  user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User' },
+  user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
   
   // Naming & Reference
   expenseNumber: { type: String, required: true, unique: true },

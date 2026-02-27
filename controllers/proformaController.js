@@ -40,7 +40,7 @@ function processItems(items, isIntraState) {
 exports.getProformas = async (req, res) => {
   try {
     if (!req.user?._id) return res.status(401).json({ message: 'Not authorized' });
-    const proformas = await Proforma.find({ user: req.user._id }).sort({ createdAt: -1 });
+    const proformas = await Proforma.find({ user: req.user._id }).select('-items -notes -terms -shippingAddress').lean().sort({ createdAt: -1 });
     res.json(proformas);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
