@@ -43,9 +43,12 @@ exports.register = async (req, res) => {
 
     if (user) {
       res.status(201).json({
-        _id: user._id,
-        username: user.username,
-        email: user.email,
+        user: {
+          _id: user._id,
+          username: user.username,
+          email: user.email,
+          subscription: user.subscription
+        },
         token: generateToken(user._id)
       });
     } else {
@@ -86,9 +89,12 @@ exports.login = async (req, res) => {
 
     if (user && (await user.matchPassword(password))) {
       res.json({
-        _id: user._id,
-        username: user.username,
-        email: user.email,
+        user: {
+          _id: user._id,
+          username: user.username,
+          email: user.email,
+          subscription: user.subscription
+        },
         token: generateToken(user._id)
       });
     } else {
@@ -133,10 +139,13 @@ exports.updateProfile = async (req, res) => {
 
     const updated = await user.save();
     res.json({
-      _id: updated._id,
-      username: updated.username,
-      email: updated.email,
-      phone: updated.phone,
+      user: {
+        _id: updated._id,
+        username: updated.username,
+        email: updated.email,
+        phone: updated.phone,
+        subscription: updated.subscription
+      }
     });
   } catch (error) {
     console.error('updateProfile error:', error);
