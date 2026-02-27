@@ -30,13 +30,13 @@ const PurchaseOrderSchema = new mongoose.Schema({
     vendorRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' },
     name: { type: String, required: true },
     address: {
-      line1: String, city: String, state: String, zip: String,
+      line1: String, line2: String, city: String, state: String, zip: String,
     },
     gstin: String,
   },
 
   shippingAddress: {
-    line1: String, city: String, state: String, zip: String,
+    line1: String, line2: String, city: String, state: String, zip: String,
   },
 
   transport: {
