@@ -279,10 +279,6 @@ exports.bulkCreateProformas = async (req, res) => {
     if (!Array.isArray(proformas) || proformas.length === 0) {
       return res.status(400).json({ message: 'No proformas provided for bulk creation.' });
     }
-
-    const Counter = require('../models/Counter');
-    const Settings = require('../models/Settings');
-
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
 

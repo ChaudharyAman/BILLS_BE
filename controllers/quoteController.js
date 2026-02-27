@@ -365,9 +365,6 @@ exports.bulkCreateQuotes = async (req, res) => {
     }
     // -------------------------------
 
-    const Counter = require('../models/Counter');
-    const Settings = require('../models/Settings');
-
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
 

@@ -365,22 +365,21 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
     }
     // -------------------------------
 
-    const Counter = require('../models/Counter');
-    const Settings = require('../models/Settings');
-
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
 
     const createdPurchaseOrders = [];
     for (const qData of purchaseOrders) {
-      let vendor = await VendorModel.findOne({ name: qData.vendorName, user: req.user._id });
+      let vendor = await VendorModel.findOne({ name: qData.vendorName, user: req.user._id, isVendor: true });
       if (!vendor) {
          vendor = new VendorModel({
-            name: qData.vendorName || 'Unknown VendorModel',
+            name: qData.vendorName || 'Unknown Vendor',
             email: qData.vendorEmail || '',
             phone: qData.vendorPhone || '',
             billingAddress: { state: qData.vendorState || '' },
-            user: req.user._id
+            user: req.user._id,
+            isVendor: true,
+            isClient: false
          });
          await vendor.save();
       }
