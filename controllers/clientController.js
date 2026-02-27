@@ -3,31 +3,65 @@ const Client = require('../models/Client');
 // Get all clients
 exports.getClients = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) {
-        return res.status(401).json({ message: 'Not authorized' });
-    }
-    // Handle legacy documents that don't have isClient explicitly set in the DB
-    const clients = await Client.find({ 
+    if (!req.user || !req.user._id) { return res.status(401).json({ message: 'Not authorized' }); }
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const skip = (page - 1) * limit;
+
+    let query = { 
       user: req.user._id, 
       $or: [{ isClient: true }, { isClient: { $exists: false } }] 
-    }).lean().sort({ createdAt: -1 });
-    res.json(clients);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+    };
+
+    if (search) { query.name = { $regex: search, $options: 'i' }; }
+
+    const total = await Client.countDocuments(query);
+    const clients = await Client.find(query)
+      .lean()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      data: clients,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error) { res.status(500).json({ message: error.message }); }
 };
 
 // Get all vendors
 exports.getVendors = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) {
-        return res.status(401).json({ message: 'Not authorized' });
-    }
-    const vendors = await Client.find({ user: req.user._id, isVendor: true }).lean().sort({ createdAt: -1 });
-    res.json(vendors);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+    if (!req.user || !req.user._id) { return res.status(401).json({ message: 'Not authorized' }); }
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const skip = (page - 1) * limit;
+
+    let query = { user: req.user._id, isVendor: true };
+    if (search) { query.name = { $regex: search, $options: 'i' }; }
+
+    const total = await Client.countDocuments(query);
+    const vendors = await Client.find(query)
+      .lean()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      data: vendors,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error) { res.status(500).json({ message: error.message }); }
 };
 
 // Create a new client

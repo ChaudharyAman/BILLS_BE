@@ -40,8 +40,43 @@ function processItems(items, isIntraState) {
 exports.getProformas = async (req, res) => {
   try {
     if (!req.user?._id) return res.status(401).json({ message: 'Not authorized' });
-    const proformas = await Proforma.find({ user: req.user._id }).select('-items -notes -terms -shippingAddress').lean().sort({ createdAt: -1 });
-    res.json(proformas);
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const skip = (page - 1) * limit;
+
+    let query = { user: req.user._id };
+
+    if (search) {
+      const Client = require('../models/Client');
+      const matchedClients = await Client.find({
+        user: req.user._id,
+        name: { $regex: search, $options: 'i' }
+      }).select('_id').lean();
+
+      query.$or = [
+        { proformaNo: { $regex: search, $options: 'i' } },
+        { client: { $in: matchedClients.map(c => c._id) } }
+      ];
+    }
+
+    const total = await Proforma.countDocuments(query);
+    const proformas = await Proforma.find(query)
+      .populate('client', 'name email phone gstin address placeOfSupply')
+      .select('-items -notes -terms -shippingAddress')
+      .lean()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      data: proformas,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 

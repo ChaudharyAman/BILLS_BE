@@ -4,14 +4,38 @@ const Counter = require('../models/Counter');
 // Get all items
 exports.getItems = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) {
-        return res.status(401).json({ message: 'Not authorized' });
+    if (!req.user || !req.user._id) { return res.status(401).json({ message: 'Not authorized' }); }
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const skip = (page - 1) * limit;
+
+    let query = { user: req.user._id };
+
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { sku: { $regex: search, $options: 'i' } },
+        { hsnCode: { $regex: search, $options: 'i' } }
+      ];
     }
-    const items = await Item.find({ user: req.user._id }).lean().sort({ createdAt: -1 });
-    res.json(items);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+
+    const total = await Item.countDocuments(query);
+    const items = await Item.find(query)
+      .lean()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      data: items,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error) { res.status(500).json({ message: error.message }); }
 };
 
 // Create a new item

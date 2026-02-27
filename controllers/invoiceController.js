@@ -82,8 +82,47 @@ exports.getInvoices = async (req, res) => {
     if (!req.user || !req.user._id) {
       return res.status(401).json({ message: 'Not authorized' });
     }
-    const invoices = await Invoice.find({ user: req.user._id }).select('-items -notes -terms -shippingAddress').lean().sort({ createdAt: -1 });
-    res.json(invoices);
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const skip = (page - 1) * limit;
+
+    let query = { user: req.user._id };
+
+    if (search) {
+      // Find clients that match the search term
+      const Client = require('../models/Client'); // Lazy load if needed
+      const matchedClients = await Client.find({
+        user: req.user._id,
+        name: { $regex: search, $options: 'i' }
+      }).select('_id').lean();
+
+      const clientIds = matchedClients.map(c => c._id);
+
+      // Search either by invoice number OR matching clients
+      query.$or = [
+        { invoiceNo: { $regex: search, $options: 'i' } },
+        { client: { $in: clientIds } }
+      ];
+    }
+
+    const total = await Invoice.countDocuments(query);
+    const invoices = await Invoice.find(query)
+      .populate('client', 'name email phone gstin address placeOfSupply')
+      .select('-items -notes -terms -shippingAddress')
+      .lean()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      data: invoices,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

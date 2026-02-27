@@ -6,8 +6,44 @@ const Expense = require('../models/Expense');
 // @access  Private
 exports.getExpenses = async (req, res) => {
   try {
-    const expenses = await Expense.find({ user: req.user._id }).select('-items -terms -privateNotes').lean().sort({ date: -1, createdAt: -1 });
-    res.json(expenses);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const skip = (page - 1) * limit;
+
+    let query = { user: req.user._id };
+
+    if (search) {
+      const Client = require('../models/Client');
+      const matchedClients = await Client.find({
+        user: req.user._id,
+        name: { $regex: search, $options: 'i' }
+      }).select('_id').lean();
+
+      query.$or = [
+        { expenseNumber: { $regex: search, $options: 'i' } },
+        { vendor: { $in: matchedClients.map(c => c._id) } },
+        { client: { $in: matchedClients.map(c => c._id) } }
+      ];
+    }
+
+    const total = await Expense.countDocuments(query);
+    const expenses = await Expense.find(query)
+      .populate('vendor', 'name email phone')
+      .populate('client', 'name email phone')
+      .select('-items -terms -privateNotes')
+      .lean()
+      .sort({ date: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      data: expenses,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
   } catch (error) {
     res.status(500).json({ message: 'Server Error fetching expenses' });
   }
