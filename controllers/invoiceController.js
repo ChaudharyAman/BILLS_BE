@@ -3,6 +3,8 @@ const Client = require('../models/Client');
 const Item = require('../models/Item');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
+const mongoose = require('mongoose');
+const escapeRegex = require('../utils/escapeRegex');
 
 const User = require('../models/User');
 
@@ -91,25 +93,25 @@ exports.getInvoices = async (req, res) => {
     let query = { user: req.user._id };
 
     if (search) {
+      const safeSearch = escapeRegex(search);
       // Find clients that match the search term
       const Client = require('../models/Client'); // Lazy load if needed
       const matchedClients = await Client.find({
         user: req.user._id,
-        name: { $regex: search, $options: 'i' }
+        name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
       const clientIds = matchedClients.map(c => c._id);
 
       // Search either by invoice number OR matching clients
       query.$or = [
-        { invoiceNo: { $regex: search, $options: 'i' } },
-        { client: { $in: clientIds } }
+        { invoiceNo: { $regex: safeSearch, $options: 'i' } },
+        { 'client.clientRef': { $in: clientIds } }
       ];
     }
 
     const total = await Invoice.countDocuments(query);
     const invoices = await Invoice.find(query)
-      .populate('client', 'name email phone gstin address placeOfSupply')
       .select('-items -notes -terms -shippingAddress')
       .lean()
       .sort({ createdAt: -1 })
@@ -181,7 +183,7 @@ exports.createInvoice = async (req, res) => {
         createdAt: { $gte: startOfMonth }
       });
       if (invoiceCount >= 15) {
-        return res.status(403).json({ message: 'Free plan limit reached. You can only create 15 Invoices/Proformas per month.' });
+        return res.status(403).json({ message: 'Free plan limit reached. You can only create 15 Invoices per month. Please upgrade to Pro.' });
       }
     }
     // -------------------------------
@@ -328,37 +330,31 @@ exports.updateInvoice = async (req, res) => {
     if (plan === 'free') {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      
-      // Count documents edited this month (where updatedAt exists and is >= startOfMonth, 
-      // and ideally where it's not just a brand new document, although simple >= startOfM works 
-      // since creating counts against the 15 creation quota, and editing against the 5 edit quota)
-      // Actually, to be precise, an "edit" is when a document is modified after creation.
-      // Since Mongoose timestamps might set both to the same time on creation, 
-      // we check if the document was updated after its creation time.
-      const editedInvoicesCount = await Invoice.countDocuments({
+      const conditions = {
         user: req.user._id,
         updatedAt: { $gte: startOfMonth },
         $expr: { $gt: ["$updatedAt", "$createdAt"] } 
-      });
+      };
+      
+      const editedInvoicesCount = await Invoice.countDocuments(conditions);
 
-      const { Quote } = require('../models/Quote'); // We need to check quotes too for the global limit
-      let editedQuotesCount = 0;
+      let otherEditsCount = 0;
       try {
         const QuoteModel = require('../models/Quote');
-        editedQuotesCount = await QuoteModel.countDocuments({
-          user: req.user._id,
-          updatedAt: { $gte: startOfMonth },
-          $expr: { $gt: ["$updatedAt", "$createdAt"] }
-        });
+        const ProformaModel = require('../models/Proforma');
+        const POModel = require('../models/PurchaseOrder');
+        const [qt, prf, po] = await Promise.all([
+          QuoteModel.countDocuments(conditions),
+          ProformaModel.countDocuments(conditions),
+          POModel.countDocuments(conditions)
+        ]);
+        otherEditsCount = qt + prf + po;
       } catch (e) {
          // ignore if model not loaded yet
       }
       
-      const totalEditsThisMonth = editedInvoicesCount + editedQuotesCount;
+      const totalEditsThisMonth = editedInvoicesCount + otherEditsCount;
 
-      // If they have 5 or more, ONLY allow the edit IF they are editing a document 
-      // that is ALREADY part of that 5 (i.e., this document was already edited this month).
-      // Otherwise, they are trying to edit a 6th distinct document.
       const isAlreadyEditedThisMonth = invoice.updatedAt && invoice.updatedAt >= startOfMonth && invoice.updatedAt > invoice.createdAt;
 
       if (totalEditsThisMonth >= 5 && !isAlreadyEditedThisMonth) {
@@ -500,7 +496,7 @@ exports.bulkCreateInvoices = async (req, res) => {
         createdAt: { $gte: startOfMonth }
       });
       if (invoiceCount + invoices.length > 15) {
-        return res.status(403).json({ message: `Free plan limit reached. You can only create 15 Invoices/Proformas per month. You currently have ${invoiceCount} and are trying to add ${invoices.length}.` });
+        return res.status(403).json({ message: `Free plan limit reached. You can only create 15 Invoices per month. You currently have ${invoiceCount} and are trying to add ${invoices.length}.` });
       }
     }
     // -------------------------------
@@ -543,9 +539,21 @@ exports.bulkCreateInvoices = async (req, res) => {
       const balanceDue = grandTotal - advancePaid;
 
       const invoice = new Invoice({
-        ...invData,
         invoiceNo,
         invoiceType: invData.invoiceType || 'Tax Invoice',
+        date: invData.date || new Date(),
+        dueDate: invData.dueDate || new Date(),
+        paymentMode: invData.paymentMode || 'Cash',
+        paymentTerms: invData.paymentTerms || '',
+        shippingAddress: invData.shippingAddress,
+        transport: invData.transport,
+        bankDetails: invData.bankDetails,
+        placeOfSupply: invData.placeOfSupply || clientState,
+        reverseCharge: !!invData.reverseCharge,
+        customChargeLabel: invData.customChargeLabel || 'Custom Amount',
+        notes: invData.notes || '',
+        terms: invData.terms || '',
+        exciseDuty: invData.exciseDuty || {},
         clientRef: client._id,
         client: {
            clientRef: client._id,
@@ -732,7 +740,7 @@ exports.getAccountStatement = async (req, res) => {
 
     const matchStage = { 
       user: req.user._id,
-      "client.clientRef": new require('mongoose').Types.ObjectId(clientId)
+      "client.clientRef": new mongoose.Types.ObjectId(clientId)
     };
 
     if (startDate || endDate) {

@@ -1,5 +1,6 @@
 const Item = require('../models/Item');
 const Counter = require('../models/Counter');
+const escapeRegex = require('../utils/escapeRegex');
 
 // Get all items
 exports.getItems = async (req, res) => {
@@ -14,10 +15,11 @@ exports.getItems = async (req, res) => {
     let query = { user: req.user._id };
 
     if (search) {
+      const safeSearch = escapeRegex(search);
       query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { sku: { $regex: search, $options: 'i' } },
-        { hsnCode: { $regex: search, $options: 'i' } }
+        { name: { $regex: safeSearch, $options: 'i' } },
+        { sku: { $regex: safeSearch, $options: 'i' } },
+        { hsnCode: { $regex: safeSearch, $options: 'i' } }
       ];
     }
 
@@ -40,7 +42,7 @@ exports.getItems = async (req, res) => {
 
 // Create a new item
 exports.createItem = async (req, res) => {
-  let { sku, name, type } = req.body;
+  let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess } = req.body;
 
   if (!sku || sku.trim() === '') {
     const counter = await Counter.findOneAndUpdate(
@@ -54,8 +56,7 @@ exports.createItem = async (req, res) => {
   }
 
   const item = new Item({
-    ...req.body,
-    sku,
+    sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess,
     user: req.user._id
   });
 
@@ -136,7 +137,7 @@ exports.getItemById = async (req, res) => {
 // Update item
 exports.updateItem = async (req, res) => {
   try {
-    let { sku, name, type } = req.body;
+    let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess } = req.body;
 
     if (!sku || sku.trim() === '') {
       const counter = await Counter.findOneAndUpdate(
@@ -147,16 +148,19 @@ exports.updateItem = async (req, res) => {
       const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
       const prefix = 'TQ';
       sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
-      req.body.sku = sku;
     }
 
-    // Prevent overwriting the user field
-    delete req.body.user;
+    const updateData = {
+      sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess
+    };
+
+    // Remove undefined fields to not overwrite existing values with nulls if omitted in request
+    Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
 
     const item = await Item.findOneAndUpdate(
       { _id: req.params.id, user: req.user._id },
-      req.body,
-      { new: true, runValidators: true }
+      updateData,
+      { returnDocument: 'after', runValidators: true }
     );
     if (!item) {
       return res.status(404).json({ message: 'Item not found' });

@@ -3,6 +3,7 @@ const Invoice = require('../models/Invoice');
 const Client = require('../models/Client');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
+const escapeRegex = require('../utils/escapeRegex');
 
 function processItems(items, isIntraState) {
   let subTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0, taxTotal = 0;
@@ -49,21 +50,21 @@ exports.getProformas = async (req, res) => {
     let query = { user: req.user._id };
 
     if (search) {
+      const safeSearch = escapeRegex(search);
       const Client = require('../models/Client');
       const matchedClients = await Client.find({
         user: req.user._id,
-        name: { $regex: search, $options: 'i' }
+        name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
       query.$or = [
-        { proformaNo: { $regex: search, $options: 'i' } },
-        { client: { $in: matchedClients.map(c => c._id) } }
+        { proformaNo: { $regex: safeSearch, $options: 'i' } },
+        { 'client.clientRef': { $in: matchedClients.map(c => c._id) } }
       ];
     }
 
     const total = await Proforma.countDocuments(query);
     const proformas = await Proforma.find(query)
-      .populate('client', 'name email phone gstin address placeOfSupply')
       .select('-items -notes -terms -shippingAddress')
       .lean()
       .sort({ createdAt: -1 })
@@ -99,6 +100,27 @@ exports.createProforma = async (req, res) => {
       { id: 'proformaNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
     const proformaNo = `PRF-${counter.seq.toString().padStart(3, '0')}`;
+
+    // --- Subscription Plan Check ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    if (plan === 'free') {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const proformaCount = await Proforma.countDocuments({
+        user: req.user._id,
+        createdAt: { $gte: startOfMonth }
+      });
+      let quoteCount = 0;
+      try {
+        const QuoteModel = require('../models/Quote');
+        quoteCount = await QuoteModel.countDocuments({ user: req.user._id, createdAt: { $gte: startOfMonth } });
+      } catch(e) {}
+      if (quoteCount + proformaCount >= 15) {
+        return res.status(403).json({ message: 'Free plan limit reached. You can only create 15 Quotes & Proformas per month. Please upgrade to Pro.' });
+      }
+    }
+    // -------------------------------
 
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
@@ -163,6 +185,42 @@ exports.updateProforma = async (req, res) => {
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
     if (proforma.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
 
+    // --- Subscription Plan Check for Edits ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    if (plan === 'free') {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const conditions = {
+        user: req.user._id,
+        updatedAt: { $gte: startOfMonth },
+        $expr: { $gt: ["$updatedAt", "$createdAt"] } 
+      };
+      
+      const editedProformasCount = await Proforma.countDocuments(conditions);
+
+      let otherEditsCount = 0;
+      try {
+        const InvoiceModel = require('../models/Invoice');
+        const QuoteModel = require('../models/Quote');
+        const POModel = require('../models/PurchaseOrder');
+        const [inv, qt, po] = await Promise.all([
+          InvoiceModel.countDocuments(conditions),
+          QuoteModel.countDocuments(conditions),
+          POModel.countDocuments(conditions)
+        ]);
+        otherEditsCount = inv + qt + po;
+      } catch (e) {}
+      
+      const totalEditsThisMonth = editedProformasCount + otherEditsCount;
+      const isAlreadyEditedThisMonth = proforma.updatedAt && proforma.updatedAt >= startOfMonth && proforma.updatedAt > proforma.createdAt;
+
+      if (totalEditsThisMonth >= 5 && !isAlreadyEditedThisMonth) {
+        return res.status(403).json({ message: 'You have reached the free plan limit of 5 document edits per month. Please upgrade to Pro.' });
+      }
+    }
+    // -----------------------------------------
+
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
     if (client.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
@@ -220,6 +278,14 @@ exports.deleteProforma = async (req, res) => {
     const proforma = await Proforma.findById(req.params.id);
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
     if (proforma.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    
+    // --- Subscription Check ---
+    const userObj = await User.findById(req.user._id);
+    if (userObj?.subscription?.plan === 'free') {
+       return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
+    }
+    // --------------------------
+
     await proforma.deleteOne();
     res.json({ message: 'Proforma deleted' });
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -314,6 +380,30 @@ exports.bulkCreateProformas = async (req, res) => {
     if (!Array.isArray(proformas) || proformas.length === 0) {
       return res.status(400).json({ message: 'No proformas provided for bulk creation.' });
     }
+
+    // --- Subscription Plan Check ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    if (plan === 'free') {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const proformaCount = await Proforma.countDocuments({
+        user: req.user._id,
+        createdAt: { $gte: startOfMonth }
+      });
+      let quoteCount = 0;
+      try {
+        const QuoteModel = require('../models/Quote');
+        quoteCount = await QuoteModel.countDocuments({ user: req.user._id, createdAt: { $gte: startOfMonth } });
+      } catch(e) {}
+      
+      const combined = proformaCount + quoteCount;
+      if (combined + proformas.length > 15) {
+        return res.status(403).json({ message: `Free plan limit reached. You can only create 15 Quotes & Proformas per month. You currently have ${combined} and are trying to add ${proformas.length}.` });
+      }
+    }
+    // -------------------------------
+
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
 
@@ -351,9 +441,19 @@ exports.bulkCreateProformas = async (req, res) => {
       const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
 
       const proforma = new Proforma({
-        ...pData,
         proformaNo,
         invoiceType: pData.invoiceType || 'Tax Invoice',
+        date: pData.date || new Date(),
+        validUntil: pData.validUntil || new Date(),
+        paymentMode: pData.paymentMode || 'Cash',
+        paymentTerms: pData.paymentTerms || '',
+        shippingAddress: pData.shippingAddress,
+        transport: pData.transport,
+        placeOfSupply: pData.placeOfSupply || clientState,
+        reverseCharge: !!pData.reverseCharge,
+        customChargeLabel: pData.customChargeLabel || 'Custom Amount',
+        notes: pData.notes || '',
+        terms: pData.terms || '',
         clientRef: client._id,
         client: {
            clientRef: client._id,

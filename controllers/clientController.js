@@ -1,4 +1,5 @@
 const Client = require('../models/Client');
+const escapeRegex = require('../utils/escapeRegex');
 
 // Get all clients
 exports.getClients = async (req, res) => {
@@ -15,7 +16,10 @@ exports.getClients = async (req, res) => {
       $or: [{ isClient: true }, { isClient: { $exists: false } }] 
     };
 
-    if (search) { query.name = { $regex: search, $options: 'i' }; }
+    if (search) { 
+      const safeSearch = escapeRegex(search);
+      query.name = { $regex: safeSearch, $options: 'i' }; 
+    }
 
     const total = await Client.countDocuments(query);
     const clients = await Client.find(query)
@@ -45,7 +49,10 @@ exports.getVendors = async (req, res) => {
     const skip = (page - 1) * limit;
 
     let query = { user: req.user._id, isVendor: true };
-    if (search) { query.name = { $regex: search, $options: 'i' }; }
+    if (search) { 
+      const safeSearch = escapeRegex(search);
+      query.name = { $regex: safeSearch, $options: 'i' }; 
+    }
 
     const total = await Client.countDocuments(query);
     const vendors = await Client.find(query)
@@ -67,8 +74,14 @@ exports.getVendors = async (req, res) => {
 // Create a new client
 exports.createClient = async (req, res) => {
   try {
+    const { 
+      name, email, phone, billingAddress, shippingAddress, 
+      gstin, pan, terms, isClient, isVendor, notes, placeOfSupply 
+    } = req.body;
+
     const client = new Client({
-      ...req.body,
+      name, email, phone, billingAddress, shippingAddress, 
+      gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
       user: req.user._id
     });
 
@@ -135,10 +148,23 @@ exports.getClientById = async (req, res) => {
 // Update client
 exports.updateClient = async (req, res) => {
   try {
+    const { 
+      name, email, phone, billingAddress, shippingAddress, 
+      gstin, pan, terms, isClient, isVendor, notes, placeOfSupply 
+    } = req.body;
+
+    const updateData = {
+      name, email, phone, billingAddress, shippingAddress, 
+      gstin, pan, terms, isClient, isVendor, notes, placeOfSupply
+    };
+
+    // Remove undefined fields so they don't overwrite existing data with nulls if not provided in the request
+    Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
+
     const client = await Client.findOneAndUpdate(
       { _id: req.params.id, user: req.user._id },
-      req.body,
-      { new: true, runValidators: true }
+      updateData,
+      { returnDocument: 'after', runValidators: true }
     );
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });

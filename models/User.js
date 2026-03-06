@@ -49,7 +49,16 @@ const userSchema = new mongoose.Schema({
       type: String, // 'monthly' or 'yearly'
       enum: ['monthly', 'yearly']
     }
-  }
+  },
+  paymentHistory: [{
+    date: { type: Date, default: Date.now },
+    endDate: { type: Date },
+    amount: { type: Number, required: true },
+    plan: { type: String, required: true },
+    billingCycle: { type: String, required: true },
+    razorpayOrderId: { type: String, required: true },
+    razorpayPaymentId: { type: String, required: true }
+  }]
 });
 
 // Hash password before saving

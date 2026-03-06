@@ -3,6 +3,7 @@ const Invoice = require('../models/Invoice');
 const VendorModel = require('../models/Client');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
+const escapeRegex = require('../utils/escapeRegex');
 
 const User = require('../models/User');
 
@@ -53,21 +54,21 @@ exports.getPurchaseOrders = async (req, res) => {
     let query = { user: req.user._id };
 
     if (search) {
+      const safeSearch = escapeRegex(search);
       const Client = require('../models/Client');
       const matchedClients = await Client.find({
         user: req.user._id,
-        name: { $regex: search, $options: 'i' }
+        name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
       query.$or = [
-        { poNumber: { $regex: search, $options: 'i' } },
-        { vendor: { $in: matchedClients.map(c => c._id) } }
+        { poNumber: { $regex: safeSearch, $options: 'i' } },
+        { 'vendor.vendorRef': { $in: matchedClients.map(c => c._id) } }
       ];
     }
 
     const total = await PurchaseOrder.countDocuments(query);
     const purchaseOrders = await PurchaseOrder.find(query)
-      .populate('vendor', 'name email phone gstin address placeOfSupply')
       .select('-items -notes -terms -shippingAddress')
       .lean()
       .sort({ createdAt: -1 })
@@ -194,24 +195,28 @@ exports.updatePurchaseOrder = async (req, res) => {
     if (plan === 'free') {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      
-      const editedPurchaseOrdersCount = await PurchaseOrder.countDocuments({
+      const conditions = {
         user: req.user._id,
         updatedAt: { $gte: startOfMonth },
         $expr: { $gt: ["$updatedAt", "$createdAt"] } 
-      });
+      };
+      
+      const editedPurchaseOrdersCount = await PurchaseOrder.countDocuments(conditions);
 
-      let editedInvoicesCount = 0;
+      let otherEditsCount = 0;
       try {
         const InvoiceModel = require('../models/Invoice');
-        editedInvoicesCount = await InvoiceModel.countDocuments({
-          user: req.user._id,
-          updatedAt: { $gte: startOfMonth },
-          $expr: { $gt: ["$updatedAt", "$createdAt"] }
-        });
+        const ProformaModel = require('../models/Proforma');
+        const QuoteModel = require('../models/Quote');
+        const [inv, prf, qt] = await Promise.all([
+          InvoiceModel.countDocuments(conditions),
+          ProformaModel.countDocuments(conditions),
+          QuoteModel.countDocuments(conditions)
+        ]);
+        otherEditsCount = inv + prf + qt;
       } catch (e) {}
       
-      const totalEditsThisMonth = editedInvoicesCount + editedPurchaseOrdersCount;
+      const totalEditsThisMonth = editedPurchaseOrdersCount + otherEditsCount;
 
       const isAlreadyEditedThisMonth = purchaseOrder.updatedAt && purchaseOrder.updatedAt >= startOfMonth && purchaseOrder.updatedAt > purchaseOrder.createdAt;
 
@@ -439,9 +444,20 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
       const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
 
       const purchaseOrder = new PurchaseOrder({
-        ...qData,
         poNumber,
         invoiceType: qData.invoiceType || 'Tax Invoice',
+        date: qData.date || new Date(),
+        validUntil: qData.validUntil || new Date(),
+        paymentMode: qData.paymentMode || 'Cash',
+        paymentTerms: qData.paymentTerms || '',
+        shippingAddress: qData.shippingAddress,
+        transport: qData.transport,
+        placeOfSupply: qData.placeOfSupply || vendorState,
+        reverseCharge: !!qData.reverseCharge,
+        customChargeLabel: qData.customChargeLabel || 'Custom Amount',
+        notes: qData.notes || '',
+        privateNotes: qData.privateNotes || '',
+        terms: qData.terms || '',
         vendorRef: vendor._id,
         vendor: {
            vendorRef: vendor._id,

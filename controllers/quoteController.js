@@ -3,6 +3,7 @@ const Invoice = require('../models/Invoice');
 const Client = require('../models/Client');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
+const escapeRegex = require('../utils/escapeRegex');
 
 const User = require('../models/User');
 
@@ -53,21 +54,21 @@ exports.getQuotes = async (req, res) => {
     let query = { user: req.user._id };
 
     if (search) {
+      const safeSearch = escapeRegex(search);
       const Client = require('../models/Client');
       const matchedClients = await Client.find({
         user: req.user._id,
-        name: { $regex: search, $options: 'i' }
+        name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
       query.$or = [
-        { quoteNo: { $regex: search, $options: 'i' } },
-        { client: { $in: matchedClients.map(c => c._id) } }
+        { quoteNo: { $regex: safeSearch, $options: 'i' } },
+        { 'client.clientRef': { $in: matchedClients.map(c => c._id) } }
       ];
     }
 
     const total = await Quote.countDocuments(query);
     const quotes = await Quote.find(query)
-      .populate('client', 'name email phone gstin address placeOfSupply')
       .select('-items -notes -terms -shippingAddress')
       .lean()
       .sort({ createdAt: -1 })
@@ -112,8 +113,13 @@ exports.createQuote = async (req, res) => {
         user: req.user._id,
         createdAt: { $gte: startOfMonth }
       });
-      if (quoteCount >= 15) {
-        return res.status(403).json({ message: 'Free plan limit reached. You can only create 15 Quotes per month.' });
+      let proformaCount = 0;
+      try {
+        const ProformaModel = require('../models/Proforma');
+        proformaCount = await ProformaModel.countDocuments({ user: req.user._id, createdAt: { $gte: startOfMonth } });
+      } catch(e) {}
+      if (quoteCount + proformaCount >= 15) {
+        return res.status(403).json({ message: 'Free plan limit reached. You can only create 15 Quotes & Proformas per month.' });
       }
     }
     // -------------------------------
@@ -194,24 +200,28 @@ exports.updateQuote = async (req, res) => {
     if (plan === 'free') {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      
-      const editedQuotesCount = await Quote.countDocuments({
+      const conditions = {
         user: req.user._id,
         updatedAt: { $gte: startOfMonth },
         $expr: { $gt: ["$updatedAt", "$createdAt"] } 
-      });
+      };
+      
+      const editedQuotesCount = await Quote.countDocuments(conditions);
 
-      let editedInvoicesCount = 0;
+      let otherEditsCount = 0;
       try {
         const InvoiceModel = require('../models/Invoice');
-        editedInvoicesCount = await InvoiceModel.countDocuments({
-          user: req.user._id,
-          updatedAt: { $gte: startOfMonth },
-          $expr: { $gt: ["$updatedAt", "$createdAt"] }
-        });
+        const ProformaModel = require('../models/Proforma');
+        const POModel = require('../models/PurchaseOrder');
+        const [inv, prf, po] = await Promise.all([
+          InvoiceModel.countDocuments(conditions),
+          ProformaModel.countDocuments(conditions),
+          POModel.countDocuments(conditions)
+        ]);
+        otherEditsCount = inv + prf + po;
       } catch (e) {}
       
-      const totalEditsThisMonth = editedInvoicesCount + editedQuotesCount;
+      const totalEditsThisMonth = editedQuotesCount + otherEditsCount;
 
       const isAlreadyEditedThisMonth = quote.updatedAt && quote.updatedAt >= startOfMonth && quote.updatedAt > quote.createdAt;
 
@@ -394,8 +404,15 @@ exports.bulkCreateQuotes = async (req, res) => {
         user: req.user._id,
         createdAt: { $gte: startOfMonth }
       });
-      if (quoteCount + quotes.length > 15) {
-        return res.status(403).json({ message: `Free plan limit reached. You can only create 15 Quotes per month. You currently have ${quoteCount} and are trying to add ${quotes.length}.` });
+      let proformaCount = 0;
+      try {
+        const ProformaModel = require('../models/Proforma');
+        proformaCount = await ProformaModel.countDocuments({ user: req.user._id, createdAt: { $gte: startOfMonth } });
+      } catch(e) {}
+      
+      const combined = quoteCount + proformaCount;
+      if (combined + quotes.length > 15) {
+        return res.status(403).json({ message: `Free plan limit reached. You can only create 15 Quotes & Proformas per month. You currently have ${combined} and are trying to add ${quotes.length}.` });
       }
     }
     // -------------------------------
@@ -437,9 +454,19 @@ exports.bulkCreateQuotes = async (req, res) => {
       const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
 
       const quote = new Quote({
-        ...qData,
         quoteNo,
         invoiceType: qData.invoiceType || 'Tax Invoice',
+        date: qData.date || new Date(),
+        validUntil: qData.validUntil || new Date(),
+        paymentMode: qData.paymentMode || 'Cash',
+        paymentTerms: qData.paymentTerms || '',
+        shippingAddress: qData.shippingAddress,
+        transport: qData.transport,
+        placeOfSupply: qData.placeOfSupply || clientState,
+        reverseCharge: !!qData.reverseCharge,
+        customChargeLabel: qData.customChargeLabel || 'Custom Amount',
+        notes: qData.notes || '',
+        terms: qData.terms || '',
         clientRef: client._id,
         client: {
            clientRef: client._id,

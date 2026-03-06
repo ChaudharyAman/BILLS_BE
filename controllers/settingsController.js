@@ -65,7 +65,23 @@ exports.updateSettings = async (req, res) => {
         }
     }
 
-    const { username, loginEmail, user, ...settingsUpdate } = req.body; // Exclude user from settingsUpdate
+    const { 
+      username, loginEmail, user,
+      companyName, contactName, website, companyEmail, companyPhone, gstin, pan,
+      address, defaultTerms, defaultNotes, bankDetails, invoicePrefix, 
+      proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
+      defaultCurrency, timezone, dateFormat
+    } = req.body;
+
+    const settingsUpdate = {
+      companyName, contactName, website, companyEmail, companyPhone, gstin, pan,
+      address, defaultTerms, defaultNotes, bankDetails, invoicePrefix, 
+      proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
+      defaultCurrency, timezone, dateFormat
+    };
+
+    // Remove undefined fields
+    Object.keys(settingsUpdate).forEach(key => settingsUpdate[key] === undefined && delete settingsUpdate[key]);
 
     // Update User model if username/loginEmail provided
     if (username || loginEmail) {

@@ -104,6 +104,22 @@ exports.verifyPayment = async (req, res) => {
         billingCycle: billingCycle
       };
 
+      // Calculate amount paid for the history record
+      let amountPaid = 0;
+      if (plan === 'pro') {
+        if (billingCycle === 'monthly') amountPaid = 999;
+        else if (billingCycle === 'yearly') amountPaid = 9588;
+      }
+
+      user.paymentHistory.push({
+        amount: amountPaid,
+        plan: plan,
+        billingCycle: billingCycle,
+        razorpayOrderId: razorpay_order_id,
+        razorpayPaymentId: razorpay_payment_id,
+        endDate: endDate
+      });
+
       await user.save();
 
       return res.status(200).json({ message: 'Payment verified successfully', user });
@@ -132,6 +148,52 @@ exports.getSubscriptionStatus = async (req, res) => {
   }
 };
 
+// @desc    Get subscription payment history
+// @route   GET /api/subscriptions/history
+// @access  Private
+exports.getPaymentHistory = async (req, res) => {
+  try {
+     const user = await User.findById(req.user._id).select('paymentHistory').lean();
+     if (!user) {
+         return res.status(404).json({ message: 'User not found' });
+     }
+     
+     // Sort history descending by date natively in JS since it's an embedded array
+     let history = user.paymentHistory || [];
+     
+     // BACKWARDS COMPATIBILITY: If history is empty, but this user is an active Pro user, 
+     // it means they purchased Pro before the paymentHistory tracking feature was released.
+     // Let's reconstruct a single historical item for them to view using their root subscription data.
+     if (history.length === 0) {
+        const fullUser = await User.findById(req.user._id).select('subscription').lean();
+        if (fullUser && fullUser.subscription && fullUser.subscription.plan === 'pro' && fullUser.subscription.razorpayPaymentId) {
+             const sub = fullUser.subscription;
+             let amountPaid = 0;
+             if (sub.billingCycle === 'monthly') amountPaid = 999;
+             else if (sub.billingCycle === 'yearly') amountPaid = 9588;
+
+             history = [{
+                 _id: fullUser._id, // Give it a temporary ID for React keys
+                 date: sub.startDate || new Date(),
+                 endDate: sub.endDate,
+                 amount: amountPaid,
+                 plan: sub.plan,
+                 billingCycle: sub.billingCycle,
+                 razorpayOrderId: sub.razorpayOrderId,
+                 razorpayPaymentId: sub.razorpayPaymentId
+             }];
+        }
+     }
+
+     history.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+     res.status(200).json(history);
+  } catch (error) {
+     console.error('Fetch Payment History Error:', error);
+     res.status(500).json({ message: 'Server error while fetching payment history', error: error.message });
+  }
+};
+
 // @desc    Get quota usage stats
 // @route   GET /api/subscriptions/usage
 // @access  Private
@@ -140,6 +202,7 @@ exports.getUsageStats = async (req, res) => {
     const Invoice = require('../models/Invoice');
     const Quote = require('../models/Quote');
     const PurchaseOrder = require('../models/PurchaseOrder');
+    const Proforma = require('../models/Proforma');
 
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -177,11 +240,22 @@ exports.getUsageStats = async (req, res) => {
       $expr: { $gt: ["$updatedAt", "$createdAt"] }
     });
 
+    const proformasCount = await Proforma.countDocuments({
+      user: req.user._id,
+      createdAt: { $gte: startOfMonth }
+    });
+
+    const editedProformasCount = await Proforma.countDocuments({
+      user: req.user._id,
+      updatedAt: { $gte: startOfMonth },
+      $expr: { $gt: ["$updatedAt", "$createdAt"] }
+    });
+
     res.json({
       invoices: { used: invoicesCount, limit: 15 },
-      quotes: { used: quotesCount, limit: 15 }, // Quotes model includes Proformas
+      quotes: { used: quotesCount + proformasCount, limit: 15 }, // Quotes model includes Proformas per new business logic
       purchaseOrders: { used: purchaseOrdersCount, limit: 15 },
-      edits: { used: editedInvoicesCount + editedQuotesCount + editedPurchaseOrdersCount, limit: 5 }
+      edits: { used: editedInvoicesCount + editedQuotesCount + editedPurchaseOrdersCount + editedProformasCount, limit: 5 }
     });
   } catch (error) {
     console.error('Error fetching usage stats:', error);

@@ -22,15 +22,13 @@ exports.getExpenses = async (req, res) => {
 
       query.$or = [
         { expenseNumber: { $regex: search, $options: 'i' } },
-        { vendor: { $in: matchedClients.map(c => c._id) } },
-        { client: { $in: matchedClients.map(c => c._id) } }
+        { 'vendor.vendorRef': { $in: matchedClients.map(c => c._id) } },
+        { 'client.clientRef': { $in: matchedClients.map(c => c._id) } }
       ];
     }
 
     const total = await Expense.countDocuments(query);
     const expenses = await Expense.find(query)
-      .populate('vendor', 'name email phone')
-      .populate('client', 'name email phone')
       .select('-items -terms -privateNotes')
       .lean()
       .sort({ date: -1, createdAt: -1 })
@@ -130,10 +128,45 @@ exports.updateExpense = async (req, res) => {
       return res.status(404).json({ message: 'Expense not found' });
     }
 
+    const {
+      expenseNumber,
+      date,
+      vendor,
+      client,
+      paymentMethod,
+      reverseCharge,
+      items,
+      subTotal,
+      taxTotal,
+      grandTotal,
+      terms,
+      privateNotes,
+      status
+    } = req.body;
+
+    const updateData = {
+      expenseNumber,
+      date,
+      vendor,
+      client,
+      paymentMethod,
+      reverseCharge,
+      items,
+      subTotal,
+      taxTotal,
+      grandTotal,
+      terms,
+      privateNotes,
+      status
+    };
+
+    // Remove undefined fields so we don't overwrite with nulls
+    Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
+
     expense = await Expense.findByIdAndUpdate(
       req.params.id,
-      { $set: req.body },
-      { new: true, runValidators: true }
+      { $set: updateData },
+      { returnDocument: 'after', runValidators: true }
     );
 
     res.json(expense);

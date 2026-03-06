@@ -22,6 +22,7 @@ const SettingsSchema = new mongoose.Schema({
   email: String,
   phone: String,
   website: String,
+  contactName: String,
   logoUrl: String, // Base64 or URL
   signatureUrl: String, // Base64 or URL
 }, { timestamps: true });
