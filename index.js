@@ -27,16 +27,16 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(cookieParser());
 
 // Rate Limiting
-const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
-    standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-    legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-    message: 'Too many requests from this IP, please try again after 15 minutes'
-});
+// const apiLimiter = rateLimit({
+//     windowMs: 15 * 60 * 1000, // 15 minutes
+//     max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
+//     standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+//     legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+//     message: 'Too many requests from this IP, please try again after 15 minutes'
+// });
 
 // Apply the rate limiting middleware to all API calls
-app.use('/api', apiLimiter);
+// app.use('/api', apiLimiter);
 
 // Database Connection
 connectDB();
