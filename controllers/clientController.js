@@ -76,12 +76,18 @@ exports.createClient = async (req, res) => {
   try {
     const { 
       name, email, phone, billingAddress, shippingAddress, 
-      gstin, pan, terms, isClient, isVendor, notes, placeOfSupply 
+      gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
+      contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
+      useForDispatch, vendorCode, clientWiseItemPrice,
+      facebook, lst, cst, dlNo, openingBalance
     } = req.body;
 
     const client = new Client({
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
+      contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
+      useForDispatch, vendorCode, clientWiseItemPrice,
+      facebook, lst, cst, dlNo, openingBalance,
       user: req.user._id
     });
 
@@ -161,12 +167,18 @@ exports.updateClient = async (req, res) => {
   try {
     const { 
       name, email, phone, billingAddress, shippingAddress, 
-      gstin, pan, terms, isClient, isVendor, notes, placeOfSupply 
+      gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
+      contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
+      useForDispatch, vendorCode, clientWiseItemPrice,
+      facebook, lst, cst, dlNo, openingBalance
     } = req.body;
 
     const updateData = {
       name, email, phone, billingAddress, shippingAddress, 
-      gstin, pan, terms, isClient, isVendor, notes, placeOfSupply
+      gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
+      contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
+      useForDispatch, vendorCode, clientWiseItemPrice,
+      facebook, lst, cst, dlNo, openingBalance
     };
 
     // Remove undefined fields so they don't overwrite existing data with nulls if not provided in the request
