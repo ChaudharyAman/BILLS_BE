@@ -106,7 +106,18 @@ exports.bulkCreateClients = async (req, res) => {
     for (const [index, clientData] of clients.entries()) {
       try {
         const client = new Client({
-          ...clientData,
+          name: clientData.name,
+          email: clientData.email,
+          phone: clientData.phone,
+          billingAddress: clientData.billingAddress,
+          shippingAddress: clientData.shippingAddress,
+          gstin: clientData.gstin,
+          pan: clientData.pan,
+          terms: clientData.terms,
+          isClient: clientData.isClient,
+          isVendor: clientData.isVendor,
+          notes: clientData.notes,
+          placeOfSupply: clientData.placeOfSupply,
           user: req.user._id
         });
         

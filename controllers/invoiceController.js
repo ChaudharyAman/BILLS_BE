@@ -133,9 +133,12 @@ exports.getInvoices = async (req, res) => {
 // ─── GET single invoice ───────────────────────────────────────────────────────
 exports.getInvoiceById = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
-    if (invoice.user.toString() !== req.user.id) {
+    if (invoice.user.toString() !== req.user._id.toString()) {
       return res.status(401).json({ message: 'User not authorized' });
     }
     res.json(invoice);
@@ -199,7 +202,7 @@ exports.createInvoice = async (req, res) => {
     // Fetch Client Snapshot
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user.id) {
+    if (client.user.toString() !== req.user._id.toString()) {
       return res.status(401).json({ message: 'User not authorized to use this client' });
     }
 
@@ -319,7 +322,7 @@ exports.updateInvoice = async (req, res) => {
 
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
-    if (invoice.user.toString() !== req.user.id) {
+    if (invoice.user.toString() !== req.user._id.toString()) {
       return res.status(401).json({ message: 'User not authorized' });
     }
 
@@ -366,7 +369,7 @@ exports.updateInvoice = async (req, res) => {
     // Fetch Client Snapshot
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user.id) {
+    if (client.user.toString() !== req.user._id.toString()) {
       return res.status(401).json({ message: 'User not authorized to use this client' });
     }
 
@@ -458,7 +461,7 @@ exports.deleteInvoice = async (req, res) => {
   try {
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
-    if (invoice.user.toString() !== req.user.id) {
+    if (invoice.user.toString() !== req.user._id.toString()) {
       return res.status(401).json({ message: 'User not authorized' });
     }
 
@@ -536,7 +539,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       const finalDiscount = Number(invData.discountTotal) || 0;
       const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
       const advancePaid = Number(invData.advancePaid) || 0;
-      const balanceDue = grandTotal - advancePaid;
+      const balanceDue = Math.max(0, grandTotal - advancePaid);
 
       const invoice = new Invoice({
         invoiceNo,

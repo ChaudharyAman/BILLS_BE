@@ -4,6 +4,7 @@ const Client = require('../models/Client');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
 const escapeRegex = require('../utils/escapeRegex');
+const User = require('../models/User');
 
 function processItems(items, isIntraState) {
   let subTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0, taxTotal = 0;
@@ -96,12 +97,7 @@ exports.createProforma = async (req, res) => {
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
 
-    const counter = await Counter.findOneAndUpdate(
-      { id: 'proformaNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
-    );
-    const proformaNo = `PRF-${counter.seq.toString().padStart(3, '0')}`;
-
-    // --- Subscription Plan Check ---
+    // --- Subscription Plan Check (BEFORE counter increment to avoid wasting sequence numbers) ---
     const userObj = await User.findById(req.user._id);
     const plan = userObj?.subscription?.plan || 'free';
     if (plan === 'free') {
@@ -122,9 +118,14 @@ exports.createProforma = async (req, res) => {
     }
     // -------------------------------
 
+    const counter = await Counter.findOneAndUpdate(
+      { id: 'proformaNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+    );
+    const proformaNo = `PRF-${counter.seq.toString().padStart(3, '0')}`;
+
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (client.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -165,6 +166,7 @@ exports.createProforma = async (req, res) => {
       discountTotal: finalDiscount, grandTotal,
       status: status || 'DRAFT', shippingAddress, transport,
       placeOfSupply: clientState, reverseCharge: !!reverseCharge, notes, terms,
+      bankDetails: userSettings?.bankDetails || {},
     });
 
     const saved = await proforma.save();
@@ -183,7 +185,7 @@ exports.updateProforma = async (req, res) => {
 
     const proforma = await Proforma.findById(req.params.id);
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
-    if (proforma.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (proforma.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(req.user._id);
@@ -223,7 +225,7 @@ exports.updateProforma = async (req, res) => {
 
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (client.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -295,7 +297,7 @@ exports.convertToInvoice = async (req, res) => {
   try {
     const proforma = await Proforma.findById(req.params.id);
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
-    if (proforma.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (proforma.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     if (proforma.status === 'CONVERTED') return res.status(400).json({ message: 'Already converted' });
 
     const counter = await Counter.findOneAndUpdate(
@@ -429,7 +431,7 @@ exports.bulkCreateProformas = async (req, res) => {
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
-      const proformaNo = `PF-${counter.seq.toString().padStart(3, '0')}`;
+      const proformaNo = `PRF-${counter.seq.toString().padStart(3, '0')}`;
 
       // processItems only takes two params: items, isIntraState
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =

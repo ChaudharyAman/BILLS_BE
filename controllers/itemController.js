@@ -42,25 +42,25 @@ exports.getItems = async (req, res) => {
 
 // Create a new item
 exports.createItem = async (req, res) => {
-  let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess } = req.body;
-
-  if (!sku || sku.trim() === '') {
-    const counter = await Counter.findOneAndUpdate(
-      { id: 'skuSeq' },
-      { $inc: { seq: 1 } },
-      { returnDocument: 'after', upsert: true }
-    );
-    const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
-    const prefix = 'TQ';
-    sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
-  }
-
-  const item = new Item({
-    sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess,
-    user: req.user._id
-  });
-
   try {
+    let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess } = req.body;
+
+    if (!sku || sku.trim() === '') {
+      const counter = await Counter.findOneAndUpdate(
+        { id: 'skuSeq' },
+        { $inc: { seq: 1 } },
+        { returnDocument: 'after', upsert: true }
+      );
+      const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
+      const prefix = 'TQ';
+      sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
+    }
+
+    const item = new Item({
+      sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess,
+      user: req.user._id
+    });
+
     const newItem = await item.save();
     res.status(201).json(newItem);
   } catch (error) {
@@ -94,8 +94,16 @@ exports.bulkCreateItems = async (req, res) => {
         }
 
         const item = new Item({
-          ...itemData,
           sku,
+          name: itemData.name,
+          type: itemData.type,
+          description: itemData.description,
+          hsnCode: itemData.hsnCode,
+          unit: itemData.unit,
+          purchasePrice: itemData.purchasePrice,
+          sellingPrice: itemData.sellingPrice,
+          taxRate: itemData.taxRate,
+          cess: itemData.cess,
           user: req.user._id
         });
         
@@ -139,20 +147,14 @@ exports.updateItem = async (req, res) => {
   try {
     let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess } = req.body;
 
-    if (!sku || sku.trim() === '') {
-      const counter = await Counter.findOneAndUpdate(
-        { id: 'skuSeq' },
-        { $inc: { seq: 1 } },
-        { returnDocument: 'after', upsert: true }
-      );
-      const resolvedType = type === 'Service' ? 'SRV' : 'GDS';
-      const prefix = 'TQ';
-      sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
-    }
-
+    // If sku is blank, preserve the existing item's SKU — do NOT auto-generate a new one on update
+    // (Auto-generation is only for creation)
     const updateData = {
-      sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess
+      name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess
     };
+    if (sku && sku.trim() !== '') {
+      updateData.sku = sku;
+    }
 
     // Remove undefined fields to not overwrite existing values with nulls if omitted in request
     Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);

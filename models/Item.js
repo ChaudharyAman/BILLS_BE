@@ -53,6 +53,10 @@ const ItemSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  // Top-level convenience fields (mapped from salesInfo/purchaseInfo by controller)
+  purchasePrice: { type: Number, default: 0 },
+  sellingPrice:  { type: Number, default: 0 },
+  taxRate:       { type: Number, default: 0 }, // Alias for defaultTaxRate
   defaultTaxRate: {
     type: Number,
     default: 0, 
@@ -61,6 +65,6 @@ const ItemSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
-});
+}, { timestamps: true });
 
 module.exports = mongoose.model('Item', ItemSchema);

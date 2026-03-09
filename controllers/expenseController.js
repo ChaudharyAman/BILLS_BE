@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 const Expense = require('../models/Expense');
+const User = require('../models/User');
+const escapeRegex = require('../utils/escapeRegex');
 
 // @desc    Get all expenses
 // @route   GET /api/expenses
@@ -15,13 +17,14 @@ exports.getExpenses = async (req, res) => {
 
     if (search) {
       const Client = require('../models/Client');
+      const safeSearch = escapeRegex(search);
       const matchedClients = await Client.find({
         user: req.user._id,
-        name: { $regex: search, $options: 'i' }
+        name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
       query.$or = [
-        { expenseNumber: { $regex: search, $options: 'i' } },
+        { expenseNumber: { $regex: safeSearch, $options: 'i' } },
         { 'vendor.vendorRef': { $in: matchedClients.map(c => c._id) } },
         { 'client.clientRef': { $in: matchedClients.map(c => c._id) } }
       ];
@@ -128,6 +131,24 @@ exports.updateExpense = async (req, res) => {
       return res.status(404).json({ message: 'Expense not found' });
     }
 
+    // --- Subscription Plan Check for Edits ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    if (plan === 'free') {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const editedExpensesCount = await Expense.countDocuments({
+        user: req.user._id,
+        updatedAt: { $gte: startOfMonth },
+        $expr: { $gt: ["$updatedAt", "$createdAt"] }
+      });
+      const isAlreadyEdited = expense.updatedAt && expense.updatedAt >= startOfMonth && expense.updatedAt > expense.createdAt;
+      if (editedExpensesCount >= 5 && !isAlreadyEdited) {
+        return res.status(403).json({ message: 'You have reached the free plan limit of 5 document edits per month. Please upgrade to Pro.' });
+      }
+    }
+    // -----------------------------------------
+
     const {
       expenseNumber,
       date,
@@ -182,6 +203,14 @@ exports.updateExpense = async (req, res) => {
 exports.deleteExpense = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Expense not found' });
+
+    // --- Subscription Plan Check for Deletes ---
+    const userObj = await User.findById(req.user._id);
+    const plan = userObj?.subscription?.plan || 'free';
+    if (plan === 'free') {
+      return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
+    }
+    // -------------------------------------------
 
     const expense = await Expense.findOne({ _id: req.params.id, user: req.user._id });
 

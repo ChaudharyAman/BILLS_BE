@@ -76,12 +76,8 @@ const ClientSchema = new mongoose.Schema({
 
   // Opening Balance Tab
   openingBalance: { type: Number, default: 0 },
-  pendingPayment: { type: Number, default: 0 }, // Calculated or manual? Screenshot shows readonly-ish
+  pendingPayment: { type: Number, default: 0 },
 
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
 });
 
 module.exports = mongoose.model('Client', ClientSchema);

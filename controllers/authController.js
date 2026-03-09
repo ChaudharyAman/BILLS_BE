@@ -2,7 +2,6 @@ const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 
 // Generate JWT Token
-// Generate JWT Token
 const generateToken = (id) => {
   if (!process.env.JWT_SECRET) {
       console.error('ERROR: JWT_SECRET is not defined in environment variables!');

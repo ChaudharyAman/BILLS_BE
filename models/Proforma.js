@@ -37,6 +37,8 @@ const ProformaSchema = new mongoose.Schema({
       line1: String, line2: String, city: String, state: String, zip: String,
     },
     gstin: String,
+    phone: String,
+    email: String,
   },
 
   shippingAddress: {
@@ -78,7 +80,17 @@ const ProformaSchema = new mongoose.Schema({
 
   notes: String,
   terms: String,
-  createdAt: { type: Date, default: Date.now },
-});
+
+  // Bank details snapshot from settings at time of creation
+  bankDetails: {
+    accountName:   String,
+    bankName:      String,
+    accountNumber: String,
+    branch:        String,
+    ifscCode:      String,
+  },
+}, { timestamps: true });
+
+ProformaSchema.index({ user: 1, proformaNo: 1 }, { unique: true });
 
 module.exports = mongoose.model('Proforma', ProformaSchema);

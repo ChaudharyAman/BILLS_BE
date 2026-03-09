@@ -88,9 +88,12 @@ exports.getQuotes = async (req, res) => {
 // ─── GET single quote ─────────────────────────────────────────────────────────
 exports.getQuoteById = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Quote not found' });
+    }
     const quote = await Quote.findById(req.params.id);
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
-    if (quote.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (quote.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     res.json(quote);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -131,7 +134,7 @@ exports.createQuote = async (req, res) => {
 
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (client.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -172,6 +175,7 @@ exports.createQuote = async (req, res) => {
       discountTotal: finalDiscount, grandTotal,
       status: status || 'DRAFT', shippingAddress, transport,
       placeOfSupply: clientState, reverseCharge: !!reverseCharge, notes, terms,
+      bankDetails: userSettings?.bankDetails || {},
     });
 
     const saved = await quote.save();
@@ -191,7 +195,7 @@ exports.updateQuote = async (req, res) => {
 
     const quote = await Quote.findById(req.params.id);
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
-    if (quote.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (quote.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(req.user._id);
@@ -233,7 +237,7 @@ exports.updateQuote = async (req, res) => {
 
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (client.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -288,7 +292,7 @@ exports.deleteQuote = async (req, res) => {
   try {
     const quote = await Quote.findById(req.params.id);
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
-    if (quote.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (quote.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     // --- Subscription Plan Check for Deletes ---
     const userObj = await User.findById(req.user._id);
@@ -307,7 +311,7 @@ exports.convertToInvoice = async (req, res) => {
   try {
     const quote = await Quote.findById(req.params.id);
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
-    if (quote.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (quote.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     if (quote.status === 'CONVERTED') return res.status(400).json({ message: 'Already converted' });
 
     const counter = await Counter.findOneAndUpdate(

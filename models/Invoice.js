@@ -152,9 +152,9 @@ const InvoiceSchema = new mongoose.Schema({
 
   // Excise Invoice specific
   exciseDuty: {
-    bedPercent: { type: Number, default: 0 },   // Basic Excise Duty %
-    sedPercent: { type: Number, default: 0 },   // Special Excise Duty %
-    cessPercent: { type: Number, default: 0 },  // Education Cess %
+    bedPercent: { type: Number, default: 0 },
+    sedPercent: { type: Number, default: 0 },
+    cessPercent: { type: Number, default: 0 },
     totalExcise: { type: Number, default: 0 },
     manufacturerName: String,
     manufacturerAddress: String,
@@ -162,10 +162,6 @@ const InvoiceSchema = new mongoose.Schema({
     rangeCode: String,
   },
 
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Invoice', InvoiceSchema);

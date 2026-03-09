@@ -88,9 +88,12 @@ exports.getPurchaseOrders = async (req, res) => {
 // ─── GET single purchaseOrder ─────────────────────────────────────────────────────────
 exports.getPurchaseOrderById = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Purchase Order not found' });
+    }
     const purchaseOrder = await PurchaseOrder.findById(req.params.id);
-    if (!purchaseOrder) return res.status(404).json({ message: 'PurchaseOrder not found' });
-    if (purchaseOrder.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
+    if (purchaseOrder.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     res.json(purchaseOrder);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -125,8 +128,8 @@ exports.createPurchaseOrder = async (req, res) => {
     const poNumber = `PO-${counter.seq.toString().padStart(3, '0')}`;
 
     const vendor = await VendorModel.findById(vendorRef);
-    if (!vendor) return res.status(404).json({ message: 'VendorModel not found' });
-    if (vendor.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
+    if (vendor.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const vendorSnapshot = {
       vendorRef: vendor._id,
@@ -185,8 +188,8 @@ exports.updatePurchaseOrder = async (req, res) => {
       customChargeLabel, discountTotal, status, notes, privateNotes, terms, reverseCharge } = req.body;
 
     const purchaseOrder = await PurchaseOrder.findById(req.params.id);
-    if (!purchaseOrder) return res.status(404).json({ message: 'PurchaseOrder not found' });
-    if (purchaseOrder.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
+    if (purchaseOrder.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(req.user._id);
@@ -227,8 +230,8 @@ exports.updatePurchaseOrder = async (req, res) => {
     // -----------------------------------------
 
     const vendor = await VendorModel.findById(vendorRef);
-    if (!vendor) return res.status(404).json({ message: 'VendorModel not found' });
-    if (vendor.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
+    if (vendor.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const vendorSnapshot = {
       vendorRef: vendor._id,
@@ -282,8 +285,8 @@ exports.updatePurchaseOrder = async (req, res) => {
 exports.deletePurchaseOrder = async (req, res) => {
   try {
     const purchaseOrder = await PurchaseOrder.findById(req.params.id);
-    if (!purchaseOrder) return res.status(404).json({ message: 'PurchaseOrder not found' });
-    if (purchaseOrder.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
+    if (purchaseOrder.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     // --- Subscription Plan Check for Deletes ---
     const userObj = await User.findById(req.user._id);
@@ -301,9 +304,9 @@ exports.deletePurchaseOrder = async (req, res) => {
 exports.convertToInvoice = async (req, res) => {
   try {
     const purchaseOrder = await PurchaseOrder.findById(req.params.id);
-    if (!purchaseOrder) return res.status(404).json({ message: 'PurchaseOrder not found' });
-    if (purchaseOrder.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
-    if (purchaseOrder.status === 'CONVERTED') return res.status(400).json({ message: 'Already converted' });
+    if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
+    if (purchaseOrder.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
+    if (purchaseOrder.status === 'BILLED') return res.status(400).json({ message: 'Already converted to invoice' });
 
     const counter = await Counter.findOneAndUpdate(
       { id: 'invoiceNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
@@ -357,7 +360,7 @@ exports.convertToInvoice = async (req, res) => {
       user: purchaseOrder.user, invoiceNo, invoiceType: purchaseOrder.invoiceType,
       date: new Date(), dueDate: purchaseOrder.validUntil,
       paymentMode: purchaseOrder.paymentMode, paymentTerms: purchaseOrder.paymentTerms,
-      vendor: vendorSnapshot, items: processedItems,
+      client: vendorSnapshot, items: processedItems,
       subTotal, taxTotal,
       totalCGST, totalSGST, totalIGST,
       shippingCharges: purchaseOrder.shippingCharges, packagingCharges: purchaseOrder.packagingCharges,
@@ -369,7 +372,7 @@ exports.convertToInvoice = async (req, res) => {
     });
 
     const savedInvoice = await invoice.save();
-    purchaseOrder.status = 'CONVERTED';
+    purchaseOrder.status = 'BILLED';
     purchaseOrder.convertedToInvoice = savedInvoice._id;
     await purchaseOrder.save();
 

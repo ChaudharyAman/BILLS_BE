@@ -16,7 +16,7 @@ const ExpenseSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
   
   // Naming & Reference
-  expenseNumber: { type: String, required: true, unique: true },
+  expenseNumber: { type: String, required: true },
   date: { type: Date, default: Date.now, required: true },
   
   // Parties involved
@@ -51,7 +51,9 @@ const ExpenseSchema = new mongoose.Schema({
     default: 'DRAFT',
   },
 
-  createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
+
+// Compound unique index: same expense number is allowed across different users
+ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true });
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

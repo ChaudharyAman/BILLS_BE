@@ -33,6 +33,8 @@ const PurchaseOrderSchema = new mongoose.Schema({
       line1: String, line2: String, city: String, state: String, zip: String,
     },
     gstin: String,
+    phone: String,
+    email: String,
   },
 
   shippingAddress: {
@@ -64,6 +66,7 @@ const PurchaseOrderSchema = new mongoose.Schema({
   discountTotal: { type: Number, default: 0 },
   grandTotal: { type: Number, default: 0 },
   advancePaid: { type: Number, default: 0 },
+  balanceDue: { type: Number, default: 0 }, // Added: controller computes and sets this
 
   status: {
     type: String,
@@ -71,10 +74,12 @@ const PurchaseOrderSchema = new mongoose.Schema({
     default: 'DRAFT',
   },
 
+  // When converted to invoice
+  convertedToInvoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+
   notes: String,
-  privateNotes: String, // Addition for private notes not shown to vendor
+  privateNotes: String,
   terms: String,
-  createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 
 module.exports = mongoose.model('PurchaseOrder', PurchaseOrderSchema);
