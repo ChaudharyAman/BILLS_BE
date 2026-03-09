@@ -43,7 +43,7 @@ exports.getItems = async (req, res) => {
 // Create a new item
 exports.createItem = async (req, res) => {
   try {
-    let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess } = req.body;
+    let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess, salesInfo, purchaseInfo, openingQuantity, defaultTaxRate, rate } = req.body;
 
     if (!sku || sku.trim() === '') {
       const counter = await Counter.findOneAndUpdate(
@@ -58,6 +58,7 @@ exports.createItem = async (req, res) => {
 
     const item = new Item({
       sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess,
+      salesInfo, purchaseInfo, openingQuantity, defaultTaxRate, rate,
       user: req.user._id
     });
 
@@ -145,12 +146,13 @@ exports.getItemById = async (req, res) => {
 // Update item
 exports.updateItem = async (req, res) => {
   try {
-    let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess } = req.body;
+    let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess, salesInfo, purchaseInfo, openingQuantity, defaultTaxRate, rate } = req.body;
 
     // If sku is blank, preserve the existing item's SKU — do NOT auto-generate a new one on update
     // (Auto-generation is only for creation)
     const updateData = {
-      name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess
+      name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess,
+      salesInfo, purchaseInfo, openingQuantity, defaultTaxRate, rate
     };
     if (sku && sku.trim() !== '') {
       updateData.sku = sku;
