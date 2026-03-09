@@ -6,6 +6,7 @@ const Settings = require('../models/Settings');
 const escapeRegex = require('../utils/escapeRegex');
 
 const User = require('../models/User');
+const mongoose = require('mongoose');
 
 // ─── Shared item processor ────────────────────────────────────────────────────
 function processItems(items, isIntraState) {

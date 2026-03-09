@@ -5,9 +5,9 @@ const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
 const escapeRegex = require('../utils/escapeRegex');
 const User = require('../models/User');
+const mongoose = require('mongoose');
 
 function processItems(items, isIntraState) {
-  let subTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0, taxTotal = 0;
   const processedItems = [];
 
   for (const item of items) {
@@ -84,9 +84,12 @@ exports.getProformas = async (req, res) => {
 
 exports.getProformaById = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Proforma not found' });
+    }
     const proforma = await Proforma.findById(req.params.id);
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
-    if (proforma.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
+    if (proforma.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     res.json(proforma);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
