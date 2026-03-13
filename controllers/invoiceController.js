@@ -190,14 +190,24 @@ exports.createInvoice = async (req, res) => {
       }
     }
     // -------------------------------
+    let invoiceNo = req.body.invoiceNo;
+    const isAuto = !invoiceNo || invoiceNo === 'Auto-generated';
 
-    // Generate Invoice Number
-    const counter = await Counter.findOneAndUpdate(
-      { id: 'invoiceNo' },
-      { $inc: { seq: 1 } },
-      { returnDocument: 'after', upsert: true }
-    );
-    const invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
+    if (!isAuto) {
+      // Validate Custom Invoice Number Uniqueness for this user
+      const existing = await Invoice.findOne({ user: req.user._id, invoiceNo });
+      if (existing) {
+        return res.status(400).json({ message: `Invoice number "${invoiceNo}" already exists.` });
+      }
+    } else {
+      // Generate Invoice Number
+      const counter = await Counter.findOneAndUpdate(
+        { id: 'invoiceNo' },
+        { $inc: { seq: 1 } },
+        { returnDocument: 'after', upsert: true }
+      );
+      invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
+    }
 
     // Fetch Client Snapshot
     const client = await Client.findById(clientRef);
