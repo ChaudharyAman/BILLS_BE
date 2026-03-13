@@ -236,7 +236,9 @@ exports.createInvoice = async (req, res) => {
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+    // Normalize: extract state name before parenthesis for comparison e.g. "HR (06)" → "HR", "Haryana (06)" → "Haryana"
+    const normalizeState = (s) => s.trim().split('(')[0].trim().toLowerCase();
+    const isIntraState = normalizeState(clientState) === normalizeState(COMPANY_STATE);
 
     // Auto-use client's shipping address if not overridden in form
     const resolvedShippingAddress = (shippingAddress?.line1)
@@ -402,7 +404,9 @@ exports.updateInvoice = async (req, res) => {
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.toLowerCase() === COMPANY_STATE.toLowerCase();
+    // Normalize: extract state name before parenthesis e.g. "HR (06)" → "HR", "Haryana (06)" → "Haryana"
+    const normalizeState = (s) => s.trim().split('(')[0].trim().toLowerCase();
+    const isIntraState = normalizeState(clientState) === normalizeState(COMPANY_STATE);
 
     const resolvedShippingAddress = (shippingAddress?.line1)
       ? shippingAddress
@@ -429,6 +433,12 @@ exports.updateInvoice = async (req, res) => {
 
     // Apply updates
     invoice.invoiceType = effectiveType;
+    // Allow updating invoiceNo only if a custom value was provided and it differs
+    if (req.body.invoiceNo && req.body.invoiceNo !== 'Auto-generated' && req.body.invoiceNo !== invoice.invoiceNo) {
+      const duplicate = await Invoice.findOne({ user: req.user._id, invoiceNo: req.body.invoiceNo, _id: { $ne: invoice._id } });
+      if (duplicate) return res.status(400).json({ message: `Invoice number "${req.body.invoiceNo}" already exists.` });
+      invoice.invoiceNo = req.body.invoiceNo;
+    }
     invoice.client = clientSnapshot;
     invoice.items = processedItems;
     invoice.date = date;
@@ -532,7 +542,8 @@ exports.bulkCreateInvoices = async (req, res) => {
       }
 
       const clientState = invData.placeOfSupply || client.billingAddress?.state || '';
-      const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+      const normalizeState = (s) => s.trim().split('(')[0].trim().toLowerCase();
+      const isIntraState = normalizeState(clientState) === normalizeState(COMPANY_STATE);
 
       const counter = await Counter.findOneAndUpdate(
         { id: 'invoiceNo' },
