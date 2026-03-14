@@ -53,6 +53,7 @@ app.use('/api/expenses', require('./routes/expenseRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
+app.use('/api/admin', require('./routes/adminRoutes'));
 
 app.get('/', (req, res) => {
   res.send('API is working fine 👍...');

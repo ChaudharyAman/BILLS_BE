@@ -58,7 +58,12 @@ const userSchema = new mongoose.Schema({
     billingCycle: { type: String, required: true },
     razorpayOrderId: { type: String, required: true },
     razorpayPaymentId: { type: String, required: true }
-  }]
+  }],
+  role: {
+    type: String,
+    enum: ['user', 'superadmin'],
+    default: 'user'
+  }
 });
 
 // Hash password before saving

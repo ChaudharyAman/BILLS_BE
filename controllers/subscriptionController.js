@@ -137,11 +137,14 @@ exports.verifyPayment = async (req, res) => {
 // @access  Private
 exports.getSubscriptionStatus = async (req, res) => {
   try {
-     const user = await User.findById(req.user._id).select('subscription');
+     const user = await User.findById(req.user._id).select('subscription role');
      if (!user) {
          return res.status(404).json({ message: 'User not found' });
      }
-     res.status(200).json(user.subscription);
+     res.status(200).json({ 
+       subscription: user.subscription, 
+       role: user.role 
+     });
   } catch (error) {
      console.error('Fetch Subscription Error:', error);
      res.status(500).json({ message: 'Server error while fetching subscription', error: error.message });

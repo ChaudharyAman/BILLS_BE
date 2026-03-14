@@ -54,6 +54,7 @@ exports.register = async (req, res) => {
           _id: user._id,
           username: user.username,
           email: user.email,
+          role: user.role,
           subscription: user.subscription
         }
       });
@@ -107,6 +108,7 @@ exports.login = async (req, res) => {
           _id: user._id,
           username: user.username,
           email: user.email,
+          role: user.role,
           subscription: user.subscription
         }
       });
@@ -157,6 +159,7 @@ exports.updateProfile = async (req, res) => {
         username: updated.username,
         email: updated.email,
         phone: updated.phone,
+        role: updated.role,
         subscription: updated.subscription
       }
     });
