@@ -12,6 +12,24 @@ const generateToken = (id) => {
   });
 };
 
+// Safari/Chrome Cookie Helper
+const getCookieOptions = (req) => {
+  const origin = req.get('origin') || '';
+  const isLocalhost = origin.includes('localhost') || origin.includes('127.0.0.1');
+  
+  return {
+    httpOnly: true,
+    secure: true, // Default to secure
+    sameSite: 'none',
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    // Override for local dev if not using HTTPS
+    ...(isLocalhost && {
+      secure: false,
+      sameSite: 'lax'
+    })
+  };
+};
+
 // @desc    Register new user
 // @route   POST /api/auth/register
 // @access  Public
@@ -42,12 +60,7 @@ exports.register = async (req, res) => {
 
     if (user) {
       const token = generateToken(user._id);
-      res.cookie('token', token, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-      });
+      res.cookie('token', token, getCookieOptions(req));
 
       res.status(201).json({
         user: {
@@ -96,12 +109,7 @@ exports.login = async (req, res) => {
 
     if (user && (await user.matchPassword(password))) {
       const token = generateToken(user._id);
-      res.cookie('token', token, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-      });
+      res.cookie('token', token, getCookieOptions(req));
 
       res.json({
         user: {
@@ -173,11 +181,11 @@ exports.updateProfile = async (req, res) => {
 // @route   POST /api/auth/logout
 // @access  Public
 exports.logout = (req, res) => {
+  const options = getCookieOptions(req);
   res.cookie('token', '', {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'none',
-    expires: new Date(0)
+    ...options,
+    expires: new Date(0),
+    maxAge: 0
   });
   res.status(200).json({ message: 'Logged out successfully' });
 };
