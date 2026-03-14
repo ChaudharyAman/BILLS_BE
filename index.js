@@ -12,6 +12,9 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// trust proxy for Render/Vercel
+app.set('trust proxy', 1);
+
 // Middleware
 app.use(helmet());
 app.use(cors({

@@ -69,7 +69,8 @@ exports.register = async (req, res) => {
           email: user.email,
           role: user.role,
           subscription: user.subscription
-        }
+        },
+        token
       });
     } else {
       res.status(400).json({ message: 'Invalid user data' });
@@ -118,7 +119,8 @@ exports.login = async (req, res) => {
           email: user.email,
           role: user.role,
           subscription: user.subscription
-        }
+        },
+        token
       });
     } else {
       res.status(401).json({ message: 'Invalid credentials' });
