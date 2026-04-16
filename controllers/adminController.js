@@ -18,39 +18,45 @@ const getAllUsers = async (req, res) => {
 const updateUserPlan = async (req, res) => {
   try {
     const { plan, status, endDate, billingCycle } = req.body;
-    
-    // Prepare update object
-    const update = {};
-    if (plan !== undefined) update['subscription.plan'] = plan;
-    if (status !== undefined) update['subscription.status'] = status;
-    if (billingCycle !== undefined) update['subscription.billingCycle'] = billingCycle;
-    
+    console.log('Update Plan Request:', { id: req.params.id, plan, status, endDate, billingCycle });
+
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Initialize subscription object if it doesn't exist
+    if (!user.subscription) {
+      user.subscription = { plan: 'free', status: 'active' };
+    }
+
+    // Update fields
+    if (plan !== undefined) user.subscription.plan = plan;
+    if (status !== undefined) user.subscription.status = status;
+    if (billingCycle !== undefined) user.subscription.billingCycle = billingCycle;
+
     // Handle Date safely
     if (endDate === '' || endDate === null || plan === 'free') {
-      update['subscription.endDate'] = null;
+      user.subscription.endDate = null;
     } else if (endDate) {
       const d = new Date(endDate);
       if (!isNaN(d.getTime())) {
-        update['subscription.endDate'] = d;
+        user.subscription.endDate = d;
       }
     }
 
     // Direct reset if switching to free
     if (plan === 'free') {
-      update['subscription.status'] = 'active';
+      user.subscription.status = 'active';
     }
 
-    const updatedUser = await User.findByIdAndUpdate(
-      req.params.id,
-      { $set: update },
-      { new: true, runValidators: false } // runValidators: false helps bypass required email checks if they fail
-    ).select('-password');
+    // Mark modified for nested object to ensure persistence
+    user.markModified('subscription');
 
-    if (updatedUser) {
-      res.json(updatedUser);
-    } else {
-      res.status(404).json({ message: 'User not found' });
-    }
+    const updatedUser = await user.save();
+    console.log('Update Successful:', { id: user._id, plan: user.subscription.plan, endDate: user.subscription.endDate });
+
+    res.json(updatedUser);
   } catch (error) {
     console.error('Plan Update Error:', error);
     res.status(500).json({ message: 'Failed to update plan: ' + error.message });

@@ -19,7 +19,7 @@ const QuoteItemSchema = new mongoose.Schema({
 
 const QuoteSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
-  quoteNo: { type: String, required: true, unique: true },
+  quoteNo: { type: String, required: true },
   invoiceType: {
     type: String,
     enum: ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'],

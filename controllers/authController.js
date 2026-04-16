@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
+const { syncExpiredSubscription } = require('../utils/subscriptionLifecycle');
 
 // Generate JWT Token
 const generateToken = (id) => {
@@ -109,6 +110,9 @@ exports.login = async (req, res) => {
     });
 
     if (user && (await user.matchPassword(password))) {
+      // Ensure users whose Pro end date has passed are downgraded at login.
+      await syncExpiredSubscription(user);
+
       const token = generateToken(user._id);
       res.cookie('token', token, getCookieOptions(req));
 

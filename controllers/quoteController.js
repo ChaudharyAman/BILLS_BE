@@ -4,6 +4,7 @@ const Client = require('../models/Client');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
 const escapeRegex = require('../utils/escapeRegex');
+const { buildAutoDocumentNumber, buildCustomDocumentNumber } = require('../utils/documentNumber');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
@@ -103,6 +104,7 @@ exports.getQuoteById = async (req, res) => {
 exports.createQuote = async (req, res) => {
   try {
     const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
+      poNumber, poDate,
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
 
@@ -128,11 +130,6 @@ exports.createQuote = async (req, res) => {
     }
     // -------------------------------
 
-    const counter = await Counter.findOneAndUpdate(
-      { id: 'quoteNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
-    );
-    const quoteNo = `QT-${counter.seq.toString().padStart(3, '0')}`;
-
     const client = await Client.findById(clientRef);
     if (!client) return res.status(404).json({ message: 'Client not found' });
     if (client.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
@@ -154,6 +151,26 @@ exports.createQuote = async (req, res) => {
     };
 
     const userSettings = await Settings.findOne({ user: req.user._id });
+    const quotePrefix = userSettings?.quotePrefix || 'QT';
+    let quoteNo = buildCustomDocumentNumber({
+      prefix: quotePrefix,
+      explicitNumber: req.body.quoteNo,
+      docNo: req.body.docNo,
+      docNoSuffix: req.body.docNoSuffix,
+    });
+
+    if (quoteNo) {
+      const existing = await Quote.findOne({ user: req.user._id, quoteNo });
+      if (existing) {
+        return res.status(400).json({ message: `Quote number "${quoteNo}" already exists.` });
+      }
+    } else {
+      const counter = await Counter.findOneAndUpdate(
+        { id: 'quoteNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+      );
+      quoteNo = buildAutoDocumentNumber(quotePrefix, counter.seq);
+    }
+
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
     const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
@@ -166,6 +183,12 @@ exports.createQuote = async (req, res) => {
     const finalDiscount = Number(discountTotal) || 0;
     const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
 
+    const effectiveTransport = {
+      ...(transport || {}),
+      ...(poNumber !== undefined ? { poNumber } : {}),
+      ...(poDate !== undefined ? { poDate } : {}),
+    };
+
     const quote = new Quote({
       user: req.user._id, quoteNo, invoiceType: invoiceType || 'Tax Invoice',
       date, validUntil, paymentMode, paymentTerms,
@@ -174,7 +197,7 @@ exports.createQuote = async (req, res) => {
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: customChargeLabel || 'Custom Amount',
       discountTotal: finalDiscount, grandTotal,
-      status: status || 'DRAFT', shippingAddress, transport,
+      status: status || 'DRAFT', shippingAddress, transport: effectiveTransport,
       placeOfSupply: clientState, reverseCharge: !!reverseCharge, notes, terms,
       bankDetails: userSettings?.bankDetails || {},
     });
@@ -191,6 +214,7 @@ exports.createQuote = async (req, res) => {
 exports.updateQuote = async (req, res) => {
   try {
     const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
+      poNumber, poDate,
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
 
@@ -257,6 +281,7 @@ exports.updateQuote = async (req, res) => {
     };
 
     const userSettings = await Settings.findOne({ user: req.user._id });
+    const quotePrefix = userSettings?.quotePrefix || 'QT';
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
     const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
@@ -269,13 +294,34 @@ exports.updateQuote = async (req, res) => {
     const finalDiscount = Number(discountTotal) || 0;
     const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
 
+    const requestedQuoteNo = buildCustomDocumentNumber({
+      prefix: quotePrefix,
+      explicitNumber: req.body.quoteNo,
+      docNo: req.body.docNo,
+      docNoSuffix: req.body.docNoSuffix,
+    });
+
+    if (requestedQuoteNo && requestedQuoteNo !== quote.quoteNo) {
+      const duplicate = await Quote.findOne({ user: req.user._id, quoteNo: requestedQuoteNo, _id: { $ne: quote._id } });
+      if (duplicate) {
+        return res.status(400).json({ message: `Quote number "${requestedQuoteNo}" already exists.` });
+      }
+      quote.quoteNo = requestedQuoteNo;
+    }
+
+    const effectiveTransport = {
+      ...(transport || quote.transport || {}),
+      ...(poNumber !== undefined ? { poNumber } : {}),
+      ...(poDate !== undefined ? { poDate } : {}),
+    };
+
     Object.assign(quote, {
       invoiceType: invoiceType || quote.invoiceType,
       client: clientSnapshot, items: processedItems, date, validUntil,
       paymentMode, paymentTerms, subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: customChargeLabel || 'Custom Amount',
-      discountTotal: finalDiscount, grandTotal, shippingAddress, transport,
+      discountTotal: finalDiscount, grandTotal, shippingAddress, transport: effectiveTransport,
       placeOfSupply: clientState, reverseCharge: !!reverseCharge, notes, terms,
     });
     if (status) quote.status = status;
@@ -315,10 +361,11 @@ exports.convertToInvoice = async (req, res) => {
     if (quote.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     if (quote.status === 'CONVERTED') return res.status(400).json({ message: 'Already converted' });
 
+    const userSettings = await Settings.findOne({ user: req.user._id });
     const counter = await Counter.findOneAndUpdate(
       { id: 'invoiceNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
-    const invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
+    const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
     // Fetch fresh client data to ensure correct address format specially for old quotes
     const client = await Client.findById(quote.client.clientRef);
@@ -356,7 +403,6 @@ exports.convertToInvoice = async (req, res) => {
       }
     }
 
-    const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = quote.placeOfSupply || clientSnapshot.address.state || '';
     const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
@@ -447,7 +493,7 @@ exports.bulkCreateQuotes = async (req, res) => {
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
-      const quoteNo = `QT-${counter.seq.toString().padStart(3, '0')}`;
+      const quoteNo = buildAutoDocumentNumber(userSettings?.quotePrefix || 'QT', counter.seq);
 
       // quoteController processItems only takes two params: items, isIntraState
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
@@ -478,7 +524,14 @@ exports.bulkCreateQuotes = async (req, res) => {
            name: client.name,
            email: client.email,
            phone: client.phone,
-           billingAddress: client.billingAddress || {},
+           address: {
+             line1: client.billingAddress?.line1 || '',
+             line2: client.billingAddress?.line2 || '',
+             city: client.billingAddress?.city || '',
+             state: client.billingAddress?.state || '',
+             zip: client.billingAddress?.zip || '',
+             country: client.billingAddress?.country || 'India',
+           },
            gstin: client.gstin || '',
         },
         items: processedItems,

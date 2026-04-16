@@ -6,7 +6,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "test:system": "node scripts/run-complete-system-tests.js"
   },
   "keywords": [],
   "author": "",
@@ -29,6 +30,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.2.1",
     "multer": "^2.0.2",
+    "pdf-parse": "^2.4.5",
     "razorpay": "^2.9.6"
   }
 }

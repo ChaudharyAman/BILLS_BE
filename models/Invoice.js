@@ -147,6 +147,17 @@ const InvoiceSchema = new mongoose.Schema({
   
   grandTotal: { type: Number, default: 0 }, // Final Payable Amount
   
+  // Financial Year & Currency
+  fy: String, // e.g., "2023-24"
+  currency: { type: String, default: 'INR' },
+  
+  // Tax Deducted/Collected at Source
+  tds: { type: Number, default: 0 },
+  tcs: { type: Number, default: 0 },
+  
+  // Debit / Credit indicator
+  drCr: { type: String, default: 'Dr.' },
+
   // Status
   status: {
     type: String,

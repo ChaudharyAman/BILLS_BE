@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 const User = require('../models/User');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
@@ -10,26 +9,58 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET || 'dummy_key_secret',
 });
 
+const PLAN_PRICES = {
+  pro: {
+    monthly: 999 * 100,
+    yearly: 9588 * 100,
+  },
+};
+
+const getAmountForPlan = (plan, billingCycle) => PLAN_PRICES[plan]?.[billingCycle] || 0;
+
+const getPlanFromAmount = (amount) => {
+  for (const [plan, cycles] of Object.entries(PLAN_PRICES)) {
+    for (const [billingCycle, price] of Object.entries(cycles)) {
+      if (price === amount) {
+        return { plan, billingCycle };
+      }
+    }
+  }
+
+  return null;
+};
+
+const addMonthsClamped = (date, monthsToAdd) => {
+  const base = new Date(date);
+  const day = base.getDate();
+  const hour = base.getHours();
+  const minute = base.getMinutes();
+  const second = base.getSeconds();
+  const ms = base.getMilliseconds();
+
+  const targetMonthIndex = base.getMonth() + monthsToAdd;
+  const year = base.getFullYear() + Math.floor(targetMonthIndex / 12);
+  const month = ((targetMonthIndex % 12) + 12) % 12;
+  const lastDayOfTargetMonth = new Date(year, month + 1, 0).getDate();
+  const clampedDay = Math.min(day, lastDayOfTargetMonth);
+
+  return new Date(year, month, clampedDay, hour, minute, second, ms);
+};
+
+const addYearsClamped = (date, yearsToAdd) => addMonthsClamped(date, yearsToAdd * 12);
+
 // @desc    Create a Razorpay order
 // @route   POST /api/subscriptions/create-order
 // @access  Private
 exports.createOrder = async (req, res) => {
   try {
-    const { plan, billingCycle } = req.body; // plan: 'pro', billingCycle: 'monthly'|'yearly'
+    const { plan, billingCycle } = req.body;
 
     if (!plan || !billingCycle) {
       return res.status(400).json({ message: 'Plan and billing cycle are required' });
     }
 
-    // Define pricing logic (amounts in paise for INR)
-    let amount = 0;
-    if (plan === 'pro') {
-      if (billingCycle === 'monthly') {
-        amount = 999 * 100; // ₹999
-      } else if (billingCycle === 'yearly') {
-        amount = 9588 * 100; // ₹799 * 12
-      }
-    }
+    const amount = getAmountForPlan(plan, billingCycle);
 
     if (amount === 0) {
       return res.status(400).json({ message: 'Invalid plan or billing cycle' });
@@ -38,7 +69,7 @@ exports.createOrder = async (req, res) => {
     const options = {
       amount,
       currency: 'INR',
-      receipt: `receipt_order_${Date.now()}`,
+      receipt: `sub_${Date.now()}`,
     };
 
     const order = await razorpay.orders.create(options);
@@ -59,73 +90,63 @@ exports.createOrder = async (req, res) => {
 // @access  Private
 exports.verifyPayment = async (req, res) => {
   try {
-    const { 
-      razorpay_order_id, 
-      razorpay_payment_id, 
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
       razorpay_signature,
-      plan,
-      billingCycle
     } = req.body;
 
-    // The logic to verify the signature
     const sign = razorpay_order_id + '|' + razorpay_payment_id;
     const expectedSign = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || 'dummy_key_secret')
       .update(sign.toString())
       .digest('hex');
 
-    if (razorpay_signature === expectedSign) {
-      // Payment is verified
-      
-      // Calculate subscription end date
-      const startDate = new Date();
-      const endDate = new Date();
-      if (billingCycle === 'monthly') {
-        endDate.setMonth(endDate.getMonth() + 1);
-      } else if (billingCycle === 'yearly') {
-        endDate.setFullYear(endDate.getFullYear() + 1);
-      }
-
-      // Update user in DB
-      const user = await User.findById(req.user._id);
-      
-      if (!user) {
-        return res.status(404).json({ message: 'User not found' });
-      }
-
-      user.subscription = {
-        plan: plan,
-        status: 'active',
-        razorpayOrderId: razorpay_order_id,
-        razorpayPaymentId: razorpay_payment_id,
-        razorpaySignature: razorpay_signature,
-        startDate: startDate,
-        endDate: endDate,
-        billingCycle: billingCycle
-      };
-
-      // Calculate amount paid for the history record
-      let amountPaid = 0;
-      if (plan === 'pro') {
-        if (billingCycle === 'monthly') amountPaid = 999;
-        else if (billingCycle === 'yearly') amountPaid = 9588;
-      }
-
-      user.paymentHistory.push({
-        amount: amountPaid,
-        plan: plan,
-        billingCycle: billingCycle,
-        razorpayOrderId: razorpay_order_id,
-        razorpayPaymentId: razorpay_payment_id,
-        endDate: endDate
-      });
-
-      await user.save();
-
-      return res.status(200).json({ message: 'Payment verified successfully', user });
-    } else {
+    if (razorpay_signature !== expectedSign) {
       return res.status(400).json({ message: 'Invalid signature sent!' });
     }
+
+    const order = await razorpay.orders.fetch(razorpay_order_id);
+    const resolvedPlan = getPlanFromAmount(order?.amount);
+
+    if (!resolvedPlan) {
+      return res.status(400).json({ message: 'Unable to match this payment to a valid subscription plan.' });
+    }
+
+    const startDate = new Date();
+    const endDate = resolvedPlan.billingCycle === 'monthly'
+      ? addMonthsClamped(startDate, 1)
+      : addYearsClamped(startDate, 1);
+
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    user.subscription = {
+      plan: resolvedPlan.plan,
+      status: 'active',
+      razorpayOrderId: razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
+      razorpaySignature: razorpay_signature,
+      startDate,
+      endDate,
+      billingCycle: resolvedPlan.billingCycle,
+    };
+
+    user.paymentHistory.push({
+      amount: (order?.amount || 0) / 100,
+      plan: resolvedPlan.plan,
+      billingCycle: resolvedPlan.billingCycle,
+      razorpayOrderId: razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
+      endDate,
+    });
+
+    await user.save();
+
+    return res.status(200).json({ message: 'Payment verified successfully', user });
   } catch (error) {
     console.error('Payment Verification Error:', error);
     return res.status(500).json({ message: 'Server error during payment verification', error: error.message });
@@ -137,17 +158,17 @@ exports.verifyPayment = async (req, res) => {
 // @access  Private
 exports.getSubscriptionStatus = async (req, res) => {
   try {
-     const user = await User.findById(req.user._id).select('subscription role');
-     if (!user) {
-         return res.status(404).json({ message: 'User not found' });
-     }
-     res.status(200).json({ 
-       subscription: user.subscription, 
-       role: user.role 
-     });
+    const user = await User.findById(req.user._id).select('subscription role');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    res.status(200).json({
+      subscription: user.subscription,
+      role: user.role,
+    });
   } catch (error) {
-     console.error('Fetch Subscription Error:', error);
-     res.status(500).json({ message: 'Server error while fetching subscription', error: error.message });
+    console.error('Fetch Subscription Error:', error);
+    res.status(500).json({ message: 'Server error while fetching subscription', error: error.message });
   }
 };
 
@@ -156,44 +177,42 @@ exports.getSubscriptionStatus = async (req, res) => {
 // @access  Private
 exports.getPaymentHistory = async (req, res) => {
   try {
-     const user = await User.findById(req.user._id).select('paymentHistory').lean();
-     if (!user) {
-         return res.status(404).json({ message: 'User not found' });
-     }
-     
-     // Sort history descending by date natively in JS since it's an embedded array
-     let history = user.paymentHistory || [];
-     
-     // BACKWARDS COMPATIBILITY: If history is empty, but this user is an active Pro user, 
-     // it means they purchased Pro before the paymentHistory tracking feature was released.
-     // Let's reconstruct a single historical item for them to view using their root subscription data.
-     if (history.length === 0) {
-        const fullUser = await User.findById(req.user._id).select('subscription').lean();
-        if (fullUser && fullUser.subscription && fullUser.subscription.plan === 'pro' && fullUser.subscription.razorpayPaymentId) {
-             const sub = fullUser.subscription;
-             let amountPaid = 0;
-             if (sub.billingCycle === 'monthly') amountPaid = 999;
-             else if (sub.billingCycle === 'yearly') amountPaid = 9588;
+    const user = await User.findById(req.user._id).select('paymentHistory').lean();
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
 
-             history = [{
-                 _id: fullUser._id, // Give it a temporary ID for React keys
-                 date: sub.startDate || new Date(),
-                 endDate: sub.endDate,
-                 amount: amountPaid,
-                 plan: sub.plan,
-                 billingCycle: sub.billingCycle,
-                 razorpayOrderId: sub.razorpayOrderId,
-                 razorpayPaymentId: sub.razorpayPaymentId
-             }];
-        }
-     }
+    // Sort history descending by date natively in JS since it's an embedded array
+    let history = user.paymentHistory || [];
 
-     history.sort((a, b) => new Date(b.date) - new Date(a.date));
+    // Backward compatibility for older Pro purchases saved before paymentHistory existed.
+    if (history.length === 0) {
+      const fullUser = await User.findById(req.user._id).select('subscription').lean();
+      if (fullUser && fullUser.subscription && fullUser.subscription.plan === 'pro' && fullUser.subscription.razorpayPaymentId) {
+        const sub = fullUser.subscription;
+        let amountPaid = 0;
+        if (sub.billingCycle === 'monthly') amountPaid = 999;
+        else if (sub.billingCycle === 'yearly') amountPaid = 9588;
 
-     res.status(200).json(history);
+        history = [{
+          _id: fullUser._id,
+          date: sub.startDate || new Date(),
+          endDate: sub.endDate,
+          amount: amountPaid,
+          plan: sub.plan,
+          billingCycle: sub.billingCycle,
+          razorpayOrderId: sub.razorpayOrderId,
+          razorpayPaymentId: sub.razorpayPaymentId,
+        }];
+      }
+    }
+
+    history.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    res.status(200).json(history);
   } catch (error) {
-     console.error('Fetch Payment History Error:', error);
-     res.status(500).json({ message: 'Server error while fetching payment history', error: error.message });
+    console.error('Fetch Payment History Error:', error);
+    res.status(500).json({ message: 'Server error while fetching payment history', error: error.message });
   }
 };
 
@@ -212,53 +231,53 @@ exports.getUsageStats = async (req, res) => {
 
     const invoicesCount = await Invoice.countDocuments({
       user: req.user._id,
-      createdAt: { $gte: startOfMonth }
+      createdAt: { $gte: startOfMonth },
     });
 
     const quotesCount = await Quote.countDocuments({
       user: req.user._id,
-      createdAt: { $gte: startOfMonth }
+      createdAt: { $gte: startOfMonth },
     });
 
     const purchaseOrdersCount = await PurchaseOrder.countDocuments({
       user: req.user._id,
-      createdAt: { $gte: startOfMonth }
+      createdAt: { $gte: startOfMonth },
     });
 
     const editedInvoicesCount = await Invoice.countDocuments({
       user: req.user._id,
       updatedAt: { $gte: startOfMonth },
-      $expr: { $gt: ["$updatedAt", "$createdAt"] }
+      $expr: { $gt: ['$updatedAt', '$createdAt'] },
     });
 
     const editedQuotesCount = await Quote.countDocuments({
       user: req.user._id,
       updatedAt: { $gte: startOfMonth },
-      $expr: { $gt: ["$updatedAt", "$createdAt"] }
+      $expr: { $gt: ['$updatedAt', '$createdAt'] },
     });
 
     const editedPurchaseOrdersCount = await PurchaseOrder.countDocuments({
       user: req.user._id,
       updatedAt: { $gte: startOfMonth },
-      $expr: { $gt: ["$updatedAt", "$createdAt"] }
+      $expr: { $gt: ['$updatedAt', '$createdAt'] },
     });
 
     const proformasCount = await Proforma.countDocuments({
       user: req.user._id,
-      createdAt: { $gte: startOfMonth }
+      createdAt: { $gte: startOfMonth },
     });
 
     const editedProformasCount = await Proforma.countDocuments({
       user: req.user._id,
       updatedAt: { $gte: startOfMonth },
-      $expr: { $gt: ["$updatedAt", "$createdAt"] }
+      $expr: { $gt: ['$updatedAt', '$createdAt'] },
     });
 
     res.json({
       invoices: { used: invoicesCount, limit: 15 },
-      quotes: { used: quotesCount + proformasCount, limit: 15 }, // Quotes model includes Proformas per new business logic
+      quotes: { used: quotesCount + proformasCount, limit: 15 },
       purchaseOrders: { used: purchaseOrdersCount, limit: 15 },
-      edits: { used: editedInvoicesCount + editedQuotesCount + editedPurchaseOrdersCount + editedProformasCount, limit: 5 }
+      edits: { used: editedInvoicesCount + editedQuotesCount + editedPurchaseOrdersCount + editedProformasCount, limit: 5 },
     });
   } catch (error) {
     console.error('Error fetching usage stats:', error);

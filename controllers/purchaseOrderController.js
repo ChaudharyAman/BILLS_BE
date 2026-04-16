@@ -4,6 +4,7 @@ const VendorModel = require('../models/Client');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
 const escapeRegex = require('../utils/escapeRegex');
+const { buildAutoDocumentNumber, buildCustomDocumentNumber } = require('../utils/documentNumber');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
@@ -70,7 +71,7 @@ exports.getPurchaseOrders = async (req, res) => {
 
     const total = await PurchaseOrder.countDocuments(query);
     const purchaseOrders = await PurchaseOrder.find(query)
-      .select('-items -notes -terms -shippingAddress')
+      .select('-notes -terms -shippingAddress')
       .lean()
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -103,6 +104,7 @@ exports.getPurchaseOrderById = async (req, res) => {
 exports.createPurchaseOrder = async (req, res) => {
   try {
     const { vendorRef, invoiceType, items, date, validUntil, shippingAddress, transport,
+      refNumber,
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, privateNotes, terms, reverseCharge } = req.body;
 
@@ -122,11 +124,6 @@ exports.createPurchaseOrder = async (req, res) => {
       }
     }
     // -------------------------------
-
-    const counter = await Counter.findOneAndUpdate(
-      { id: 'purchaseOrderNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
-    );
-    const poNumber = `PO-${counter.seq.toString().padStart(3, '0')}`;
 
     const vendor = await VendorModel.findById(vendorRef);
     if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
@@ -149,6 +146,26 @@ exports.createPurchaseOrder = async (req, res) => {
     };
 
     const userSettings = await Settings.findOne({ user: req.user._id });
+    const purchaseOrderPrefix = userSettings?.purchaseOrderPrefix || 'PO';
+    let poNumber = buildCustomDocumentNumber({
+      prefix: purchaseOrderPrefix,
+      explicitNumber: req.body.documentNumber,
+      docNo: req.body.docNo,
+      docNoSuffix: req.body.docNoSuffix,
+    });
+
+    if (poNumber) {
+      const existing = await PurchaseOrder.findOne({ user: req.user._id, poNumber });
+      if (existing) {
+        return res.status(400).json({ message: `Purchase order number "${poNumber}" already exists.` });
+      }
+    } else {
+      const counter = await Counter.findOneAndUpdate(
+        { id: 'purchaseOrderNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+      );
+      poNumber = buildAutoDocumentNumber(purchaseOrderPrefix, counter.seq);
+    }
+
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const vendorState = placeOfSupply || vendor.billingAddress?.state || '';
     const isIntraState = vendorState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
@@ -169,6 +186,7 @@ exports.createPurchaseOrder = async (req, res) => {
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: customChargeLabel || 'Custom Amount',
       discountTotal: finalDiscount, grandTotal,
+      refNumber: refNumber || '',
       status: status || 'DRAFT', shippingAddress, transport,
       placeOfSupply: vendorState, reverseCharge: !!reverseCharge, notes, privateNotes, terms,
     });
@@ -185,6 +203,7 @@ exports.createPurchaseOrder = async (req, res) => {
 exports.updatePurchaseOrder = async (req, res) => {
   try {
     const { vendorRef, invoiceType, items, date, validUntil, shippingAddress, transport,
+      refNumber,
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, privateNotes, terms, reverseCharge } = req.body;
 
@@ -251,6 +270,7 @@ exports.updatePurchaseOrder = async (req, res) => {
     };
 
     const userSettings = await Settings.findOne({ user: req.user._id });
+    const purchaseOrderPrefix = userSettings?.purchaseOrderPrefix || 'PO';
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const vendorState = placeOfSupply || vendor.billingAddress?.state || '';
     const isIntraState = vendorState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
@@ -263,6 +283,21 @@ exports.updatePurchaseOrder = async (req, res) => {
     const finalDiscount = Number(discountTotal) || 0;
     const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
 
+    const requestedPoNumber = buildCustomDocumentNumber({
+      prefix: purchaseOrderPrefix,
+      explicitNumber: req.body.documentNumber,
+      docNo: req.body.docNo,
+      docNoSuffix: req.body.docNoSuffix,
+    });
+
+    if (requestedPoNumber && requestedPoNumber !== purchaseOrder.poNumber) {
+      const duplicate = await PurchaseOrder.findOne({ user: req.user._id, poNumber: requestedPoNumber, _id: { $ne: purchaseOrder._id } });
+      if (duplicate) {
+        return res.status(400).json({ message: `Purchase order number "${requestedPoNumber}" already exists.` });
+      }
+      purchaseOrder.poNumber = requestedPoNumber;
+    }
+
     Object.assign(purchaseOrder, {
       invoiceType: invoiceType || purchaseOrder.invoiceType,
       vendor: vendorSnapshot, items: processedItems, date, validUntil,
@@ -270,6 +305,7 @@ exports.updatePurchaseOrder = async (req, res) => {
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: customChargeLabel || 'Custom Amount',
       discountTotal: finalDiscount, grandTotal, shippingAddress, transport,
+      refNumber: refNumber || '',
       placeOfSupply: vendorState, reverseCharge: !!reverseCharge, notes, privateNotes, terms,
     });
     if (status) purchaseOrder.status = status;
@@ -309,10 +345,11 @@ exports.convertToInvoice = async (req, res) => {
     if (purchaseOrder.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     if (purchaseOrder.status === 'BILLED') return res.status(400).json({ message: 'Already converted to invoice' });
 
+    const userSettings = await Settings.findOne({ user: req.user._id });
     const counter = await Counter.findOneAndUpdate(
       { id: 'invoiceNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
-    const invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
+    const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
     // Fetch fresh vendor data to ensure correct address format specially for old purchaseOrders
     const vendor = await VendorModel.findById(purchaseOrder.vendor.vendorRef);
@@ -350,7 +387,6 @@ exports.convertToInvoice = async (req, res) => {
       }
     }
 
-    const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const vendorState = purchaseOrder.placeOfSupply || vendorSnapshot.address.state || '';
     const isIntraState = vendorState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
@@ -436,7 +472,7 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
-      const poNumber = `PO-${counter.seq.toString().padStart(3, '0')}`;
+      const poNumber = buildAutoDocumentNumber(userSettings?.purchaseOrderPrefix || 'PO', counter.seq);
 
       // purchaseOrderController processItems only takes two params: items, isIntraState
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
@@ -468,7 +504,14 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
            name: vendor.name,
            email: vendor.email,
            phone: vendor.phone,
-           billingAddress: vendor.billingAddress || {},
+           address: {
+             line1: vendor.billingAddress?.line1 || '',
+             line2: vendor.billingAddress?.line2 || '',
+             city: vendor.billingAddress?.city || '',
+             state: vendor.billingAddress?.state || '',
+             zip: vendor.billingAddress?.zip || '',
+             country: vendor.billingAddress?.country || 'India',
+           },
            gstin: vendor.gstin || '',
         },
         items: processedItems,

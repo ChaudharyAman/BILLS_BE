@@ -19,7 +19,7 @@ const PurchaseOrderItemSchema = new mongoose.Schema({
 
 const PurchaseOrderSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
-  poNumber: { type: String, required: true, unique: true },
+  poNumber: { type: String, required: true },
   refNumber: String,
   date: { type: Date, default: Date.now, required: true },
   validUntil: Date,  // Validity / expiry date
@@ -81,5 +81,7 @@ const PurchaseOrderSchema = new mongoose.Schema({
   privateNotes: String,
   terms: String,
 }, { timestamps: true });
+
+PurchaseOrderSchema.index({ user: 1, poNumber: 1 }, { unique: true });
 
 module.exports = mongoose.model('PurchaseOrder', PurchaseOrderSchema);

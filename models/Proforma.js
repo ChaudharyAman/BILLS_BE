@@ -19,7 +19,7 @@ const ProformaItemSchema = new mongoose.Schema({
 
 const ProformaSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
-  proformaNo: { type: String, required: true, unique: true },
+  proformaNo: { type: String, required: true },
   invoiceType: {
     type: String,
     enum: ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'],

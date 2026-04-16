@@ -5,8 +5,171 @@ const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
 const mongoose = require('mongoose');
 const escapeRegex = require('../utils/escapeRegex');
+const { buildAutoDocumentNumber } = require('../utils/documentNumber');
 
 const User = require('../models/User');
+const PDF_IMPORT_SOURCE = 'pdf';
+
+// Helper to calculate Financial Year (April - March)
+function getFinancialYear(date) {
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return '';
+  const year = d.getFullYear();
+  const month = d.getMonth() + 1; // 1-12
+  if (month >= 4) {
+    return `${year}-${(year + 1).toString().slice(-2)}`;
+  } else {
+    return `${year - 1}-${year.toString().slice(-2)}`;
+  }
+}
+
+function normalizeLookupText(value = '') {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function buildExactNameRegex(value = '') {
+  const escaped = escapeRegex(String(value || '').trim()).replace(/\s+/g, '\\s+');
+  return new RegExp(`^${escaped}$`, 'i');
+}
+
+function buildClientSnapshot(client) {
+  return {
+    clientRef: client._id,
+    name: client.name,
+    address: {
+      line1: client.billingAddress?.line1 || '',
+      line2: client.billingAddress?.line2 || '',
+      city: client.billingAddress?.city || '',
+      state: client.billingAddress?.state || '',
+      zip: client.billingAddress?.zip || '',
+      country: client.billingAddress?.country || 'India',
+    },
+    gstin: client.gstin || '',
+    phone: client.phone || '',
+    email: client.email || '',
+  };
+}
+
+async function resolveClientForInvoice({
+  userId,
+  clientRef,
+  clientName,
+  clientGST,
+  placeOfSupply,
+  importSource,
+}) {
+  if (clientRef && mongoose.Types.ObjectId.isValid(clientRef)) {
+    const client = await Client.findById(clientRef);
+    if (!client) throw new Error('Client not found');
+    if (client.user.toString() !== userId.toString()) {
+      throw new Error('User not authorized to use this client');
+    }
+    return client;
+  }
+
+  if (importSource !== PDF_IMPORT_SOURCE) {
+    throw new Error('Client not found');
+  }
+
+  const normalizedClientName = normalizeLookupText(clientName);
+  if (!normalizedClientName) {
+    throw new Error('Client not found');
+  }
+
+  const existingClient = await Client.findOne({
+    user: userId,
+    name: { $regex: buildExactNameRegex(clientName) },
+  });
+
+  if (existingClient) {
+    return existingClient;
+  }
+
+  const normalizedPlaceOfSupply = String(placeOfSupply || '').trim();
+  const normalizedClientGST = String(clientGST || '').trim().toUpperCase();
+
+  const client = new Client({
+    user: userId,
+    name: String(clientName).trim(),
+    gstin: normalizedClientGST || undefined,
+    gstTreatment: normalizedClientGST ? 'Registered Business' : 'Unregistered Business',
+    placeOfSupply: normalizedPlaceOfSupply || 'Delhi',
+    billingAddress: {
+      state: normalizedPlaceOfSupply || '',
+      country: 'India',
+    },
+    isClient: true,
+  });
+
+  return client.save();
+}
+
+async function resolvePdfImportItems(userId, items = []) {
+  const resolvedItems = [];
+
+  for (const rawItem of items) {
+    const item = { ...rawItem };
+
+    if (item.itemRef && mongoose.Types.ObjectId.isValid(item.itemRef)) {
+      const existingItem = await Item.findById(item.itemRef).lean();
+      if (existingItem && existingItem.user.toString() === userId.toString()) {
+        resolvedItems.push(item);
+        continue;
+      }
+    }
+
+    const normalizedItemName = normalizeLookupText(item.name);
+    if (!normalizedItemName) {
+      resolvedItems.push(item);
+      continue;
+    }
+
+    let catalogItem = await Item.findOne({
+      user: userId,
+      name: { $regex: buildExactNameRegex(item.name) },
+    });
+
+    if (!catalogItem) {
+      const unit = String(item.unit || '').trim() || 'pcs';
+      const rate = Number(item.rate) || 0;
+      const taxRate = Number(item.taxRate) || 0;
+
+      catalogItem = await Item.create({
+        user: userId,
+        name: String(item.name).trim(),
+        description: item.description || '',
+        hsnCode: item.hsnCode || '',
+        unit,
+        rate,
+        sellingPrice: rate,
+        purchasePrice: rate,
+        taxRate,
+        defaultTaxRate: taxRate,
+        salesInfo: {
+          price: rate,
+          currency: 'INR',
+          cessPercent: 0,
+          cessAmount: 0,
+        },
+        purchaseInfo: {
+          price: rate,
+          currency: 'INR',
+          cessPercent: 0,
+          cessAmount: 0,
+        },
+      });
+    }
+
+    resolvedItems.push({
+      ...item,
+      itemRef: catalogItem._id,
+    });
+  }
+
+  return resolvedItems;
+}
+
+
 
 // ─── Shared: process items based on invoice type ──────────────────────────────
 function processItems(items, invoiceType, isIntraState) {
@@ -112,7 +275,7 @@ exports.getInvoices = async (req, res) => {
 
     const total = await Invoice.countDocuments(query);
     const invoices = await Invoice.find(query)
-      .select('-items -notes -terms -shippingAddress')
+      .populate('user', 'username').select('-items -terms -shippingAddress')
       .lean()
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -152,6 +315,9 @@ exports.createInvoice = async (req, res) => {
   try {
     const {
       clientRef,
+      clientName,
+      clientGST,
+      importSource,
       invoiceType = 'Tax Invoice',
       items,
       date,
@@ -172,13 +338,18 @@ exports.createInvoice = async (req, res) => {
       terms,
       reverseCharge,
       exciseDuty,
+      fy,
+      currency,
+      tds,
+      tcs,
+      drCr,
     } = req.body;
+    const resolvedImportSource = importSource || (req.body._fromPdfImport ? PDF_IMPORT_SOURCE : '');
 
     // --- Subscription Plan Check ---
     const userObj = await User.findById(req.user._id);
-    const plan = userObj?.subscription?.plan || 'free';
-    
-    if (plan === 'free') {
+    const isPro = userObj?.subscription?.plan === 'pro' && userObj?.subscription?.status === 'active';
+    if (!isPro) {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const invoiceCount = await Invoice.countDocuments({
@@ -190,6 +361,8 @@ exports.createInvoice = async (req, res) => {
       }
     }
     // -------------------------------
+    const userSettings = await Settings.findOne({ user: req.user._id });
+    const invoicePrefix = userSettings?.invoicePrefix || 'INV';
     let invoiceNo = req.body.invoiceNo;
     const isAuto = !invoiceNo || invoiceNo === 'Auto-generated';
 
@@ -206,34 +379,20 @@ exports.createInvoice = async (req, res) => {
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
-      invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
+      invoiceNo = buildAutoDocumentNumber(invoicePrefix, counter.seq);
     }
 
-    // Fetch Client Snapshot
-    const client = await Client.findById(clientRef);
-    if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user._id.toString()) {
-      return res.status(401).json({ message: 'User not authorized to use this client' });
-    }
-
-    const clientSnapshot = {
-      clientRef: client._id,
-      name: client.name,
-      address: {
-        line1: client.billingAddress?.line1 || '',
-        line2: client.billingAddress?.line2 || '',
-        city: client.billingAddress?.city || '',
-        state: client.billingAddress?.state || '',
-        zip: client.billingAddress?.zip || '',
-        country: client.billingAddress?.country || 'India',
-      },
-      gstin: client.gstin || '',
-      phone: client.phone || '',
-      email: client.email || '',
-    };
+    const client = await resolveClientForInvoice({
+      userId: req.user._id,
+      clientRef,
+      clientName,
+      clientGST,
+      placeOfSupply,
+      importSource: resolvedImportSource,
+    });
+    const clientSnapshot = buildClientSnapshot(client);
 
     // GST intra/inter state logic
-    const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
     // Normalize: extract state name before parenthesis for comparison e.g. "HR (06)" → "HR", "Haryana (06)" → "Haryana"
@@ -252,14 +411,20 @@ exports.createInvoice = async (req, res) => {
           country: client.shippingAddress.country || 'India',
         } : null);
 
+    const resolvedItems = resolvedImportSource === PDF_IMPORT_SOURCE
+      ? await resolvePdfImportItems(req.user._id, items || [])
+      : (items || []);
+
     // Process items
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } =
-      processItems(items || [], invoiceType, isIntraState);
+      processItems(resolvedItems, invoiceType, isIntraState);
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
     const finalDiscountTotal = Number(discountTotal) || 0;
-    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal;
+    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
+    const finalTds = Number(tds) || 0;
+    const finalTcs = Number(tcs) || 0;
     const finalAdvance = Number(advancePaid) || 0;
     const finalBalance = Math.max(0, grandTotal - finalAdvance);
 
@@ -291,6 +456,11 @@ exports.createInvoice = async (req, res) => {
       bankDetails,
       placeOfSupply: clientState,
       reverseCharge: !!reverseCharge,
+      fy: fy || getFinancialYear(date),
+      currency: currency || 'INR',
+      tds: finalTds,
+      tcs: finalTcs,
+      drCr: drCr || 'Dr.',
       notes,
       terms,
       exciseDuty: exciseDuty || {},
@@ -330,6 +500,11 @@ exports.updateInvoice = async (req, res) => {
       terms,
       reverseCharge,
       exciseDuty,
+      fy,
+      currency,
+      tds,
+      tcs,
+      drCr,
     } = req.body;
 
     const invoice = await Invoice.findById(req.params.id);
@@ -340,9 +515,8 @@ exports.updateInvoice = async (req, res) => {
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(req.user._id);
-    const plan = userObj?.subscription?.plan || 'free';
-    
-    if (plan === 'free') {
+    const isPro = userObj?.subscription?.plan === 'pro' && userObj?.subscription?.status === 'active';
+    if (!isPro) {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const conditions = {
@@ -427,7 +601,9 @@ exports.updateInvoice = async (req, res) => {
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
     const finalDiscountTotal = Number(discountTotal) || 0;
-    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal;
+    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
+    const finalTds = Number(tds) || 0;
+    const finalTcs = Number(tcs) || 0;
     const finalAdvance = Number(advancePaid) || 0;
     const finalBalance = Math.max(0, grandTotal - finalAdvance);
 
@@ -462,6 +638,11 @@ exports.updateInvoice = async (req, res) => {
     invoice.bankDetails = bankDetails;
     invoice.placeOfSupply = clientState;
     invoice.reverseCharge = !!reverseCharge;
+    invoice.fy = fy || getFinancialYear(date);
+    invoice.currency = currency || 'INR';
+    invoice.tds = finalTds;
+    invoice.tcs = finalTcs;
+    invoice.drCr = drCr || 'Dr.';
     invoice.notes = notes;
     invoice.terms = terms;
     invoice.exciseDuty = exciseDuty || invoice.exciseDuty || {};
@@ -487,8 +668,8 @@ exports.deleteInvoice = async (req, res) => {
 
     // --- Subscription Plan Check for Deletes ---
     const userObj = await User.findById(req.user._id);
-    const plan = userObj?.subscription?.plan || 'free';
-    if (plan === 'free') {
+    const isPro = userObj?.subscription?.plan === 'pro' && userObj?.subscription?.status === 'active';
+    if (!isPro) {
        return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
     }
     // -------------------------------------------
@@ -509,9 +690,8 @@ exports.bulkCreateInvoices = async (req, res) => {
 
     // --- Subscription Plan Check ---
     const userObj = await User.findById(req.user._id);
-    const plan = userObj?.subscription?.plan || 'free';
-    
-    if (plan === 'free') {
+    const isPro = userObj?.subscription?.plan === 'pro' && userObj?.subscription?.status === 'active';
+    if (!isPro) {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const invoiceCount = await Invoice.countDocuments({
@@ -550,7 +730,7 @@ exports.bulkCreateInvoices = async (req, res) => {
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
-      const invoiceNo = `INV-${counter.seq.toString().padStart(3, '0')}`;
+      const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
         processItems(invData.items || [], invData.invoiceType || 'Tax Invoice', isIntraState);
@@ -558,7 +738,8 @@ exports.bulkCreateInvoices = async (req, res) => {
       const finalShipping = Number(invData.shippingCharges) || 0;
       const finalPackaging = Number(invData.packagingCharges) || 0;
       const finalDiscount = Number(invData.discountTotal) || 0;
-      const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+      const finalTcs = Number(invData.tcs) || 0;
+      const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount + finalTcs;
       const advancePaid = Number(invData.advancePaid) || 0;
       const balanceDue = Math.max(0, grandTotal - advancePaid);
 
@@ -574,6 +755,11 @@ exports.bulkCreateInvoices = async (req, res) => {
         bankDetails: invData.bankDetails,
         placeOfSupply: invData.placeOfSupply || clientState,
         reverseCharge: !!invData.reverseCharge,
+        fy: invData.fy || getFinancialYear(invData.date || new Date()),
+        currency: invData.currency || 'INR',
+        tds: Number(invData.tds) || 0,
+        tcs: Number(invData.tcs) || 0,
+        drCr: invData.drCr || 'Dr.',
         customChargeLabel: invData.customChargeLabel || 'Custom Amount',
         notes: invData.notes || '',
         terms: invData.terms || '',
@@ -584,7 +770,14 @@ exports.bulkCreateInvoices = async (req, res) => {
            name: client.name,
            email: client.email,
            phone: client.phone,
-           billingAddress: client.billingAddress || {},
+           address: {
+             line1: client.billingAddress?.line1 || '',
+             line2: client.billingAddress?.line2 || '',
+             city: client.billingAddress?.city || '',
+             state: client.billingAddress?.state || '',
+             zip: client.billingAddress?.zip || '',
+             country: client.billingAddress?.country || 'India',
+           },
            gstin: client.gstin || '',
         },
         items: processedItems,
