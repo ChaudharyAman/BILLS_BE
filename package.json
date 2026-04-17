@@ -7,7 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test:system": "node scripts/run-complete-system-tests.js"
+    "test:system": "node scripts/run-complete-system-tests.js",
+    "promote:admin": "node scripts/promote-admin.js"
   },
   "keywords": [],
   "author": "",

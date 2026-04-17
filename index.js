@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const connectDB = require('./db');
+const bootstrapAdmin = require('./utils/bootstrap');
 
 dotenv.config();
 
@@ -66,6 +67,7 @@ app.get('/', (req, res) => {
 
 async function startServer(port = process.env.PORT || 5000) {
   await connectDB();
+  await bootstrapAdmin();
 
   return new Promise((resolve, reject) => {
     const server = app.listen(port, () => {
