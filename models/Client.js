@@ -30,6 +30,7 @@ const ClientSchema = new mongoose.Schema({
   // Flags
   isClient: { type: Boolean, default: true },
   isVendor: { type: Boolean, default: false },
+  vendorRelation: { type: String, enum: ['Bought From', 'Sold To'], default: 'Bought From' },
   useForDispatch: { type: Boolean, default: false },
   clientWiseItemPrice: { type: Boolean, default: false },
   vendorCode: { type: String, trim: true },

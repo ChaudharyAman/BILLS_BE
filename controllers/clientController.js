@@ -78,7 +78,7 @@ exports.createClient = async (req, res) => {
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
       contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
-      useForDispatch, vendorCode, clientWiseItemPrice,
+      useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
       facebook, lst, cst, dlNo, openingBalance
     } = req.body;
 
@@ -86,7 +86,7 @@ exports.createClient = async (req, res) => {
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
       contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
-      useForDispatch, vendorCode, clientWiseItemPrice,
+      useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
       facebook, lst, cst, dlNo, openingBalance,
       user: req.user._id
     });
@@ -169,7 +169,7 @@ exports.updateClient = async (req, res) => {
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
       contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
-      useForDispatch, vendorCode, clientWiseItemPrice,
+      useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
       facebook, lst, cst, dlNo, openingBalance
     } = req.body;
 
@@ -177,7 +177,7 @@ exports.updateClient = async (req, res) => {
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
       contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
-      useForDispatch, vendorCode, clientWiseItemPrice,
+      useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
       facebook, lst, cst, dlNo, openingBalance
     };
 

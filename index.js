@@ -55,6 +55,7 @@ app.use('/api/quotes', require('./routes/quoteRoutes'));
 app.use('/api/proformas', require('./routes/proformaRoutes'));
 app.use('/api/purchase-orders', require('./routes/purchaseOrderRoutes'));
 app.use('/api/expenses', require('./routes/expenseRoutes'));
+app.use('/api/incomes', require('./routes/incomeRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
