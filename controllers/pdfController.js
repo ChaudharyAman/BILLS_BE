@@ -1,4 +1,16 @@
 const { parseInvoice } = require('../utils/invoiceParser');
+const { parseInvoiceWithNvidia, parseScannedInvoicePdfWithNvidia } = require('../services/nvidiaInvoiceParser');
+
+function getPdfTarget(req) {
+  const target = String(req.query?.target || 'invoice').toLowerCase();
+  return ['invoice', 'expense', 'income'].includes(target) ? target : 'invoice';
+}
+
+async function readPdfText(buffer) {
+  const { PDFParse } = require('pdf-parse');
+  const parser = new PDFParse({ data: buffer });
+  return parser.getText();
+}
 
 /**
  * @desc    Extract structured data from an uploaded PDF invoice
@@ -16,9 +28,7 @@ const extractInvoiceFromPDF = async (req, res) => {
     // Parse the PDF buffer into raw text
     let pdfData;
     try {
-      const { PDFParse } = require('pdf-parse');
-      const parser = new PDFParse({ data: req.file.buffer });
-      pdfData = await parser.getText();
+      pdfData = await readPdfText(req.file.buffer);
     } catch (pdfErr) {
       console.error('PDF Parse Error:', pdfErr);
       return res.status(400).json({
@@ -53,4 +63,51 @@ const extractInvoiceFromPDF = async (req, res) => {
   }
 };
 
-module.exports = { extractInvoiceFromPDF };
+/**
+ * @desc    Extract structured data from an uploaded PDF invoice using NVIDIA AI with safe fallback
+ * @route   POST /api/pdf/extract-ai
+ * @access  Protected
+ */
+const extractInvoiceFromPDFAI = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No PDF file uploaded.' });
+    }
+
+    const fileName = req.file.originalname || 'unknown.pdf';
+    const documentType = getPdfTarget(req);
+
+    let pdfData;
+    try {
+      pdfData = await readPdfText(req.file.buffer);
+    } catch (pdfErr) {
+      console.error('AI Invoice PDF Parse Error:', pdfErr);
+      return res.status(400).json({
+        message: 'Failed to read PDF file. The file may be corrupted or image-based (scanned).',
+        error: pdfErr.message,
+      });
+    }
+
+    const rawText = pdfData.text || '';
+    const result = (!rawText || rawText.trim().length < 20)
+      ? await parseScannedInvoicePdfWithNvidia(req.file.buffer, fileName, { documentType })
+      : await parseInvoiceWithNvidia(rawText, fileName, { documentType });
+
+    result.metadata = {
+      ...result.metadata,
+      documentType,
+      pdfPages: pdfData.total || 1,
+      textLength: rawText.length,
+    };
+
+    res.json(result);
+  } catch (error) {
+    console.error('AI invoice PDF extraction error:', error);
+    res.status(500).json({
+      message: 'Internal server error during AI invoice PDF processing.',
+      error: error.message,
+    });
+  }
+};
+
+module.exports = { extractInvoiceFromPDF, extractInvoiceFromPDFAI };
