@@ -6,6 +6,7 @@ const Settings = require('../models/Settings');
 const mongoose = require('mongoose');
 const escapeRegex = require('../utils/escapeRegex');
 const { buildAutoDocumentNumber } = require('../utils/documentNumber');
+const { syncIncomeFromInvoice, removeIncomeForInvoice } = require('../services/invoiceIncomeSync');
 
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
@@ -467,6 +468,7 @@ exports.createInvoice = async (req, res) => {
     });
 
     const newInvoice = await invoice.save();
+    await syncIncomeFromInvoice(newInvoice);
     res.status(201).json(newInvoice);
 
   } catch (error) {
@@ -649,6 +651,7 @@ exports.updateInvoice = async (req, res) => {
     if (status) invoice.status = status;
 
     const updatedInvoice = await invoice.save();
+    await syncIncomeFromInvoice(updatedInvoice);
     res.json(updatedInvoice);
 
   } catch (error) {
@@ -674,6 +677,7 @@ exports.deleteInvoice = async (req, res) => {
     }
     // -------------------------------------------
     await invoice.deleteOne();
+    await removeIncomeForInvoice(invoice._id, invoice.user);
     res.json({ message: 'Invoice deleted successfully' });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -789,6 +793,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       });
       
       const savedInvoice = await invoice.save();
+      await syncIncomeFromInvoice(savedInvoice);
       createdInvoices.push(savedInvoice);
     }
 
