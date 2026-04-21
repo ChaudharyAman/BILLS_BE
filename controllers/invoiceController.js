@@ -10,6 +10,7 @@ const { syncIncomeFromInvoice, removeIncomeForInvoice } = require('../services/i
 
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
+const MAX_GST_RATE = 28;
 
 // Helper to calculate Financial Year (April - March)
 function getFinancialYear(date) {
@@ -31,6 +32,56 @@ function normalizeLookupText(value = '') {
 function buildExactNameRegex(value = '') {
   const escaped = escapeRegex(String(value || '').trim()).replace(/\s+/g, '\\s+');
   return new RegExp(`^${escaped}$`, 'i');
+}
+
+function extractStateCode(value = '') {
+  const text = String(value || '').trim();
+  if (!text) return '';
+
+  const prefixMatch = text.match(/^(\d{2})\s*[-(]/);
+  if (prefixMatch) return prefixMatch[1];
+
+  const parenMatch = text.match(/\((\d{2})\)/);
+  if (parenMatch) return parenMatch[1];
+
+  return '';
+}
+
+function normalizeStateName(value = '') {
+  return String(value || '')
+    .replace(/^\d{2}\s*[-)]?\s*/, '')
+    .split('(')[0]
+    .trim()
+    .toLowerCase();
+}
+
+function isInterStateSupply(placeOfSupply, companyState, companyGstin) {
+  const supply = String(placeOfSupply || '').trim();
+  if (!supply) return false;
+
+  const supplyStateCode = extractStateCode(supply);
+  const companyStateCode = String(companyGstin || '').trim().slice(0, 2);
+
+  if (supplyStateCode && /^\d{2}$/.test(companyStateCode)) {
+    return supplyStateCode !== companyStateCode;
+  }
+
+  const normalizedSupply = normalizeStateName(supply);
+  const normalizedCompanyState = normalizeStateName(companyState);
+
+  if (normalizedSupply && normalizedCompanyState) {
+    return normalizedSupply !== normalizedCompanyState;
+  }
+
+  return false;
+}
+
+function sanitizeGstRate(value = '') {
+  const numeric = Number.parseFloat(String(value ?? '').replace('%', '').trim());
+  if (!Number.isFinite(numeric) || numeric < 0 || numeric > MAX_GST_RATE) {
+    return 0;
+  }
+  return numeric;
 }
 
 function buildClientSnapshot(client) {
@@ -189,7 +240,7 @@ function processItems(items, invoiceType, isIntraState) {
 
     let cgst = 0, sgst = 0, igst = 0, itemTax = 0;
     if (hasTax) {
-      const taxRate = Number(item.taxRate) || 0;
+      const taxRate = sanitizeGstRate(item.taxRate);
       itemTax = taxableValue * (taxRate / 100);
       if (isIntraState) {
         cgst = itemTax / 2;
@@ -225,7 +276,7 @@ function processItems(items, invoiceType, isIntraState) {
       unit: item.unit,
       rate,
       discount: discountPct,
-      taxRate: Number(item.taxRate) || 0,
+      taxRate: sanitizeGstRate(item.taxRate),
       taxAmount: itemTax,
       cgst,
       sgst,
@@ -395,10 +446,11 @@ exports.createInvoice = async (req, res) => {
 
     // GST intra/inter state logic
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
     // Normalize: extract state name before parenthesis for comparison e.g. "HR (06)" → "HR", "Haryana (06)" → "Haryana"
     const normalizeState = (s) => s.trim().split('(')[0].trim().toLowerCase();
-    const isIntraState = normalizeState(clientState) === normalizeState(COMPANY_STATE);
+    const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
     // Auto-use client's shipping address if not overridden in form
     const resolvedShippingAddress = (shippingAddress?.line1)
@@ -579,10 +631,11 @@ exports.updateInvoice = async (req, res) => {
 
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
     // Normalize: extract state name before parenthesis e.g. "HR (06)" → "HR", "Haryana (06)" → "Haryana"
     const normalizeState = (s) => s.trim().split('(')[0].trim().toLowerCase();
-    const isIntraState = normalizeState(clientState) === normalizeState(COMPANY_STATE);
+    const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
     const resolvedShippingAddress = (shippingAddress?.line1)
       ? shippingAddress
@@ -710,6 +763,7 @@ exports.bulkCreateInvoices = async (req, res) => {
 
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
     const createdInvoices = [];
     for (const invData of invoices) {
@@ -727,7 +781,7 @@ exports.bulkCreateInvoices = async (req, res) => {
 
       const clientState = invData.placeOfSupply || client.billingAddress?.state || '';
       const normalizeState = (s) => s.trim().split('(')[0].trim().toLowerCase();
-      const isIntraState = normalizeState(clientState) === normalizeState(COMPANY_STATE);
+      const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
       const counter = await Counter.findOneAndUpdate(
         { id: 'invoiceNo' },
