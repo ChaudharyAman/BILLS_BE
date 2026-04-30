@@ -78,6 +78,7 @@ exports.createIncome = async (req, res) => {
 
     const income = await Income.create({
       user: req.user._id,
+      sourceType: 'manual',
       incomeNumber,
       date,
       vendor,
@@ -129,6 +130,13 @@ exports.updateIncome = async (req, res) => {
     let income = await Income.findOne({ _id: req.params.id, user: req.user._id });
     if (!income) {
       return res.status(404).json({ message: 'Income not found' });
+    }
+    if (income.sourceType === 'invoice' && income.sourceInvoice) {
+      return res.status(400).json({
+        message: 'This income is synced from an invoice. Edit the original invoice instead.',
+        sourceType: income.sourceType,
+        sourceInvoice: income.sourceInvoice,
+      });
     }
 
     // --- Subscription Plan Check for Edits ---
@@ -215,6 +223,13 @@ exports.deleteIncome = async (req, res) => {
     const income = await Income.findOne({ _id: req.params.id, user: req.user._id });
 
     if (income) {
+      if (income.sourceType === 'invoice' && income.sourceInvoice) {
+        return res.status(400).json({
+          message: 'This income is synced from an invoice. Delete the original invoice instead.',
+          sourceType: income.sourceType,
+          sourceInvoice: income.sourceInvoice,
+        });
+      }
       await income.deleteOne();
       res.json({ message: 'Income removed' });
     } else {

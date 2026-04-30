@@ -14,6 +14,16 @@ const IncomeItemSchema = new mongoose.Schema({
 
 const IncomeSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
+  sourceType: {
+    type: String,
+    enum: ['manual', 'invoice'],
+    default: 'manual',
+  },
+  sourceInvoice: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Invoice',
+    default: null,
+  },
   
   // Naming & Reference
   incomeNumber: { type: String, required: true },
@@ -55,5 +65,6 @@ const IncomeSchema = new mongoose.Schema({
 
 // Compound unique index: same income number is allowed across different users
 IncomeSchema.index({ user: 1, incomeNumber: 1 }, { unique: true });
+IncomeSchema.index({ user: 1, sourceInvoice: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Income', IncomeSchema);
