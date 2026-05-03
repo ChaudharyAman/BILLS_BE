@@ -14,6 +14,19 @@ const ExpenseItemSchema = new mongoose.Schema({
 
 const ExpenseSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
+  category: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category',
+    default: null,
+    index: true,
+  },
+  subCategory: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category',
+    default: null,
+  },
+  project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', default: null, index: true },
+  department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
   
   // Naming & Reference
   expenseNumber: { type: String, required: true },
@@ -40,6 +53,9 @@ const ExpenseSchema = new mongoose.Schema({
   subTotal: { type: Number, default: 0 },
   taxTotal: { type: Number, default: 0 },
   grandTotal: { type: Number, default: 0 },
+  amountPaid: { type: Number, default: 0, min: 0 },
+  balanceDue: { type: Number, default: 0, min: 0 },
+  dueDate: Date,
 
   // Notes
   terms: String,
@@ -47,7 +63,7 @@ const ExpenseSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['DRAFT', 'PAID', 'UNPAID', 'CANCELLED'],
+    enum: ['DRAFT', 'PAID', 'PARTIAL', 'UNPAID', 'CANCELLED'],
     default: 'DRAFT',
   },
 

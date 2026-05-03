@@ -5,42 +5,15 @@ const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
 const escapeRegex = require('../utils/escapeRegex');
 const { buildAutoDocumentNumber, buildCustomDocumentNumber } = require('../utils/documentNumber');
+const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
+const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
 
 // ─── Shared item processor ────────────────────────────────────────────────────
-function processItems(items, isIntraState) {
-  let subTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0, taxTotal = 0;
-  const processedItems = [];
-
-  for (const item of items) {
-    const qty = Number(item.qty) || 0;
-    const rate = Number(item.rate) || 0;
-    const discountPct = Number(item.discount) || 0;
-    const taxRate = Number(item.taxRate) || 0;
-
-    const taxableValue = qty * rate * (1 - discountPct / 100);
-    const itemTax = taxableValue * (taxRate / 100);
-
-    let cgst = 0, sgst = 0, igst = 0;
-    if (isIntraState) { cgst = itemTax / 2; sgst = itemTax / 2; }
-    else { igst = itemTax; }
-
-    const total = taxableValue + itemTax;
-    subTotal += taxableValue;
-    taxTotal += itemTax;
-    totalCGST += cgst;
-    totalSGST += sgst;
-    totalIGST += igst;
-
-    processedItems.push({
-      itemRef: item.itemRef, name: item.name, description: item.description,
-      hsnCode: item.hsnCode, qty, unit: item.unit, rate, discount: discountPct,
-      taxRate, taxAmount: itemTax, cgst, sgst, igst, amount: total,
-    });
-  }
-  return { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST };
+function processItems(items, invoiceType, isIntraState) {
+  return processDocumentItems(items, { invoiceType, isIntraState });
 }
 
 // ─── GET all purchaseOrders ───────────────────────────────────────────────────────────
@@ -93,9 +66,8 @@ exports.getPurchaseOrderById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Purchase Order not found' });
     }
-    const purchaseOrder = await PurchaseOrder.findById(req.params.id);
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: req.user._id });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
-    if (purchaseOrder.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     res.json(purchaseOrder);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -125,9 +97,8 @@ exports.createPurchaseOrder = async (req, res) => {
     }
     // -------------------------------
 
-    const vendor = await VendorModel.findById(vendorRef);
+    const vendor = await VendorModel.findOne({ _id: vendorRef, user: req.user._id });
     if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
-    if (vendor.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const vendorSnapshot = {
       vendorRef: vendor._id,
@@ -167,11 +138,12 @@ exports.createPurchaseOrder = async (req, res) => {
     }
 
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const vendorState = placeOfSupply || vendor.billingAddress?.state || '';
-    const isIntraState = vendorState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+    const isIntraState = !isInterStateSupply(vendorState, COMPANY_STATE, COMPANY_GSTIN);
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-      processItems(items || [], isIntraState);
+      processItems(items || [], invoiceType || 'Tax Invoice', isIntraState);
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
@@ -207,9 +179,8 @@ exports.updatePurchaseOrder = async (req, res) => {
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, privateNotes, terms, reverseCharge } = req.body;
 
-    const purchaseOrder = await PurchaseOrder.findById(req.params.id);
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: req.user._id });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
-    if (purchaseOrder.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(req.user._id);
@@ -249,9 +220,8 @@ exports.updatePurchaseOrder = async (req, res) => {
     }
     // -----------------------------------------
 
-    const vendor = await VendorModel.findById(vendorRef);
+    const vendor = await VendorModel.findOne({ _id: vendorRef, user: req.user._id });
     if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
-    if (vendor.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const vendorSnapshot = {
       vendorRef: vendor._id,
@@ -272,11 +242,13 @@ exports.updatePurchaseOrder = async (req, res) => {
     const userSettings = await Settings.findOne({ user: req.user._id });
     const purchaseOrderPrefix = userSettings?.purchaseOrderPrefix || 'PO';
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const vendorState = placeOfSupply || vendor.billingAddress?.state || '';
-    const isIntraState = vendorState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+    const isIntraState = !isInterStateSupply(vendorState, COMPANY_STATE, COMPANY_GSTIN);
+    const effectiveType = invoiceType || purchaseOrder.invoiceType || 'Tax Invoice';
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-      processItems(items || [], isIntraState);
+      processItems(items || [], effectiveType, isIntraState);
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
@@ -299,7 +271,7 @@ exports.updatePurchaseOrder = async (req, res) => {
     }
 
     Object.assign(purchaseOrder, {
-      invoiceType: invoiceType || purchaseOrder.invoiceType,
+      invoiceType: effectiveType,
       vendor: vendorSnapshot, items: processedItems, date, validUntil,
       paymentMode, paymentTerms, subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
@@ -321,9 +293,8 @@ exports.updatePurchaseOrder = async (req, res) => {
 // ─── DELETE purchaseOrder ─────────────────────────────────────────────────────────────
 exports.deletePurchaseOrder = async (req, res) => {
   try {
-    const purchaseOrder = await PurchaseOrder.findById(req.params.id);
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: req.user._id });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
-    if (purchaseOrder.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     // --- Subscription Plan Check for Deletes ---
     const userObj = await User.findById(req.user._id);
@@ -340,9 +311,8 @@ exports.deletePurchaseOrder = async (req, res) => {
 // ─── CONVERT purchaseOrder → invoice ──────────────────────────────────────────────────
 exports.convertToInvoice = async (req, res) => {
   try {
-    const purchaseOrder = await PurchaseOrder.findById(req.params.id);
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: req.user._id });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
-    if (purchaseOrder.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     if (purchaseOrder.status === 'BILLED') return res.status(400).json({ message: 'Already converted to invoice' });
 
     const userSettings = await Settings.findOne({ user: req.user._id });
@@ -352,7 +322,7 @@ exports.convertToInvoice = async (req, res) => {
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
     // Fetch fresh vendor data to ensure correct address format specially for old purchaseOrders
-    const vendor = await VendorModel.findById(purchaseOrder.vendor.vendorRef);
+    const vendor = await VendorModel.findOne({ _id: purchaseOrder.vendor.vendorRef, user: req.user._id });
     let vendorSnapshot = purchaseOrder.vendor;
     let resolvedShipping = purchaseOrder.shippingAddress;
 
@@ -388,10 +358,15 @@ exports.convertToInvoice = async (req, res) => {
     }
 
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const vendorState = purchaseOrder.placeOfSupply || vendorSnapshot.address.state || '';
-    const isIntraState = vendorState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+    const isIntraState = !isInterStateSupply(vendorState, COMPANY_STATE, COMPANY_GSTIN);
 
-    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(purchaseOrder.items, isIntraState);
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(purchaseOrder.items, purchaseOrder.invoiceType, isIntraState);
+    const finalShipping = Number(purchaseOrder.shippingCharges) || 0;
+    const finalPackaging = Number(purchaseOrder.packagingCharges) || 0;
+    const finalDiscount = Number(purchaseOrder.discountTotal) || 0;
+    const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
 
     const invoice = new Invoice({
       user: purchaseOrder.user, invoiceNo, invoiceType: purchaseOrder.invoiceType,
@@ -400,15 +375,16 @@ exports.convertToInvoice = async (req, res) => {
       client: vendorSnapshot, items: processedItems,
       subTotal, taxTotal,
       totalCGST, totalSGST, totalIGST,
-      shippingCharges: purchaseOrder.shippingCharges, packagingCharges: purchaseOrder.packagingCharges,
-      customChargeLabel: purchaseOrder.customChargeLabel, discountTotal: purchaseOrder.discountTotal,
-      grandTotal: purchaseOrder.grandTotal, balanceDue: purchaseOrder.grandTotal,
+      shippingCharges: finalShipping, packagingCharges: finalPackaging,
+      customChargeLabel: purchaseOrder.customChargeLabel, discountTotal: finalDiscount,
+      grandTotal, balanceDue: grandTotal,
       shippingAddress: resolvedShipping, transport: purchaseOrder.transport,
       placeOfSupply: purchaseOrder.placeOfSupply, reverseCharge: purchaseOrder.reverseCharge,
       notes: purchaseOrder.notes, terms: purchaseOrder.terms, status: 'DRAFT',
     });
 
     const savedInvoice = await invoice.save();
+    await syncIncomeFromInvoice(savedInvoice);
     purchaseOrder.status = 'BILLED';
     purchaseOrder.convertedToInvoice = savedInvoice._id;
     await purchaseOrder.save();
@@ -447,6 +423,7 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
 
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
     const createdPurchaseOrders = [];
     for (const qData of purchaseOrders) {
@@ -465,7 +442,7 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
       }
 
       const vendorState = qData.placeOfSupply || vendor.billingAddress?.state || '';
-      const isIntraState = vendorState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+      const isIntraState = !isInterStateSupply(vendorState, COMPANY_STATE, COMPANY_GSTIN);
 
       const counter = await Counter.findOneAndUpdate(
         { id: 'purchaseOrderNo' },
@@ -474,9 +451,8 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
       );
       const poNumber = buildAutoDocumentNumber(userSettings?.purchaseOrderPrefix || 'PO', counter.seq);
 
-      // purchaseOrderController processItems only takes two params: items, isIntraState
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-        processItems(qData.items || [], isIntraState);
+        processItems(qData.items || [], qData.invoiceType || 'Tax Invoice', isIntraState);
 
       const finalShipping = Number(qData.shippingCharges) || 0;
       const finalPackaging = Number(qData.packagingCharges) || 0;

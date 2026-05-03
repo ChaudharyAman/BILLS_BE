@@ -5,42 +5,15 @@ const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
 const escapeRegex = require('../utils/escapeRegex');
 const { buildAutoDocumentNumber, buildCustomDocumentNumber } = require('../utils/documentNumber');
+const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
+const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
 
 // ─── Shared item processor ────────────────────────────────────────────────────
-function processItems(items, isIntraState) {
-  let subTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0, taxTotal = 0;
-  const processedItems = [];
-
-  for (const item of items) {
-    const qty = Number(item.qty) || 0;
-    const rate = Number(item.rate) || 0;
-    const discountPct = Number(item.discount) || 0;
-    const taxRate = Number(item.taxRate) || 0;
-
-    const taxableValue = qty * rate * (1 - discountPct / 100);
-    const itemTax = taxableValue * (taxRate / 100);
-
-    let cgst = 0, sgst = 0, igst = 0;
-    if (isIntraState) { cgst = itemTax / 2; sgst = itemTax / 2; }
-    else { igst = itemTax; }
-
-    const total = taxableValue + itemTax;
-    subTotal += taxableValue;
-    taxTotal += itemTax;
-    totalCGST += cgst;
-    totalSGST += sgst;
-    totalIGST += igst;
-
-    processedItems.push({
-      itemRef: item.itemRef, name: item.name, description: item.description,
-      hsnCode: item.hsnCode, qty, unit: item.unit, rate, discount: discountPct,
-      taxRate, taxAmount: itemTax, cgst, sgst, igst, amount: total,
-    });
-  }
-  return { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST };
+function processItems(items, invoiceType, isIntraState) {
+  return processDocumentItems(items, { invoiceType, isIntraState });
 }
 
 // ─── GET all quotes ───────────────────────────────────────────────────────────
@@ -93,9 +66,8 @@ exports.getQuoteById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Quote not found' });
     }
-    const quote = await Quote.findById(req.params.id);
+    const quote = await Quote.findOne({ _id: req.params.id, user: req.user._id });
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
-    if (quote.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     res.json(quote);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -130,9 +102,8 @@ exports.createQuote = async (req, res) => {
     }
     // -------------------------------
 
-    const client = await Client.findById(clientRef);
+    const client = await Client.findOne({ _id: clientRef, user: req.user._id });
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -172,11 +143,12 @@ exports.createQuote = async (req, res) => {
     }
 
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+    const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-      processItems(items || [], isIntraState);
+      processItems(items || [], invoiceType || 'Tax Invoice', isIntraState);
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
@@ -218,9 +190,8 @@ exports.updateQuote = async (req, res) => {
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
 
-    const quote = await Quote.findById(req.params.id);
+    const quote = await Quote.findOne({ _id: req.params.id, user: req.user._id });
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
-    if (quote.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(req.user._id);
@@ -260,9 +231,8 @@ exports.updateQuote = async (req, res) => {
     }
     // -----------------------------------------
 
-    const client = await Client.findById(clientRef);
+    const client = await Client.findOne({ _id: clientRef, user: req.user._id });
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -283,11 +253,13 @@ exports.updateQuote = async (req, res) => {
     const userSettings = await Settings.findOne({ user: req.user._id });
     const quotePrefix = userSettings?.quotePrefix || 'QT';
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+    const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
+    const effectiveType = invoiceType || quote.invoiceType || 'Tax Invoice';
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-      processItems(items || [], isIntraState);
+      processItems(items || [], effectiveType, isIntraState);
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
@@ -316,7 +288,7 @@ exports.updateQuote = async (req, res) => {
     };
 
     Object.assign(quote, {
-      invoiceType: invoiceType || quote.invoiceType,
+      invoiceType: effectiveType,
       client: clientSnapshot, items: processedItems, date, validUntil,
       paymentMode, paymentTerms, subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
@@ -337,9 +309,8 @@ exports.updateQuote = async (req, res) => {
 // ─── DELETE quote ─────────────────────────────────────────────────────────────
 exports.deleteQuote = async (req, res) => {
   try {
-    const quote = await Quote.findById(req.params.id);
+    const quote = await Quote.findOne({ _id: req.params.id, user: req.user._id });
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
-    if (quote.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     // --- Subscription Plan Check for Deletes ---
     const userObj = await User.findById(req.user._id);
@@ -356,9 +327,8 @@ exports.deleteQuote = async (req, res) => {
 // ─── CONVERT quote → invoice ──────────────────────────────────────────────────
 exports.convertToInvoice = async (req, res) => {
   try {
-    const quote = await Quote.findById(req.params.id);
+    const quote = await Quote.findOne({ _id: req.params.id, user: req.user._id });
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
-    if (quote.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     if (quote.status === 'CONVERTED') return res.status(400).json({ message: 'Already converted' });
 
     const userSettings = await Settings.findOne({ user: req.user._id });
@@ -368,7 +338,7 @@ exports.convertToInvoice = async (req, res) => {
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
     // Fetch fresh client data to ensure correct address format specially for old quotes
-    const client = await Client.findById(quote.client.clientRef);
+    const client = await Client.findOne({ _id: quote.client.clientRef, user: req.user._id });
     let clientSnapshot = quote.client;
     let resolvedShipping = quote.shippingAddress;
 
@@ -404,10 +374,15 @@ exports.convertToInvoice = async (req, res) => {
     }
 
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = quote.placeOfSupply || clientSnapshot.address.state || '';
-    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+    const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
-    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(quote.items, isIntraState);
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(quote.items, quote.invoiceType, isIntraState);
+    const finalShipping = Number(quote.shippingCharges) || 0;
+    const finalPackaging = Number(quote.packagingCharges) || 0;
+    const finalDiscount = Number(quote.discountTotal) || 0;
+    const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
 
     const invoice = new Invoice({
       user: quote.user, invoiceNo, invoiceType: quote.invoiceType,
@@ -416,15 +391,16 @@ exports.convertToInvoice = async (req, res) => {
       client: clientSnapshot, items: processedItems,
       subTotal, taxTotal,
       totalCGST, totalSGST, totalIGST,
-      shippingCharges: quote.shippingCharges, packagingCharges: quote.packagingCharges,
-      customChargeLabel: quote.customChargeLabel, discountTotal: quote.discountTotal,
-      grandTotal: quote.grandTotal, balanceDue: quote.grandTotal,
+      shippingCharges: finalShipping, packagingCharges: finalPackaging,
+      customChargeLabel: quote.customChargeLabel, discountTotal: finalDiscount,
+      grandTotal, balanceDue: grandTotal,
       shippingAddress: resolvedShipping, transport: quote.transport,
       placeOfSupply: quote.placeOfSupply, reverseCharge: quote.reverseCharge,
       notes: quote.notes, terms: quote.terms, status: 'DRAFT',
     });
 
     const savedInvoice = await invoice.save();
+    await syncIncomeFromInvoice(savedInvoice);
     quote.status = 'CONVERTED';
     quote.convertedToInvoice = savedInvoice._id;
     await quote.save();
@@ -470,6 +446,7 @@ exports.bulkCreateQuotes = async (req, res) => {
 
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
     const createdQuotes = [];
     for (const qData of quotes) {
@@ -486,7 +463,7 @@ exports.bulkCreateQuotes = async (req, res) => {
       }
 
       const clientState = qData.placeOfSupply || client.billingAddress?.state || '';
-      const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+      const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
       const counter = await Counter.findOneAndUpdate(
         { id: 'quoteNo' },
@@ -495,9 +472,8 @@ exports.bulkCreateQuotes = async (req, res) => {
       );
       const quoteNo = buildAutoDocumentNumber(userSettings?.quotePrefix || 'QT', counter.seq);
 
-      // quoteController processItems only takes two params: items, isIntraState
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-        processItems(qData.items || [], isIntraState);
+        processItems(qData.items || [], qData.invoiceType || 'Tax Invoice', isIntraState);
 
       const finalShipping = Number(qData.shippingCharges) || 0;
       const finalPackaging = Number(qData.packagingCharges) || 0;

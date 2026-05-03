@@ -7,10 +7,10 @@ const mongoose = require('mongoose');
 const escapeRegex = require('../utils/escapeRegex');
 const { buildAutoDocumentNumber } = require('../utils/documentNumber');
 const { syncIncomeFromInvoice, removeIncomeForInvoice } = require('../services/invoiceIncomeSync');
+const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
-const MAX_GST_RATE = 28;
 
 // Helper to calculate Financial Year (April - March)
 function getFinancialYear(date) {
@@ -32,56 +32,6 @@ function normalizeLookupText(value = '') {
 function buildExactNameRegex(value = '') {
   const escaped = escapeRegex(String(value || '').trim()).replace(/\s+/g, '\\s+');
   return new RegExp(`^${escaped}$`, 'i');
-}
-
-function extractStateCode(value = '') {
-  const text = String(value || '').trim();
-  if (!text) return '';
-
-  const prefixMatch = text.match(/^(\d{2})\s*[-(]/);
-  if (prefixMatch) return prefixMatch[1];
-
-  const parenMatch = text.match(/\((\d{2})\)/);
-  if (parenMatch) return parenMatch[1];
-
-  return '';
-}
-
-function normalizeStateName(value = '') {
-  return String(value || '')
-    .replace(/^\d{2}\s*[-)]?\s*/, '')
-    .split('(')[0]
-    .trim()
-    .toLowerCase();
-}
-
-function isInterStateSupply(placeOfSupply, companyState, companyGstin) {
-  const supply = String(placeOfSupply || '').trim();
-  if (!supply) return false;
-
-  const supplyStateCode = extractStateCode(supply);
-  const companyStateCode = String(companyGstin || '').trim().slice(0, 2);
-
-  if (supplyStateCode && /^\d{2}$/.test(companyStateCode)) {
-    return supplyStateCode !== companyStateCode;
-  }
-
-  const normalizedSupply = normalizeStateName(supply);
-  const normalizedCompanyState = normalizeStateName(companyState);
-
-  if (normalizedSupply && normalizedCompanyState) {
-    return normalizedSupply !== normalizedCompanyState;
-  }
-
-  return false;
-}
-
-function sanitizeGstRate(value = '') {
-  const numeric = Number.parseFloat(String(value ?? '').replace('%', '').trim());
-  if (!Number.isFinite(numeric) || numeric < 0 || numeric > MAX_GST_RATE) {
-    return 0;
-  }
-  return numeric;
 }
 
 function buildClientSnapshot(client) {
@@ -111,11 +61,8 @@ async function resolveClientForInvoice({
   importSource,
 }) {
   if (clientRef && mongoose.Types.ObjectId.isValid(clientRef)) {
-    const client = await Client.findById(clientRef);
+    const client = await Client.findOne({ _id: clientRef, user: userId });
     if (!client) throw new Error('Client not found');
-    if (client.user.toString() !== userId.toString()) {
-      throw new Error('User not authorized to use this client');
-    }
     return client;
   }
 
@@ -225,72 +172,7 @@ async function resolvePdfImportItems(userId, items = []) {
 
 // ─── Shared: process items based on invoice type ──────────────────────────────
 function processItems(items, invoiceType, isIntraState) {
-  const hasTax = invoiceType === 'Tax Invoice' || invoiceType === 'Excise Invoice';
-  const hasExcise = invoiceType === 'Excise Invoice';
-
-  let subTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0, taxTotal = 0, totalExcise = 0;
-  const processedItems = [];
-
-  for (const item of items) {
-    const qty = Number(item.qty) || 0;
-    const rate = Number(item.rate) || 0;
-    const discountPct = Number(item.discount) || 0; // discount is a PERCENTAGE
-
-    const taxableValue = qty * rate * (1 - discountPct / 100);
-
-    let cgst = 0, sgst = 0, igst = 0, itemTax = 0;
-    if (hasTax) {
-      const taxRate = sanitizeGstRate(item.taxRate);
-      itemTax = taxableValue * (taxRate / 100);
-      if (isIntraState) {
-        cgst = itemTax / 2;
-        sgst = itemTax / 2;
-      } else {
-        igst = itemTax;
-      }
-    }
-
-    let exciseAmount = 0;
-    if (hasExcise) {
-      const bed = taxableValue * (Number(item.bedPercent) / 100 || 0);
-      const sed = taxableValue * (Number(item.sedPercent) / 100 || 0);
-      const cess = (bed + sed) * (Number(item.cessPercent) / 100 || 0);
-      exciseAmount = bed + sed + cess;
-    }
-
-    const total = taxableValue + itemTax + exciseAmount;
-
-    subTotal += taxableValue;
-    taxTotal += itemTax;
-    totalCGST += cgst;
-    totalSGST += sgst;
-    totalIGST += igst;
-    totalExcise += exciseAmount;
-
-    processedItems.push({
-      itemRef: item.itemRef,
-      name: item.name,
-      description: item.description,
-      hsnCode: item.hsnCode,
-      qty,
-      unit: item.unit,
-      rate,
-      discount: discountPct,
-      taxRate: sanitizeGstRate(item.taxRate),
-      taxAmount: itemTax,
-      cgst,
-      sgst,
-      igst,
-      // Excise per-item fields stored as metadata
-      bedPercent: Number(item.bedPercent) || 0,
-      sedPercent: Number(item.sedPercent) || 0,
-      cessPercent: Number(item.cessPercent) || 0,
-      exciseAmount,
-      amount: total,
-    });
-  }
-
-  return { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise };
+  return processDocumentItems(items, { invoiceType, isIntraState, includeExcise: true });
 }
 
 // ─── GET all invoices ─────────────────────────────────────────────────────────
@@ -351,11 +233,8 @@ exports.getInvoiceById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Invoice not found' });
     }
-    const invoice = await Invoice.findById(req.params.id);
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
-    if (invoice.user.toString() !== req.user._id.toString()) {
-      return res.status(401).json({ message: 'User not authorized' });
-    }
     res.json(invoice);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -561,11 +440,8 @@ exports.updateInvoice = async (req, res) => {
       drCr,
     } = req.body;
 
-    const invoice = await Invoice.findById(req.params.id);
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
-    if (invoice.user.toString() !== req.user._id.toString()) {
-      return res.status(401).json({ message: 'User not authorized' });
-    }
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(req.user._id);
@@ -607,11 +483,8 @@ exports.updateInvoice = async (req, res) => {
     // -----------------------------------------
 
     // Fetch Client Snapshot
-    const client = await Client.findById(clientRef);
+    const client = await Client.findOne({ _id: clientRef, user: req.user._id });
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user._id.toString()) {
-      return res.status(401).json({ message: 'User not authorized to use this client' });
-    }
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -716,11 +589,8 @@ exports.updateInvoice = async (req, res) => {
 // ─── DELETE invoice ───────────────────────────────────────────────────────────
 exports.deleteInvoice = async (req, res) => {
   try {
-    const invoice = await Invoice.findById(req.params.id);
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
-    if (invoice.user.toString() !== req.user._id.toString()) {
-      return res.status(401).json({ message: 'User not authorized' });
-    }
 
     // --- Subscription Plan Check for Deletes ---
     const userObj = await User.findById(req.user._id);
@@ -790,14 +660,14 @@ exports.bulkCreateInvoices = async (req, res) => {
       );
       const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
-      const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
+      const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } =
         processItems(invData.items || [], invData.invoiceType || 'Tax Invoice', isIntraState);
 
       const finalShipping = Number(invData.shippingCharges) || 0;
       const finalPackaging = Number(invData.packagingCharges) || 0;
       const finalDiscount = Number(invData.discountTotal) || 0;
       const finalTcs = Number(invData.tcs) || 0;
-      const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount + finalTcs;
+      const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount + finalTcs;
       const advancePaid = Number(invData.advancePaid) || 0;
       const balanceDue = Math.max(0, grandTotal - advancePaid);
 

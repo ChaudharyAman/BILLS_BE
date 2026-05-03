@@ -73,6 +73,11 @@ async function syncIncomeFromInvoice(invoice) {
     return null;
   }
 
+  if (String(invoice.status || '').toUpperCase() === 'DRAFT') {
+    await removeIncomeForInvoice(invoice._id, invoice.user);
+    return null;
+  }
+
   const vendorRef = invoice.client?.clientRef || null;
   const vendorName = String(invoice.client?.name || '').trim();
   const incomeNumber = await buildSyncedIncomeNumber(invoice);
@@ -106,7 +111,7 @@ async function syncIncomeFromInvoice(invoice) {
     { $set: payload },
     {
       upsert: true,
-      new: true,
+      returnDocument: 'after',
       runValidators: true,
       setDefaultsOnInsert: true,
     }
