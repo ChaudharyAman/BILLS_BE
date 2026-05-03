@@ -8,6 +8,7 @@ const escapeRegex = require('../utils/escapeRegex');
 const { buildAutoDocumentNumber } = require('../utils/documentNumber');
 const { syncIncomeFromInvoice, removeIncomeForInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
+const { buildUserCounterId } = require('../utils/counterKey');
 
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
@@ -306,7 +307,7 @@ exports.createInvoice = async (req, res) => {
     } else {
       // Generate Invoice Number
       const counter = await Counter.findOneAndUpdate(
-        { id: 'invoiceNo' },
+        { id: buildUserCounterId(req.user._id, 'invoiceNo') },
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
@@ -654,7 +655,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
       const counter = await Counter.findOneAndUpdate(
-        { id: 'invoiceNo' },
+        { id: buildUserCounterId(req.user._id, 'invoiceNo') },
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );

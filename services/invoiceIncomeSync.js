@@ -56,13 +56,16 @@ async function buildSyncedIncomeNumber(invoice, session = null) {
   }
 
   let counter = 1;
-  while (true) {
+  const maxAttempts = 200;
+  while (counter <= maxAttempts) {
     const candidate = `${baseNumber}-INV${counter}`;
-    const taken = await Income.findOne({
+    const takenQuery = Income.findOne({
       user: invoice.user,
       incomeNumber: candidate,
       sourceInvoice: { $ne: invoice._id },
     }).select('_id');
+    if (session) takenQuery.session(session);
+    const taken = await takenQuery;
 
     if (!taken) {
       return candidate;
@@ -70,6 +73,8 @@ async function buildSyncedIncomeNumber(invoice, session = null) {
 
     counter += 1;
   }
+
+  throw new Error('Cannot generate unique income number');
 }
 
 async function syncIncomeFromInvoice(invoice, session = null) {

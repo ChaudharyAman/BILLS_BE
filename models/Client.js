@@ -79,6 +79,6 @@ const ClientSchema = new mongoose.Schema({
   openingBalance: { type: Number, default: 0 },
   pendingPayment: { type: Number, default: 0 },
 
-});
+}, { timestamps: true });
 
 module.exports = mongoose.model('Client', ClientSchema);

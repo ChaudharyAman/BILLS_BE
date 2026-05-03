@@ -9,6 +9,7 @@ const mongoose = require('mongoose');
 const { buildAutoDocumentNumber, buildCustomDocumentNumber } = require('../utils/documentNumber');
 const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
+const { buildUserCounterId } = require('../utils/counterKey');
 
 function processItems(items, invoiceType, isIntraState) {
   return processDocumentItems(items, { invoiceType, isIntraState });
@@ -131,7 +132,7 @@ exports.createProforma = async (req, res) => {
       }
     } else {
       const counter = await Counter.findOneAndUpdate(
-        { id: 'proformaNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+        { id: buildUserCounterId(req.user._id, 'proformaNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
       );
       proformaNo = buildAutoDocumentNumber(proformaPrefix, counter.seq);
     }
@@ -322,7 +323,7 @@ exports.convertToInvoice = async (req, res) => {
 
     const userSettings = await Settings.findOne({ user: req.user._id });
     const counter = await Counter.findOneAndUpdate(
-      { id: 'invoiceNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+      { id: buildUserCounterId(req.user._id, 'invoiceNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
@@ -470,7 +471,7 @@ exports.bulkCreateProformas = async (req, res) => {
       const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
       const counter = await Counter.findOneAndUpdate(
-        { id: 'proformaNo' },
+        { id: buildUserCounterId(req.user._id, 'proformaNo') },
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );

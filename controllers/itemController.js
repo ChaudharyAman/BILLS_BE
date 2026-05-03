@@ -1,6 +1,7 @@
 const Item = require('../models/Item');
 const Counter = require('../models/Counter');
 const escapeRegex = require('../utils/escapeRegex');
+const { buildUserCounterId } = require('../utils/counterKey');
 
 // Get all items
 exports.getItems = async (req, res) => {
@@ -47,7 +48,7 @@ exports.createItem = async (req, res) => {
 
     if (!sku || sku.trim() === '') {
       const counter = await Counter.findOneAndUpdate(
-        { id: 'skuSeq' },
+        { id: buildUserCounterId(req.user._id, 'skuSeq') },
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
@@ -85,7 +86,7 @@ exports.bulkCreateItems = async (req, res) => {
 
         if (!sku || sku.trim() === '') {
           const counter = await Counter.findOneAndUpdate(
-            { id: 'skuSeq' },
+            { id: buildUserCounterId(req.user._id, 'skuSeq') },
             { $inc: { seq: 1 } },
             { returnDocument: 'after', upsert: true }
           );

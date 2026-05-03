@@ -56,6 +56,36 @@ const PayrollSchema = new mongoose.Schema({
   expenseRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense', default: null },
 }, { timestamps: true });
 
+const sumNamedAmounts = (items = []) => items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+
+PayrollSchema.pre('validate', function(next) {
+  const earnings = this.earnings || {};
+  const deductions = this.deductions || {};
+
+  earnings.totalEarnings =
+    (Number(earnings.basic) || 0) +
+    (Number(earnings.hra) || 0) +
+    (Number(earnings.conveyance) || 0) +
+    (Number(earnings.medicalAllowance) || 0) +
+    (Number(earnings.specialAllowance) || 0) +
+    (Number(earnings.overtime) || 0) +
+    (Number(earnings.bonus) || 0) +
+    (Number(earnings.incentives) || 0) +
+    sumNamedAmounts(earnings.otherEarnings);
+
+  deductions.totalDeductions =
+    (Number(deductions.pf) || 0) +
+    (Number(deductions.esi) || 0) +
+    (Number(deductions.professionalTax) || 0) +
+    (Number(deductions.tds) || 0) +
+    (Number(deductions.loanDeduction) || 0) +
+    (Number(deductions.advanceDeduction) || 0) +
+    sumNamedAmounts(deductions.otherDeductions);
+
+  this.netSalary = earnings.totalEarnings - deductions.totalDeductions;
+  next();
+});
+
 PayrollSchema.index({ user: 1, employee: 1, month: 1, year: 1 }, { unique: true });
 PayrollSchema.index({ user: 1, year: -1, month: -1 });
 

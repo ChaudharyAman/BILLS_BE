@@ -15,6 +15,8 @@ const AssetSchema = new mongoose.Schema({
   depreciationRate: { type: Number, default: 0, min: 0 },
   usefulLife: { type: Number, min: 0 },
   salvageValue: { type: Number, default: 0, min: 0 },
+  disposalDate: Date,
+  disposalValue: { type: Number, default: 0, min: 0 },
   status: { type: String, enum: ['active', 'disposed', 'sold'], default: 'active', index: true },
 }, { timestamps: true });
 
