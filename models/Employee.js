@@ -60,18 +60,18 @@ const EmployeeSchema = new mongoose.Schema({
 
   bankDetails: {
     accountName: String,
-    accountNumber: String,
+    accountNumber: { type: String, select: false },
     ifscCode: String,
     bankName: String,
     branch: String,
   },
 
-  panNumber: { type: String, default: '' },
-  uanNumber: { type: String, default: '' },
-  aadharNumber: { type: String, default: '' },
+  panNumber: { type: String, default: '', select: false },
+  uanNumber: { type: String, default: '', select: false },
+  aadharNumber: { type: String, default: '', select: false },
 
   documents: [{
-    type: String,
+    docType: String,
     url: String,
     uploadedAt: { type: Date, default: Date.now },
   }],
@@ -100,23 +100,87 @@ EmployeeSchema.pre('save', function(next) {
   next();
 });
 
-EmployeeSchema.pre('findOneAndUpdate', function(next) {
+const applySalaryStructureUpdate = async function() {
   const update = this.getUpdate();
-  const set = update?.$set || update || {};
-  const salary = set.salaryStructure;
-  if (salary) {
-    const otherTotal = (salary.otherAllowances || []).reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-    const gross =
-      (Number(salary.basic) || 0) +
-      (Number(salary.hra) || 0) +
-      (Number(salary.conveyance) || 0) +
-      (Number(salary.medicalAllowance) || 0) +
-      (Number(salary.specialAllowance) || 0) +
-      otherTotal;
-    salary.grossSalary = gross;
-    salary.ctc = gross + ((Number(salary.basic) || 0) * 0.12) + (gross <= 21000 ? gross * 0.0325 : 0);
+  if (!update) return;
+  const set = update.$set || update;
+  const hasSalaryUpdate = Boolean(
+    set.salaryStructure ||
+    Object.keys(set).some((key) => key.startsWith('salaryStructure.'))
+  );
+  if (!hasSalaryUpdate) return;
+
+  let mergedSalary = {};
+  if (set.salaryStructure && typeof set.salaryStructure === 'object') {
+    mergedSalary = { ...set.salaryStructure };
   }
+
+  for (const key of Object.keys(set)) {
+    if (key.startsWith('salaryStructure.')) {
+      mergedSalary[key.replace('salaryStructure.', '')] = set[key];
+    }
+  }
+
+  const needsExisting = ['basic', 'hra', 'conveyance', 'medicalAllowance', 'specialAllowance', 'otherAllowances']
+    .some((field) => mergedSalary[field] === undefined);
+  if (needsExisting) {
+    const docId = this.getQuery()._id;
+    if (mongoose.Types.ObjectId.isValid(String(docId))) {
+      const current = await this.model.findOne({ _id: docId }).select('salaryStructure').lean();
+      if (current?.salaryStructure) {
+        mergedSalary = { ...current.salaryStructure, ...mergedSalary };
+      }
+    }
+  }
+
+  const otherAllowances = Array.isArray(mergedSalary.otherAllowances) ? mergedSalary.otherAllowances : [];
+  const otherTotal = otherAllowances.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const gross =
+    (Number(mergedSalary.basic) || 0) +
+    (Number(mergedSalary.hra) || 0) +
+    (Number(mergedSalary.conveyance) || 0) +
+    (Number(mergedSalary.medicalAllowance) || 0) +
+    (Number(mergedSalary.specialAllowance) || 0) +
+    otherTotal;
+  const ctc = gross + ((Number(mergedSalary.basic) || 0) * 0.12) + (gross <= 21000 ? gross * 0.0325 : 0);
+
+  if (!update.$set) update.$set = {};
+  update.$set['salaryStructure.grossSalary'] = gross;
+  update.$set['salaryStructure.ctc'] = ctc;
+  if (set.salaryStructure && typeof set.salaryStructure === 'object') {
+    update.$set.salaryStructure = { ...mergedSalary, grossSalary: gross, ctc };
+  }
+
+  this.setUpdate(update);
+};
+
+EmployeeSchema.pre('findOneAndUpdate', async function(next) {
+  await applySalaryStructureUpdate.call(this);
   next();
 });
+
+EmployeeSchema.pre('updateOne', async function(next) {
+  await applySalaryStructureUpdate.call(this);
+  next();
+});
+
+EmployeeSchema.pre('updateMany', async function(next) {
+  await applySalaryStructureUpdate.call(this);
+  next();
+});
+
+const removeEmployeePII = (doc, ret) => {
+  if (!ret) return ret;
+  delete ret.panNumber;
+  delete ret.uanNumber;
+  delete ret.aadharNumber;
+  if (ret.bankDetails) {
+    delete ret.bankDetails.accountNumber;
+  }
+  return ret;
+};
+
+EmployeeSchema.set('toJSON', { transform: removeEmployeePII });
+EmployeeSchema.set('toObject', { transform: removeEmployeePII });
 
 module.exports = mongoose.model('Employee', EmployeeSchema);

@@ -51,6 +51,7 @@ function sanitizeGstRate(value = '') {
 }
 
 function processDocumentItems(items = [], { invoiceType = 'Tax Invoice', isIntraState = true, includeExcise = false } = {}) {
+  const roundTwo = (value) => Math.round((Number(value) || 0) * 100) / 100;
   const hasTax = invoiceType === 'Tax Invoice' || invoiceType === 'Excise Invoice';
   const hasExcise = includeExcise && invoiceType === 'Excise Invoice';
 
@@ -65,39 +66,39 @@ function processDocumentItems(items = [], { invoiceType = 'Tax Invoice', isIntra
   for (const item of items) {
     const qty = Number(item.qty) || 0;
     const rate = Number(item.rate) || 0;
-    const discountPct = Number(item.discount) || 0;
-    const taxableValue = qty * rate * (1 - discountPct / 100);
+    const discountPct = Math.min(100, Math.max(0, Number(item.discount) || 0));
+    const taxableValue = roundTwo(qty * rate * (1 - discountPct / 100));
     const taxRate = hasTax ? sanitizeGstRate(item.taxRate) : 0;
 
     let cgst = 0;
     let sgst = 0;
     let igst = 0;
-    const itemTax = taxableValue * (taxRate / 100);
+    const itemTax = roundTwo(taxableValue * (taxRate / 100));
 
     if (hasTax) {
       if (isIntraState) {
-        cgst = itemTax / 2;
-        sgst = itemTax / 2;
+        cgst = roundTwo(itemTax / 2);
+        sgst = roundTwo(itemTax / 2);
       } else {
-        igst = itemTax;
+        igst = roundTwo(itemTax);
       }
     }
 
     let exciseAmount = 0;
     if (hasExcise) {
-      const bed = taxableValue * (Number(item.bedPercent) / 100 || 0);
-      const sed = taxableValue * (Number(item.sedPercent) / 100 || 0);
-      const cess = (bed + sed) * (Number(item.cessPercent) / 100 || 0);
-      exciseAmount = bed + sed + cess;
+      const bed = roundTwo(taxableValue * (Number(item.bedPercent) / 100 || 0));
+      const sed = roundTwo(taxableValue * (Number(item.sedPercent) / 100 || 0));
+      const cess = roundTwo((bed + sed) * (Number(item.cessPercent) / 100 || 0));
+      exciseAmount = roundTwo(bed + sed + cess);
     }
 
-    const total = taxableValue + itemTax + exciseAmount;
-    subTotal += taxableValue;
-    taxTotal += itemTax;
-    totalCGST += cgst;
-    totalSGST += sgst;
-    totalIGST += igst;
-    totalExcise += exciseAmount;
+    const total = roundTwo(taxableValue + itemTax + exciseAmount);
+    subTotal = roundTwo(subTotal + taxableValue);
+    taxTotal = roundTwo(taxTotal + itemTax);
+    totalCGST = roundTwo(totalCGST + cgst);
+    totalSGST = roundTwo(totalSGST + sgst);
+    totalIGST = roundTwo(totalIGST + igst);
+    totalExcise = roundTwo(totalExcise + exciseAmount);
 
     processedItems.push({
       itemRef: item.itemRef,

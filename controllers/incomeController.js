@@ -33,12 +33,23 @@ const validateIncomeCategory = async (userId, categoryId, subCategoryId) => {
       error.statusCode = 400;
       throw error;
     }
-
-    if (categoryId && String(subCategory.parent || '') !== String(categoryId)) {
-      const error = new Error('Income sub-category does not belong to selected category');
+    if (!subCategory.parent) {
+      const error = new Error('Income sub-category requires a parent category');
       error.statusCode = 400;
       throw error;
     }
+
+    if (categoryId) {
+      if (String(subCategory.parent) !== String(categoryId)) {
+        const error = new Error('Income sub-category does not belong to selected category');
+        error.statusCode = 400;
+        throw error;
+      }
+    } else {
+      result.category = subCategory.parent;
+    }
+
+    result.subCategory = subCategory._id;
   }
 
   return result;

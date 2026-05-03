@@ -12,7 +12,17 @@ const BudgetSchema = new mongoose.Schema({
     required: true,
   },
   startDate: { type: Date, required: true, index: true },
-  endDate: { type: Date, required: true, index: true },
+  endDate: {
+    type: Date,
+    required: true,
+    index: true,
+    validate: {
+      validator: function(value) {
+        return !this.startDate || value > this.startDate;
+      },
+      message: 'End date must be later than start date',
+    },
+  },
   budgetAmount: { type: Number, required: true, min: 0 },
   spentAmount: { type: Number, default: 0, min: 0 },
   remainingAmount: { type: Number, default: 0 },
@@ -26,6 +36,38 @@ const BudgetSchema = new mongoose.Schema({
     index: true,
   },
 }, { timestamps: true });
+
+BudgetSchema.pre('save', function(next) {
+  if (this.spentAmount === undefined) this.spentAmount = 0;
+  this.remainingAmount = this.budgetAmount - (this.spentAmount || 0);
+  next();
+});
+
+BudgetSchema.pre('findOneAndUpdate', async function(next) {
+  const update = this.getUpdate();
+  const set = update?.$set || update || {};
+  const newStartDate = set.startDate || set['startDate'];
+  const newEndDate = set.endDate || set['endDate'];
+
+  if (newEndDate && newStartDate) {
+    if (new Date(newEndDate) <= new Date(newStartDate)) {
+      const err = new Error('End date must be later than start date');
+      err.statusCode = 400;
+      return next(err);
+    }
+  }
+
+  if (newEndDate && !newStartDate) {
+    const doc = await this.model.findOne(this.getQuery()).select('startDate').lean();
+    if (doc && new Date(newEndDate) <= new Date(doc.startDate)) {
+      const err = new Error('End date must be later than start date');
+      err.statusCode = 400;
+      return next(err);
+    }
+  }
+
+  next();
+});
 
 BudgetSchema.index({ user: 1, category: 1, startDate: 1, endDate: 1 });
 

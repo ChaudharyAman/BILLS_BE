@@ -389,10 +389,26 @@ exports.convertToInvoice = async (req, res) => {
     });
 
     const savedInvoice = await invoice.save();
-    await syncIncomeFromInvoice(savedInvoice);
+    let syncError = null;
+    try {
+      await syncIncomeFromInvoice(savedInvoice);
+    } catch (syncErr) {
+      syncError = syncErr;
+      console.error('syncIncomeFromInvoice failed for proforma:', syncErr);
+    }
+
     proforma.status = 'CONVERTED';
     proforma.convertedToInvoice = savedInvoice._id;
     await proforma.save();
+
+    if (syncError) {
+      return res.status(201).json({
+        invoice: savedInvoice,
+        proforma,
+        warning: 'Invoice created but income sync failed',
+        syncError: syncError.message,
+      });
+    }
 
     res.status(201).json({ invoice: savedInvoice, proforma });
   } catch (e) {

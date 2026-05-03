@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, admin } = require('../middleware/authMiddleware');
 const {
   createRecurringTransaction,
   getRecurringTransactions,
@@ -13,7 +13,7 @@ const {
 
 router.use(protect);
 
-router.post('/process', processRecurringTransactions);
+router.post('/process', admin, processRecurringTransactions);
 router.route('/')
   .get(getRecurringTransactions)
   .post(createRecurringTransaction);

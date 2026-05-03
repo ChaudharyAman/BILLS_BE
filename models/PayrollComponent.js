@@ -10,7 +10,19 @@ const PayrollComponentSchema = new mongoose.Schema({
     default: 'fixed',
   },
   value: { type: Number, default: 0 },
-  formula: { type: String, default: '' },
+  formula: {
+    type: String,
+    default: '',
+    validate: {
+      validator(value) {
+        if (this.calculationType === 'formula') {
+          return typeof value === 'string' && value.trim().length > 0;
+        }
+        return true;
+      },
+      message: 'Formula is required when calculationType is formula',
+    },
+  },
   isSystem: { type: Boolean, default: false },
   isTaxable: { type: Boolean, default: true },
   description: { type: String, default: '' },

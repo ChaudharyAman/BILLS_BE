@@ -21,20 +21,25 @@ const validateDepartment = async (departmentId, userId) => {
 
 exports.getEmployees = async (req, res) => {
   try {
-    const { status, department, search } = req.query;
-    const page = parseInt(req.query.page, 10) || 1;
-    const limit = parseInt(req.query.limit, 10) || 20;
+    const { status, department } = req.query;
+    const parsedPage = Number.parseInt(req.query.page, 10);
+    const parsedLimit = Number.parseInt(req.query.limit, 10);
+    const page = Number.isInteger(parsedPage) ? Math.max(1, parsedPage) : 1;
+    const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(parsedLimit, 100)) : 20;
     const skip = (page - 1) * limit;
     const query = { user: req.user._id };
 
     if (status) query.status = status;
     if (department) query.department = department;
+
+    const search = String(req.query.search || '').trim();
     if (search) {
+      const safeSearch = escapeRegex(search.slice(0, 100));
       query.$or = [
-        { employeeId: { $regex: search, $options: 'i' } },
-        { firstName: { $regex: search, $options: 'i' } },
-        { lastName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
+        { employeeId: { $regex: safeSearch, $options: 'i' } },
+        { firstName: { $regex: safeSearch, $options: 'i' } },
+        { lastName: { $regex: safeSearch, $options: 'i' } },
+        { email: { $regex: safeSearch, $options: 'i' } },
       ];
     }
 

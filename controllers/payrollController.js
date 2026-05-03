@@ -60,17 +60,20 @@ const buildPayrollSnapshot = (employee, adjustments = {}) => {
 };
 
 const getPayrollCategory = async (userId) => {
-  let payrollCategory = await Category.findOne({ user: userId, name: 'Payroll', type: 'expense' });
-  if (!payrollCategory) {
-    payrollCategory = await Category.create({
-      user: userId,
-      name: 'Payroll',
-      type: 'expense',
-      isSystem: true,
-      color: '#2563eb',
-      icon: 'FaUsers',
-    });
-  }
+  const payrollCategory = await Category.findOneAndUpdate(
+    { user: userId, name: 'Payroll', type: 'expense' },
+    {
+      $setOnInsert: {
+        user: userId,
+        name: 'Payroll',
+        type: 'expense',
+        isSystem: true,
+        color: '#2563eb',
+        icon: 'FaUsers',
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
   return payrollCategory;
 };
 
@@ -205,7 +208,7 @@ exports.updatePayroll = async (req, res) => {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
-    const allowed = ['paymentDate', 'paymentMethod', 'transactionId', 'notes', 'status'];
+    const allowed = ['paymentDate', 'paymentMethod', 'transactionId', 'notes'];
     const updateData = {};
     allowed.forEach((field) => {
       if (req.body[field] !== undefined) updateData[field] = req.body[field];
@@ -237,41 +240,53 @@ exports.markPayrollAsPaid = async (req, res) => {
 
     const payrollCategory = await getPayrollCategory(req.user._id);
     const paymentDate = req.body.paymentDate || new Date();
-    const expenseNumber = `PAY-${payroll.year}-${String(payroll.month).padStart(2, '0')}-${payroll.employee.employeeId}`;
+    const employeeIdentifier = payroll.employee?.employeeId || payroll.employeeId || 'unknown';
+    const expenseNumber = `PAY-${payroll.year}-${String(payroll.month).padStart(2, '0')}-${employeeIdentifier}`;
 
-    let expense = payroll.expenseRef ? await Expense.findOne({ _id: payroll.expenseRef, user: req.user._id }) : null;
-    if (!expense) {
-      expense = await Expense.create({
-        user: req.user._id,
-        expenseNumber,
-        category: payrollCategory._id,
-        date: paymentDate,
-        vendor: { name: `${payroll.employee.firstName} ${payroll.employee.lastName}` },
-        paymentMethod: req.body.paymentMethod || 'Bank Transfer',
-        items: [{
-          name: `Salary - ${payroll.employee.firstName} ${payroll.employee.lastName}`,
-          description: `${new Date(0, payroll.month - 1).toLocaleString('en-US', { month: 'long' })} ${payroll.year}`,
-          qty: 1,
-          rate: payroll.netSalary,
-          taxRate: 0,
-          taxAmount: 0,
-          amount: payroll.netSalary,
-        }],
-        subTotal: payroll.netSalary,
-        taxTotal: 0,
-        grandTotal: payroll.netSalary,
-        status: 'PAID',
-        privateNotes: `Payroll ID: ${payroll._id}`,
-      });
-    }
+    let expense = null;
+    const session = await mongoose.startSession();
 
-    payroll.status = 'paid';
-    payroll.paymentDate = paymentDate;
-    payroll.paymentMethod = req.body.paymentMethod || payroll.paymentMethod || 'Bank Transfer';
-    payroll.transactionId = req.body.transactionId || payroll.transactionId;
-    payroll.expenseRef = expense._id;
-    await payroll.save();
+    await session.withTransaction(async () => {
+      if (payroll.expenseRef) {
+        expense = await Expense.findOne({ _id: payroll.expenseRef, user: req.user._id }).session(session);
+      }
 
+      if (!expense) {
+        expense = (await Expense.create([
+          {
+            user: req.user._id,
+            expenseNumber,
+            category: payrollCategory._id,
+            date: paymentDate,
+            vendor: { name: `${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim() || 'Payroll Vendor' },
+            paymentMethod: req.body.paymentMethod || 'Bank Transfer',
+            items: [{
+              name: `Salary - ${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim() || 'Payroll Salary',
+              description: `${new Date(0, payroll.month - 1).toLocaleString('en-US', { month: 'long' })} ${payroll.year}`,
+              qty: 1,
+              rate: payroll.netSalary,
+              taxRate: 0,
+              taxAmount: 0,
+              amount: payroll.netSalary,
+            }],
+            subTotal: payroll.netSalary,
+            taxTotal: 0,
+            grandTotal: payroll.netSalary,
+            status: 'PAID',
+            privateNotes: `Payroll ID: ${payroll._id}`,
+          },
+        ], { session }))[0];
+      }
+
+      payroll.status = 'paid';
+      payroll.paymentDate = paymentDate;
+      payroll.paymentMethod = req.body.paymentMethod || payroll.paymentMethod || 'Bank Transfer';
+      payroll.transactionId = req.body.transactionId || payroll.transactionId;
+      payroll.expenseRef = expense._id;
+      await payroll.save({ session });
+    });
+
+    session.endSession();
     res.json({ payroll, expense });
   } catch (error) {
     console.error('Error marking payroll as paid:', error);

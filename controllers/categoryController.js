@@ -181,6 +181,13 @@ exports.updateCategory = async (req, res) => {
         type: updateData.type || category.type,
         categoryId: category._id,
       });
+    } else if (req.body.type !== undefined && req.body.type !== category.type && category.parent) {
+      updateData.parent = await validateParent({
+        userId: req.user._id,
+        parent: req.body.parent || null,
+        type: updateData.type || category.type,
+        categoryId: category._id,
+      });
     }
 
     const updated = await Category.findOneAndUpdate(

@@ -1,16 +1,18 @@
+const mongoose = require('mongoose');
 const Asset = require('../../models/Asset');
 const Liability = require('../../models/Liability');
 
 exports.getBalanceSheet = async (req, res) => {
   try {
+    const userId = new mongoose.Types.ObjectId(String(req.user._id));
     const [assets, liabilities] = await Promise.all([
       Asset.aggregate([
-        { $match: { user: req.user._id, status: 'active' } },
+        { $match: { user: userId, status: 'active' } },
         { $group: { _id: '$category', total: { $sum: '$currentValue' } } },
         { $project: { _id: 0, category: '$_id', total: 1 } },
       ]),
       Liability.aggregate([
-        { $match: { user: req.user._id, status: 'active' } },
+        { $match: { user: userId, status: 'active' } },
         { $group: { _id: '$type', total: { $sum: '$outstandingAmount' } } },
         { $project: { _id: 0, type: '$_id', total: 1 } },
       ]),

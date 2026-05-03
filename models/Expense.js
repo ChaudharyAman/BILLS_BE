@@ -70,6 +70,17 @@ const ExpenseSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Compound unique index: same expense number is allowed across different users
+ExpenseSchema.pre('save', function(next) {
+  const grandTotal = Number(this.grandTotal) || 0;
+  const amountPaid = Number(this.amountPaid) || 0;
+  if (amountPaid > grandTotal) {
+    const error = new Error('Amount paid cannot exceed grand total');
+    return next(error);
+  }
+  this.balanceDue = Math.max(grandTotal - amountPaid, 0);
+  next();
+});
+
 ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true });
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

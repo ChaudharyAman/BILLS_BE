@@ -378,7 +378,7 @@ exports.convertToInvoice = async (req, res) => {
     const clientState = quote.placeOfSupply || clientSnapshot.address.state || '';
     const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
-    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(quote.items, quote.invoiceType, isIntraState);
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(quote.items || [], quote.invoiceType, isIntraState);
     const finalShipping = Number(quote.shippingCharges) || 0;
     const finalPackaging = Number(quote.packagingCharges) || 0;
     const finalDiscount = Number(quote.discountTotal) || 0;
@@ -399,11 +399,16 @@ exports.convertToInvoice = async (req, res) => {
       notes: quote.notes, terms: quote.terms, status: 'DRAFT',
     });
 
-    const savedInvoice = await invoice.save();
-    await syncIncomeFromInvoice(savedInvoice);
-    quote.status = 'CONVERTED';
-    quote.convertedToInvoice = savedInvoice._id;
-    await quote.save();
+    const session = await mongoose.startSession();
+    let savedInvoice = null;
+    await session.withTransaction(async () => {
+      savedInvoice = await invoice.save({ session });
+      await syncIncomeFromInvoice(savedInvoice, session);
+      quote.status = 'CONVERTED';
+      quote.convertedToInvoice = savedInvoice._id;
+      await quote.save({ session });
+    });
+    session.endSession();
 
     res.status(201).json({ invoice: savedInvoice, quote });
   } catch (e) {

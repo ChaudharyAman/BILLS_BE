@@ -37,11 +37,12 @@ const normalizeBudgetPayload = async (body, userId) => ({
 const refreshOneBudget = async (budget) => {
   if (!budget?.category) return budget;
 
+  const categoryId = budget.category?._id || budget.category;
   const result = await Expense.aggregate([
     {
       $match: {
         user: budget.user,
-        category: budget.category,
+        category: categoryId,
         date: { $gte: budget.startDate, $lte: budget.endDate },
         status: { $ne: 'CANCELLED' },
       },
@@ -183,34 +184,89 @@ exports.deleteBudget = async (req, res) => {
 
 exports.getBudgetVsActual = async (req, res) => {
   try {
-    const budgets = await Budget.find({ user: req.user._id, status: { $in: ['active', 'exceeded'] } })
+    const parsedPage = parseInt(req.query.page, 10);
+    const parsedLimit = parseInt(req.query.limit, 10);
+    const page = Number.isInteger(parsedPage) ? Math.max(1, parsedPage) : 1;
+    const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(parsedLimit, 100)) : 20;
+    const skip = (page - 1) * limit;
+    const query = { user: req.user._id, status: { $in: ['active', 'exceeded'] } };
+
+    if (req.query.category) query.category = req.query.category;
+    if (req.query.period) query.period = req.query.period;
+
+    const total = await Budget.countDocuments(query);
+    const budgets = await Budget.find(query)
       .populate('category', 'name type color icon')
       .populate('department', 'name code')
-      .sort({ endDate: 1 });
+      .sort({ endDate: 1 })
+      .skip(skip)
+      .limit(limit);
 
-    const data = [];
-    for (const budget of budgets) {
-      const refreshed = await refreshOneBudget(budget);
-      const utilizationPct = refreshed.budgetAmount > 0
-        ? Math.round((refreshed.spentAmount / refreshed.budgetAmount) * 100)
-        : 0;
-      data.push({
-        _id: refreshed._id,
-        name: refreshed.name,
-        category: refreshed.category,
-        department: refreshed.department,
-        period: refreshed.period,
-        startDate: refreshed.startDate,
-        endDate: refreshed.endDate,
-        budgetAmount: refreshed.budgetAmount,
-        spentAmount: refreshed.spentAmount,
-        remainingAmount: refreshed.remainingAmount,
-        utilizationPct,
-        status: refreshed.status,
-      });
+    const categoryIds = budgets
+      .map((budget) => budget.category?._id || budget.category)
+      .filter(Boolean);
+    const dates = budgets.reduce((acc, budget) => {
+      if (!budget.startDate || !budget.endDate) return acc;
+      acc.min = acc.min ? acc.min < budget.startDate ? acc.min : budget.startDate : budget.startDate;
+      acc.max = acc.max ? acc.max > budget.endDate ? acc.max : budget.endDate : budget.endDate;
+      return acc;
+    }, {});
+
+    const expenseTotals = categoryIds.length > 0 ? await Expense.aggregate([
+      {
+        $match: {
+          user: req.user._id,
+          category: { $in: categoryIds },
+          date: { $gte: dates.min, $lte: dates.max },
+          status: { $ne: 'CANCELLED' },
+        },
+      },
+      {
+        $group: {
+          _id: { category: '$category', date: '$date' },
+          total: { $sum: '$grandTotal' },
+        },
+      },
+    ]) : [];
+
+    const totalsByCategoryDate = new Map();
+    for (const item of expenseTotals) {
+      const categoryId = String(item._id.category);
+      const budgetsForCategory = totalsByCategoryDate.get(categoryId) || [];
+      budgetsForCategory.push({ date: item._id.date, total: item.total });
+      totalsByCategoryDate.set(categoryId, budgetsForCategory);
     }
 
-    res.json({ data });
+    const data = budgets.map((budget) => {
+      const categoryId = String(budget.category?._id || budget.category);
+      const budgetTotals = totalsByCategoryDate.get(categoryId) || [];
+      const spentAmount = budgetTotals.reduce((sum, entry) => {
+        const date = entry.date;
+        if (date >= budget.startDate && date <= budget.endDate) {
+          return sum + entry.total;
+        }
+        return sum;
+      }, 0);
+      const remainingAmount = budget.budgetAmount - spentAmount;
+      const status = spentAmount > budget.budgetAmount ? 'exceeded' : 'active';
+      const utilizationPct = budget.budgetAmount > 0 ? Math.round((spentAmount / budget.budgetAmount) * 100) : 0;
+      return {
+        _id: budget._id,
+        name: budget.name,
+        category: budget.category,
+        department: budget.department,
+        period: budget.period,
+        startDate: budget.startDate,
+        endDate: budget.endDate,
+        budgetAmount: budget.budgetAmount,
+        spentAmount,
+        remainingAmount,
+        utilizationPct,
+        status,
+      };
+    });
+
+    res.json({ data, page, limit, total, totalPages: Math.ceil(total / limit) });
   } catch (error) {
     console.error('Error fetching budget vs actual:', error);
     res.status(500).json({ message: 'Server error fetching budget report' });

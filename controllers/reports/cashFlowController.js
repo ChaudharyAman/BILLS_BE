@@ -17,6 +17,13 @@ exports.getCashFlow = async (req, res) => {
     const startDate = req.query.startDate ? new Date(req.query.startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
     const endDate = req.query.endDate ? new Date(req.query.endDate) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
+    if (req.query.startDate && Number.isNaN(startDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid startDate' });
+    }
+    if (req.query.endDate && Number.isNaN(endDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid endDate' });
+    }
+
     const [totalIncome, totalExpense, assetPurchases, liabilityPrincipal] = await Promise.all([
       sumField(Income, { user: req.user._id, date: { $gte: startDate, $lte: endDate }, status: { $ne: 'CANCELLED' } }, '$grandTotal'),
       sumField(Expense, { user: req.user._id, date: { $gte: startDate, $lte: endDate }, status: { $ne: 'CANCELLED' } }, '$grandTotal'),

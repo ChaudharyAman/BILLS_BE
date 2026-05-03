@@ -6,7 +6,7 @@ const AssetSchema = new mongoose.Schema({
   category: { type: String, enum: ['current', 'fixed', 'intangible'], required: true, index: true },
   purchaseDate: Date,
   purchaseValue: { type: Number, required: true, min: 0 },
-  currentValue: { type: Number, default: 0, min: 0 },
+  currentValue: { type: Number, min: 0 },
   depreciationMethod: {
     type: String,
     enum: ['straight-line', 'declining-balance', 'none'],
@@ -19,7 +19,9 @@ const AssetSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 AssetSchema.pre('save', function(next) {
-  if (!this.currentValue) this.currentValue = this.purchaseValue;
+  if (this.isNew && this.currentValue === undefined) {
+    this.currentValue = this.purchaseValue;
+  }
   next();
 });
 

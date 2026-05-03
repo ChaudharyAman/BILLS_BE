@@ -7,6 +7,14 @@ const parseDateRange = (query) => {
   const now = new Date();
   const startDate = query.startDate ? new Date(query.startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
   const endDate = query.endDate ? new Date(query.endDate) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+  if (query.startDate && Number.isNaN(startDate.getTime())) {
+    throw new Error('Invalid startDate');
+  }
+  if (query.endDate && Number.isNaN(endDate.getTime())) {
+    throw new Error('Invalid endDate');
+  }
+
   endDate.setHours(23, 59, 59, 999);
   return { startDate, endDate };
 };
@@ -70,6 +78,8 @@ const getRecentIncome = async (userId, startDate, endDate) => Income.find({
   .sort({ date: -1, createdAt: -1 })
   .limit(4)
   .select('incomeNumber client vendor grandTotal taxTotal date status')
+  .populate('client.clientRef', 'name')
+  .populate('vendor.vendorRef', 'name')
   .lean();
 
 const getRecentExpenses = async (userId, startDate, endDate) => Expense.find({
@@ -80,6 +90,8 @@ const getRecentExpenses = async (userId, startDate, endDate) => Expense.find({
   .sort({ date: -1, createdAt: -1 })
   .limit(4)
   .select('expenseNumber vendor client grandTotal taxTotal date status')
+  .populate('vendor.vendorRef', 'name')
+  .populate('client.clientRef', 'name')
   .lean();
 
 const getTrend = async (userId, endDate) => {
@@ -123,17 +135,40 @@ const getTrend = async (userId, endDate) => {
 };
 
 const getPayrollTdsPayable = async (userId, startDate, endDate) => {
+  const startYear = startDate.getFullYear();
+  const startMonth = startDate.getMonth() + 1;
+  const endYear = endDate.getFullYear();
+  const endMonth = endDate.getMonth() + 1;
+
   const [result] = await Payroll.aggregate([
     {
       $match: {
         user: userId,
-        status: { $ne: 'cancelled' },
+        status: { $ne: 'CANCELLED' },
         $or: [
           { paymentDate: { $gte: startDate, $lte: endDate } },
           {
             paymentDate: { $exists: false },
-            year: { $gte: startDate.getFullYear(), $lte: endDate.getFullYear() },
-            month: { $gte: startDate.getMonth() + 1, $lte: endDate.getMonth() + 1 },
+            $or: [
+              {
+                $and: [
+                  { year: { $gt: startYear } },
+                  { year: { $lt: endYear } },
+                ],
+              },
+              {
+                $and: [
+                  { year: startYear },
+                  { month: { $gte: startMonth } },
+                ],
+              },
+              {
+                $and: [
+                  { year: endYear },
+                  { month: { $lte: endMonth } },
+                ],
+              },
+            ],
           },
         ],
       },
@@ -260,6 +295,9 @@ exports.getTaxDashboard = async (req, res) => {
     });
   } catch (error) {
     console.error('Error building tax dashboard:', error);
+    if (error.message === 'Invalid startDate' || error.message === 'Invalid endDate') {
+      return res.status(400).json({ message: error.message });
+    }
     res.status(500).json({ message: 'Server error building tax dashboard' });
   }
 };

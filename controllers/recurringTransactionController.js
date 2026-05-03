@@ -21,8 +21,22 @@ const validateCategory = async (userId, type, categoryId) => {
   return category._id;
 };
 
+const sanitizeObject = (source, allowedKeys = []) => {
+  if (!source || typeof source !== 'object') return {};
+  const target = Object.create(null);
+  for (const key of allowedKeys) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) {
+      target[key] = source[key];
+    }
+  }
+  return target;
+};
+
 const buildPayload = async (body, userId) => {
   const category = await validateCategory(userId, body.type, body.category);
+  const allowedVendorKeys = ['name', 'vendorRef', 'email', 'phone', 'address'];
+  const allowedClientKeys = ['name', 'clientRef', 'email', 'phone', 'address'];
+
   return {
     type: body.type,
     category,
@@ -31,8 +45,8 @@ const buildPayload = async (body, userId) => {
     amount: Number(body.amount) || 0,
     description: body.description || '',
     paymentMethod: body.paymentMethod || '',
-    vendor: body.vendor || {},
-    client: body.client || {},
+    vendor: sanitizeObject(body.vendor, allowedVendorKeys),
+    client: sanitizeObject(body.client, allowedClientKeys),
     frequency: body.frequency,
     startDate: body.startDate,
     endDate: body.endDate || null,
@@ -40,7 +54,9 @@ const buildPayload = async (body, userId) => {
     dayOfWeek: body.dayOfWeek === '' || body.dayOfWeek === undefined ? undefined : Number(body.dayOfWeek),
     autoCreate: body.autoCreate === undefined ? true : Boolean(body.autoCreate),
     notifyBeforeCreation: Boolean(body.notifyBeforeCreation),
-    notifyDaysBefore: Number(body.notifyDaysBefore) || 3,
+    notifyDaysBefore: body.notifyDaysBefore === undefined || body.notifyDaysBefore === null
+      ? 3
+      : Number(body.notifyDaysBefore),
   };
 };
 
@@ -59,8 +75,10 @@ exports.createRecurringTransaction = async (req, res) => {
 
 exports.getRecurringTransactions = async (req, res) => {
   try {
-    const page = parseInt(req.query.page, 10) || 1;
-    const limit = parseInt(req.query.limit, 10) || 20;
+    const parsedPage = Number.parseInt(req.query.page, 10);
+    const parsedLimit = Number.parseInt(req.query.limit, 10);
+    const page = Number.isInteger(parsedPage) ? Math.max(1, parsedPage) : 1;
+    const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(parsedLimit, 100)) : 20;
     const skip = (page - 1) * limit;
     const query = { user: req.user._id };
     if (req.query.type) query.type = req.query.type;
@@ -116,7 +134,7 @@ exports.pauseRecurringTransaction = async (req, res) => {
     const rt = await RecurringTransaction.findOneAndUpdate(
       { _id: req.params.id, user: req.user._id },
       { $set: { isActive: false } },
-      { returnDocument: 'after' }
+      { new: true }
     );
     if (!rt) return res.status(404).json({ message: 'Recurring transaction not found' });
     res.json(rt);

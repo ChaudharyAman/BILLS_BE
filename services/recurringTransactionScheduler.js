@@ -1,4 +1,5 @@
 const cron = require('node-cron');
+const mongoose = require('mongoose');
 const RecurringTransaction = require('../models/RecurringTransaction');
 const Income = require('../models/Income');
 const Expense = require('../models/Expense');
@@ -30,7 +31,7 @@ const computeNextProcessDate = (transaction, fromDate = transaction.startDate) =
     case 'weekly': {
       next = new Date(base);
       const target = Number.isInteger(transaction.dayOfWeek) ? transaction.dayOfWeek : next.getDay();
-      const diff = (target - next.getDay() + 7) || 7;
+      const diff = ((target - next.getDay() + 7) % 7) || 7;
       next.setDate(next.getDate() + diff);
       break;
     }
@@ -61,10 +62,15 @@ const initialNextProcessDate = (transaction) => {
     next = computeNextProcessDate(transaction, next);
     guard += 1;
   }
+  if (guard >= 1000) {
+    const message = `Exceeded guard iterations computing next process date for transaction ${transaction._id}`;
+    console.warn(message, { transactionId: transaction._id, startDate: transaction.startDate, today, lastNext: next });
+    throw new Error(message);
+  }
   return next;
 };
 
-const createTransactionDocument = async (rt, processDate = new Date()) => {
+const createTransactionDocument = async (rt, processDate = new Date(), session = null) => {
   const numberDate = processDate.toISOString().substring(0, 10).replace(/-/g, '');
   const baseNumber = `RT-${rt.type === 'income' ? 'INC' : 'EXP'}-${numberDate}-${String(rt._id).slice(-6)}`;
   const payload = {
@@ -92,9 +98,16 @@ const createTransactionDocument = async (rt, processDate = new Date()) => {
   };
 
   if (rt.type === 'income') {
-    return Income.create({ ...payload, incomeNumber: baseNumber, sourceType: 'manual' });
+    const query = Income.create([{ ...payload, incomeNumber: baseNumber, sourceType: 'manual' }], { session });
+    return (await query)[0];
   }
-  return Expense.create({ ...payload, expenseNumber: baseNumber });
+
+  if (rt.type === 'expense') {
+    const query = Expense.create([{ ...payload, expenseNumber: baseNumber }], { session });
+    return (await query)[0];
+  }
+
+  throw new TypeError(`Unsupported recurring transaction type: ${String(rt.type)}`);
 };
 
 const processDueRecurringTransactions = async (asOf = new Date()) => {
@@ -106,23 +119,32 @@ const processDueRecurringTransactions = async (asOf = new Date()) => {
   });
 
   const results = [];
-  for (const rt of due) {
-    try {
-      await createTransactionDocument(rt, today);
-      rt.lastProcessedDate = today;
-      const next = computeNextProcessDate(rt, today);
-      if (rt.endDate && next > startOfDay(rt.endDate)) {
-        rt.isActive = false;
-        rt.nextProcessDate = null;
-      } else {
-        rt.nextProcessDate = next;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      for (const rt of due) {
+        try {
+          await createTransactionDocument(rt, today, session);
+          rt.lastProcessedDate = today;
+          const next = computeNextProcessDate(rt, today);
+          if (rt.endDate && next > startOfDay(rt.endDate)) {
+            rt.isActive = false;
+            rt.nextProcessDate = null;
+          } else {
+            rt.nextProcessDate = next;
+          }
+          await rt.save({ session });
+          results.push({ id: rt._id, status: 'processed' });
+        } catch (error) {
+          results.push({ id: rt._id, status: 'error', error: error.message });
+          throw error;
+        }
       }
-      await rt.save();
-      results.push({ id: rt._id, status: 'processed' });
-    } catch (error) {
-      results.push({ id: rt._id, status: 'error', error: error.message });
-    }
+    });
+  } finally {
+    session.endSession();
   }
+
   return results;
 };
 
