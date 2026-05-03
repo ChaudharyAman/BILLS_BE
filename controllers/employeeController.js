@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Employee = require('../models/Employee');
 const Department = require('../models/Department');
 const Payroll = require('../models/Payroll');
+const escapeRegex = require('../utils/escapeRegex');
 
 const validateDepartment = async (departmentId, userId) => {
   if (!departmentId) return null;
