@@ -14,7 +14,7 @@ const mongoose = require('mongoose');
 
 // ─── Shared item processor ────────────────────────────────────────────────────
 function processItems(items, invoiceType, isIntraState) {
-  return processDocumentItems(items, { invoiceType, isIntraState });
+  return processDocumentItems(items, { invoiceType, isIntraState, includeExcise: true });
 }
 
 // ─── GET all purchaseOrders ───────────────────────────────────────────────────────────
@@ -363,11 +363,11 @@ exports.convertToInvoice = async (req, res) => {
     const vendorState = purchaseOrder.placeOfSupply || vendorSnapshot.address.state || '';
     const isIntraState = !isInterStateSupply(vendorState, COMPANY_STATE, COMPANY_GSTIN);
 
-    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(purchaseOrder.items, purchaseOrder.invoiceType, isIntraState);
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } = processItems(purchaseOrder.items, purchaseOrder.invoiceType, isIntraState);
     const finalShipping = Number(purchaseOrder.shippingCharges) || 0;
     const finalPackaging = Number(purchaseOrder.packagingCharges) || 0;
     const finalDiscount = Number(purchaseOrder.discountTotal) || 0;
-    const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount;
 
     const invoice = new Invoice({
       user: purchaseOrder.user, invoiceNo, invoiceType: purchaseOrder.invoiceType,
@@ -378,6 +378,7 @@ exports.convertToInvoice = async (req, res) => {
       totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: purchaseOrder.customChargeLabel, discountTotal: finalDiscount,
+      exciseDuty: { ...(purchaseOrder.exciseDuty || {}), totalExcise },
       grandTotal, balanceDue: grandTotal,
       shippingAddress: resolvedShipping, transport: purchaseOrder.transport,
       placeOfSupply: purchaseOrder.placeOfSupply, reverseCharge: purchaseOrder.reverseCharge,

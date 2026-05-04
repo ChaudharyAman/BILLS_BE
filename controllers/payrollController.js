@@ -95,21 +95,29 @@ exports.processPayroll = async (req, res) => {
 
     for (const payload of employeePayloads) {
       const employeeId = payload.employeeId || payload.employee;
+      let employeeName = 'Unknown Employee';
       try {
         if (!mongoose.Types.ObjectId.isValid(employeeId)) {
-          errors.push({ employeeId, error: 'Invalid employee' });
+          errors.push({ employeeId, error: 'Invalid employee ID format' });
+          continue;
+        }
+
+        const employee = await Employee.findOne({ _id: employeeId, user: req.user._id });
+        if (!employee) {
+          errors.push({ employeeId, error: 'Employee not found' });
+          continue;
+        }
+        
+        employeeName = `${employee.firstName} ${employee.lastName}`;
+
+        if (employee.status !== 'active') {
+          errors.push({ employeeId, employeeName, error: 'Employee is inactive' });
           continue;
         }
 
         const existing = await Payroll.findOne({ user: req.user._id, employee: employeeId, month, year });
         if (existing) {
-          errors.push({ employeeId, error: 'Payroll already processed for this period' });
-          continue;
-        }
-
-        const employee = await Employee.findOne({ _id: employeeId, user: req.user._id, status: 'active' });
-        if (!employee) {
-          errors.push({ employeeId, error: 'Employee not found or inactive' });
+          errors.push({ employeeId, employeeName, error: 'Payroll already processed for this period' });
           continue;
         }
 
@@ -133,11 +141,12 @@ exports.processPayroll = async (req, res) => {
         success.push({
           payrollId: payroll._id,
           employeeId: employee._id,
-          employeeName: `${employee.firstName} ${employee.lastName}`,
+          employeeName,
           netSalary: payroll.netSalary,
         });
       } catch (error) {
-        errors.push({ employeeId, error: error.message });
+        console.error(`Error processing payroll for employee ${employeeId}:`, error);
+        errors.push({ employeeId, employeeName, error: error.message });
       }
     }
 
@@ -242,51 +251,43 @@ exports.markPayrollAsPaid = async (req, res) => {
     const paymentDate = req.body.paymentDate || new Date();
     const employeeIdentifier = payroll.employee?.employeeId || payroll.employeeId || 'unknown';
     const expenseNumber = `PAY-${payroll.year}-${String(payroll.month).padStart(2, '0')}-${employeeIdentifier}`;
-
     let expense = null;
-    const session = await mongoose.startSession();
+    if (payroll.expenseRef) {
+      expense = await Expense.findOne({ _id: payroll.expenseRef, user: req.user._id });
+    }
 
-    await session.withTransaction(async () => {
-      if (payroll.expenseRef) {
-        expense = await Expense.findOne({ _id: payroll.expenseRef, user: req.user._id }).session(session);
-      }
+    if (!expense) {
+      expense = await Expense.create({
+        user: req.user._id,
+        expenseNumber,
+        category: payrollCategory._id,
+        date: paymentDate,
+        vendor: { name: `${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim() || 'Payroll Vendor' },
+        paymentMethod: req.body.paymentMethod || 'Bank Transfer',
+        items: [{
+          name: `Salary - ${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim() || 'Payroll Salary',
+          description: `${new Date(0, payroll.month - 1).toLocaleString('en-US', { month: 'long' })} ${payroll.year}`,
+          qty: 1,
+          rate: payroll.netSalary,
+          taxRate: 0,
+          taxAmount: 0,
+          amount: payroll.netSalary,
+        }],
+        subTotal: payroll.netSalary,
+        taxTotal: 0,
+        grandTotal: payroll.netSalary,
+        status: 'PAID',
+        privateNotes: `Payroll ID: ${payroll._id}`,
+      });
+    }
 
-      if (!expense) {
-        expense = (await Expense.create([
-          {
-            user: req.user._id,
-            expenseNumber,
-            category: payrollCategory._id,
-            date: paymentDate,
-            vendor: { name: `${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim() || 'Payroll Vendor' },
-            paymentMethod: req.body.paymentMethod || 'Bank Transfer',
-            items: [{
-              name: `Salary - ${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim() || 'Payroll Salary',
-              description: `${new Date(0, payroll.month - 1).toLocaleString('en-US', { month: 'long' })} ${payroll.year}`,
-              qty: 1,
-              rate: payroll.netSalary,
-              taxRate: 0,
-              taxAmount: 0,
-              amount: payroll.netSalary,
-            }],
-            subTotal: payroll.netSalary,
-            taxTotal: 0,
-            grandTotal: payroll.netSalary,
-            status: 'PAID',
-            privateNotes: `Payroll ID: ${payroll._id}`,
-          },
-        ], { session }))[0];
-      }
+    payroll.status = 'paid';
+    payroll.paymentDate = paymentDate;
+    payroll.paymentMethod = req.body.paymentMethod || payroll.paymentMethod || 'Bank Transfer';
+    payroll.transactionId = req.body.transactionId || payroll.transactionId;
+    payroll.expenseRef = expense._id;
+    await payroll.save();
 
-      payroll.status = 'paid';
-      payroll.paymentDate = paymentDate;
-      payroll.paymentMethod = req.body.paymentMethod || payroll.paymentMethod || 'Bank Transfer';
-      payroll.transactionId = req.body.transactionId || payroll.transactionId;
-      payroll.expenseRef = expense._id;
-      await payroll.save({ session });
-    });
-
-    session.endSession();
     res.json({ payroll, expense });
   } catch (error) {
     console.error('Error marking payroll as paid:', error);
@@ -299,6 +300,7 @@ exports.markPayrollAsPaid = async (req, res) => {
 
 exports.generatePayslip = async (req, res) => {
   try {
+    console.log(`Generating payslip for ID: ${req.params.id}, User: ${req.user._id}`);
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Payroll not found' });
     }
@@ -309,7 +311,10 @@ exports.generatePayslip = async (req, res) => {
         populate: { path: 'department', select: 'name code' },
       });
 
-    if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
+    if (!payroll) {
+      console.log(`Payroll ${req.params.id} not found for user ${req.user._id}`);
+      return res.status(404).json({ message: 'Payroll not found' });
+    }
 
     res.json({
       payslip: {

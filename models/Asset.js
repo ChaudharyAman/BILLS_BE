@@ -20,11 +20,10 @@ const AssetSchema = new mongoose.Schema({
   status: { type: String, enum: ['active', 'disposed', 'sold'], default: 'active', index: true },
 }, { timestamps: true });
 
-AssetSchema.pre('save', function(next) {
+AssetSchema.pre('save', async function() {
   if (this.isNew && this.currentValue === undefined) {
     this.currentValue = this.purchaseValue;
   }
-  next();
 });
 
 module.exports = mongoose.model('Asset', AssetSchema);

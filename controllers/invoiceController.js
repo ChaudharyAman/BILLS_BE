@@ -176,6 +176,13 @@ function processItems(items, invoiceType, isIntraState) {
   return processDocumentItems(items, { invoiceType, isIntraState, includeExcise: true });
 }
 
+function buildExciseDutySnapshot(exciseDuty = {}, totalExcise = 0) {
+  return {
+    ...(exciseDuty || {}),
+    totalExcise: Number(totalExcise) || 0,
+  };
+}
+
 // ─── GET all invoices ─────────────────────────────────────────────────────────
 exports.getInvoices = async (req, res) => {
   try {
@@ -356,10 +363,10 @@ exports.createInvoice = async (req, res) => {
     const finalPackaging = Number(packagingCharges) || 0;
     const finalDiscountTotal = Number(discountTotal) || 0;
     const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
-    const finalTds = Number(tds) || 0;
     const finalTcs = Number(tcs) || 0;
+    const finalTds = Number(tds) || 0;
     const finalAdvance = Number(advancePaid) || 0;
-    const finalBalance = Math.max(0, grandTotal - finalAdvance);
+    const finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
 
     const invoice = new Invoice({
       user: req.user._id,
@@ -396,7 +403,7 @@ exports.createInvoice = async (req, res) => {
       drCr: drCr || 'Dr.',
       notes,
       terms,
-      exciseDuty: exciseDuty || {},
+      exciseDuty: buildExciseDutySnapshot(exciseDuty, totalExcise),
     });
 
     const newInvoice = await invoice.save();
@@ -531,10 +538,10 @@ exports.updateInvoice = async (req, res) => {
     const finalPackaging = Number(packagingCharges) || 0;
     const finalDiscountTotal = Number(discountTotal) || 0;
     const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
-    const finalTds = Number(tds) || 0;
     const finalTcs = Number(tcs) || 0;
+    const finalTds = Number(tds) || 0;
     const finalAdvance = Number(advancePaid) || 0;
-    const finalBalance = Math.max(0, grandTotal - finalAdvance);
+    const finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
 
     // Apply updates
     invoice.invoiceType = effectiveType;
@@ -574,7 +581,7 @@ exports.updateInvoice = async (req, res) => {
     invoice.drCr = drCr || 'Dr.';
     invoice.notes = notes;
     invoice.terms = terms;
-    invoice.exciseDuty = exciseDuty || invoice.exciseDuty || {};
+    invoice.exciseDuty = buildExciseDutySnapshot(exciseDuty || invoice.exciseDuty, totalExcise);
     if (status) invoice.status = status;
 
     const updatedInvoice = await invoice.save();
@@ -668,9 +675,10 @@ exports.bulkCreateInvoices = async (req, res) => {
       const finalPackaging = Number(invData.packagingCharges) || 0;
       const finalDiscount = Number(invData.discountTotal) || 0;
       const finalTcs = Number(invData.tcs) || 0;
+      const finalTds = Number(invData.tds) || 0;
       const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount + finalTcs;
       const advancePaid = Number(invData.advancePaid) || 0;
-      const balanceDue = Math.max(0, grandTotal - advancePaid);
+      const balanceDue = Math.max(0, grandTotal - advancePaid - finalTds);
 
       const invoice = new Invoice({
         invoiceNo,
@@ -686,13 +694,13 @@ exports.bulkCreateInvoices = async (req, res) => {
         reverseCharge: !!invData.reverseCharge,
         fy: invData.fy || getFinancialYear(invData.date || new Date()),
         currency: invData.currency || 'INR',
-        tds: Number(invData.tds) || 0,
+        tds: finalTds,
         tcs: Number(invData.tcs) || 0,
         drCr: invData.drCr || 'Dr.',
         customChargeLabel: invData.customChargeLabel || 'Custom Amount',
         notes: invData.notes || '',
         terms: invData.terms || '',
-        exciseDuty: invData.exciseDuty || {},
+        exciseDuty: buildExciseDutySnapshot(invData.exciseDuty, totalExcise),
         clientRef: client._id,
         client: {
            clientRef: client._id,

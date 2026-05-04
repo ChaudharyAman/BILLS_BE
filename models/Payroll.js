@@ -58,7 +58,7 @@ const PayrollSchema = new mongoose.Schema({
 
 const sumNamedAmounts = (items = []) => items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
 
-PayrollSchema.pre('validate', function(next) {
+PayrollSchema.pre('validate', function() {
   const earnings = this.earnings || {};
   const deductions = this.deductions || {};
 
@@ -83,7 +83,6 @@ PayrollSchema.pre('validate', function(next) {
     sumNamedAmounts(deductions.otherDeductions);
 
   this.netSalary = earnings.totalEarnings - deductions.totalDeductions;
-  next();
 });
 
 PayrollSchema.index({ user: 1, employee: 1, month: 1, year: 1 }, { unique: true });

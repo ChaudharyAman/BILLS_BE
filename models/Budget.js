@@ -37,13 +37,12 @@ const BudgetSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
-BudgetSchema.pre('save', function(next) {
+BudgetSchema.pre('save', async function() {
   if (this.spentAmount === undefined) this.spentAmount = 0;
   this.remainingAmount = this.budgetAmount - (this.spentAmount || 0);
-  next();
 });
 
-BudgetSchema.pre('findOneAndUpdate', async function(next) {
+BudgetSchema.pre('findOneAndUpdate', async function() {
   const update = this.getUpdate();
   const set = update?.$set || update || {};
   const newStartDate = set.startDate || set['startDate'];
@@ -53,7 +52,7 @@ BudgetSchema.pre('findOneAndUpdate', async function(next) {
     if (new Date(newEndDate) <= new Date(newStartDate)) {
       const err = new Error('End date must be later than start date');
       err.statusCode = 400;
-      return next(err);
+      throw err;
     }
   }
 
@@ -62,11 +61,9 @@ BudgetSchema.pre('findOneAndUpdate', async function(next) {
     if (doc && new Date(newEndDate) <= new Date(doc.startDate)) {
       const err = new Error('End date must be later than start date');
       err.statusCode = 400;
-      return next(err);
+      throw err;
     }
   }
-
-  next();
 });
 
 BudgetSchema.index({ user: 1, category: 1, startDate: 1, endDate: 1 });

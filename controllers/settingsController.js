@@ -38,7 +38,7 @@ exports.updateSettings = async (req, res) => {
         if (req.files.logo) {
             try {
                 const result = await cloudinary.uploader.upload(req.files.logo[0].path, {
-                    folder: 'mybill_logos',
+                    folder: 'flance_logos',
                     allowed_formats: ['jpg', 'png', 'jpeg', 'webp'],
                 });
                 newLogoUrl = result.secure_url;
@@ -53,7 +53,7 @@ exports.updateSettings = async (req, res) => {
         if (req.files.signature) {
             try {
                 const result = await cloudinary.uploader.upload(req.files.signature[0].path, {
-                    folder: 'mybill_signatures',
+                    folder: 'flance_signatures',
                     allowed_formats: ['jpg', 'png', 'jpeg', 'webp'],
                 });
                 newSignatureUrl = result.secure_url;

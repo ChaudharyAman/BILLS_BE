@@ -12,7 +12,7 @@ const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalcul
 const { buildUserCounterId } = require('../utils/counterKey');
 
 function processItems(items, invoiceType, isIntraState) {
-  return processDocumentItems(items, { invoiceType, isIntraState });
+  return processDocumentItems(items, { invoiceType, isIntraState, includeExcise: true });
 }
 
 exports.getProformas = async (req, res) => {
@@ -368,11 +368,11 @@ exports.convertToInvoice = async (req, res) => {
     const clientState = proforma.placeOfSupply || clientSnapshot.address.state || '';
     const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
-    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(proforma.items, proforma.invoiceType, isIntraState);
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } = processItems(proforma.items, proforma.invoiceType, isIntraState);
     const finalShipping = Number(proforma.shippingCharges) || 0;
     const finalPackaging = Number(proforma.packagingCharges) || 0;
     const finalDiscount = Number(proforma.discountTotal) || 0;
-    const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount;
 
     const invoice = new Invoice({
       user: proforma.user, invoiceNo, invoiceType: proforma.invoiceType,
@@ -383,6 +383,7 @@ exports.convertToInvoice = async (req, res) => {
       totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: proforma.customChargeLabel, discountTotal: finalDiscount,
+      exciseDuty: { ...(proforma.exciseDuty || {}), totalExcise },
       grandTotal, balanceDue: grandTotal,
       shippingAddress: resolvedShipping, transport: proforma.transport,
       placeOfSupply: proforma.placeOfSupply, reverseCharge: proforma.reverseCharge,

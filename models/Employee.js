@@ -80,7 +80,7 @@ const EmployeeSchema = new mongoose.Schema({
 EmployeeSchema.index({ user: 1, employeeId: 1 }, { unique: true });
 EmployeeSchema.index({ user: 1, email: 1 });
 
-EmployeeSchema.pre('save', function(next) {
+EmployeeSchema.pre('save', function() {
   const salary = this.salaryStructure || {};
   const otherAllowances = Array.isArray(salary.otherAllowances) ? salary.otherAllowances : [];
   const otherTotal = otherAllowances.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
@@ -97,7 +97,6 @@ EmployeeSchema.pre('save', function(next) {
   const employerESI = gross <= 21000 ? gross * 0.0325 : 0;
   salary.ctc = gross + employerPF + employerESI;
   this.salaryStructure = salary;
-  next();
 });
 
 const applySalaryStructureUpdate = async function() {
@@ -144,29 +143,27 @@ const applySalaryStructureUpdate = async function() {
     otherTotal;
   const ctc = gross + ((Number(mergedSalary.basic) || 0) * 0.12) + (gross <= 21000 ? gross * 0.0325 : 0);
 
-  if (!update.$set) update.$set = {};
-  update.$set['salaryStructure.grossSalary'] = gross;
-  update.$set['salaryStructure.ctc'] = ctc;
   if (set.salaryStructure && typeof set.salaryStructure === 'object') {
-    update.$set.salaryStructure = { ...mergedSalary, grossSalary: gross, ctc };
+    set.salaryStructure = { ...mergedSalary, grossSalary: gross, ctc };
+  } else {
+    if (!update.$set) update.$set = {};
+    update.$set['salaryStructure.grossSalary'] = gross;
+    update.$set['salaryStructure.ctc'] = ctc;
   }
 
   this.setUpdate(update);
 };
 
-EmployeeSchema.pre('findOneAndUpdate', async function(next) {
+EmployeeSchema.pre('findOneAndUpdate', async function() {
   await applySalaryStructureUpdate.call(this);
-  next();
 });
 
-EmployeeSchema.pre('updateOne', async function(next) {
+EmployeeSchema.pre('updateOne', async function() {
   await applySalaryStructureUpdate.call(this);
-  next();
 });
 
-EmployeeSchema.pre('updateMany', async function(next) {
+EmployeeSchema.pre('updateMany', async function() {
   await applySalaryStructureUpdate.call(this);
-  next();
 });
 
 const removeEmployeePII = (doc, ret) => {

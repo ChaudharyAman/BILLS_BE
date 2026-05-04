@@ -28,6 +28,6 @@ router.route('/:id')
   .put(authorizePayrollRoles, updatePayroll);
 
 router.post('/:id/mark-paid', authorizePayrollRoles, markPayrollAsPaid);
-router.post('/:id/generate-payslip', generatePayslip);
+router.get('/:id/generate-payslip', generatePayslip);
 
 module.exports = router;

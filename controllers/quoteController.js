@@ -14,7 +14,7 @@ const mongoose = require('mongoose');
 
 // ─── Shared item processor ────────────────────────────────────────────────────
 function processItems(items, invoiceType, isIntraState) {
-  return processDocumentItems(items, { invoiceType, isIntraState });
+  return processDocumentItems(items, { invoiceType, isIntraState, includeExcise: true });
 }
 
 // ─── GET all quotes ───────────────────────────────────────────────────────────
@@ -379,11 +379,11 @@ exports.convertToInvoice = async (req, res) => {
     const clientState = quote.placeOfSupply || clientSnapshot.address.state || '';
     const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
-    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(quote.items || [], quote.invoiceType, isIntraState);
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } = processItems(quote.items || [], quote.invoiceType, isIntraState);
     const finalShipping = Number(quote.shippingCharges) || 0;
     const finalPackaging = Number(quote.packagingCharges) || 0;
     const finalDiscount = Number(quote.discountTotal) || 0;
-    const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount;
 
     const invoice = new Invoice({
       user: quote.user, invoiceNo, invoiceType: quote.invoiceType,
@@ -394,6 +394,7 @@ exports.convertToInvoice = async (req, res) => {
       totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: quote.customChargeLabel, discountTotal: finalDiscount,
+      exciseDuty: { ...(quote.exciseDuty || {}), totalExcise },
       grandTotal, balanceDue: grandTotal,
       shippingAddress: resolvedShipping, transport: quote.transport,
       placeOfSupply: quote.placeOfSupply, reverseCharge: quote.reverseCharge,
