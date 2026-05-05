@@ -25,24 +25,21 @@ const buildAuthResponse = (user, token) => ({
     role: user.role,
     subscription: user.subscription
   },
-  ...(process.env.NODE_ENV !== 'production' ? { token } : {}),
+  token,
 });
 
 // Safari/Chrome Cookie Helper
 const getCookieOptions = (req) => {
   const origin = req.get('origin') || '';
   const isLocalhost = origin.includes('localhost') || origin.includes('127.0.0.1');
+  const envSameSite = process.env.COOKIE_SAME_SITE?.toLowerCase();
+  const sameSite = envSameSite || (isLocalhost ? 'lax' : 'none');
   
   return {
     httpOnly: true,
-    secure: true,
-    sameSite: process.env.COOKIE_SAME_SITE || 'strict',
+    secure: !isLocalhost,
+    sameSite,
     maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-    // Override for local dev if not using HTTPS
-    ...(isLocalhost && {
-      secure: false,
-      sameSite: 'lax'
-    })
   };
 };
 
@@ -133,16 +130,9 @@ exports.login = async (req, res) => {
 };
 
 exports.me = async (req, res) => {
-  res.json({
-    user: {
-      _id: req.user._id,
-      username: req.user.username,
-      email: req.user.email,
-      phone: req.user.phone,
-      role: req.user.role,
-      subscription: req.user.subscription,
-    },
-  });
+  const token = generateToken(req.user);
+  res.cookie('token', token, getCookieOptions(req));
+  res.json(buildAuthResponse(req.user, token));
 };
 
 // @desc    Update logged-in user's profile (username, email, phone, password)
