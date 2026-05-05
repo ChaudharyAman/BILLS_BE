@@ -2,12 +2,26 @@ const User = require('../models/User');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 
-// Initialize Razorpay instance
-// Note: In a real app, you'd want to handle the case where keys are missing more gracefully
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID || 'dummy_key_id',
-  key_secret: process.env.RAZORPAY_KEY_SECRET || 'dummy_key_secret',
-});
+const getRazorpayConfig = () => {
+  const keyId = process.env.RAZORPAY_KEY_ID;
+  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+
+  if (!keyId || !keySecret) {
+    const error = new Error('Razorpay credentials are not configured');
+    error.statusCode = 500;
+    throw error;
+  }
+
+  return { keyId, keySecret };
+};
+
+const createRazorpayClient = () => {
+  const { keyId, keySecret } = getRazorpayConfig();
+  return new Razorpay({
+    key_id: keyId,
+    key_secret: keySecret,
+  });
+};
 
 const PLAN_PRICES = {
   pro: {
@@ -72,6 +86,7 @@ exports.createOrder = async (req, res) => {
       receipt: `sub_${Date.now()}`,
     };
 
+    const razorpay = createRazorpayClient();
     const order = await razorpay.orders.create(options);
 
     if (!order) {
@@ -97,8 +112,9 @@ exports.verifyPayment = async (req, res) => {
     } = req.body;
 
     const sign = razorpay_order_id + '|' + razorpay_payment_id;
+    const { keySecret } = getRazorpayConfig();
     const expectedSign = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || 'dummy_key_secret')
+      .createHmac('sha256', keySecret)
       .update(sign.toString())
       .digest('hex');
 
@@ -106,6 +122,7 @@ exports.verifyPayment = async (req, res) => {
       return res.status(400).json({ message: 'Invalid signature sent!' });
     }
 
+    const razorpay = createRazorpayClient();
     const order = await razorpay.orders.fetch(razorpay_order_id);
     const resolvedPlan = getPlanFromAmount(order?.amount);
 

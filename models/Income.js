@@ -14,6 +14,19 @@ const IncomeItemSchema = new mongoose.Schema({
 
 const IncomeSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
+  category: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category',
+    default: null,
+    index: true,
+  },
+  subCategory: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category',
+    default: null,
+  },
+  project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', default: null, index: true },
+  department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
   sourceType: {
     type: String,
     enum: ['manual', 'invoice'],

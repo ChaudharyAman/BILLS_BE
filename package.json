@@ -8,7 +8,8 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test:system": "node scripts/run-complete-system-tests.js",
-    "promote:admin": "node scripts/promote-admin.js"
+    "promote:admin": "node scripts/promote-admin.js",
+    "migrate:categories": "node scripts/migrate-add-categories.js"
   },
   "keywords": [],
   "author": "",
@@ -31,6 +32,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.2.1",
     "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
     "pdf-parse": "^2.4.5",
     "razorpay": "^2.9.6"
   }

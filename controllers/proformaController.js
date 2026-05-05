@@ -7,38 +7,12 @@ const escapeRegex = require('../utils/escapeRegex');
 const User = require('../models/User');
 const mongoose = require('mongoose');
 const { buildAutoDocumentNumber, buildCustomDocumentNumber } = require('../utils/documentNumber');
+const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
+const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
+const { buildUserCounterId } = require('../utils/counterKey');
 
-function processItems(items, isIntraState) {
-  let subTotal = 0, taxTotal = 0, totalCGST = 0, totalSGST = 0, totalIGST = 0;
-  const processedItems = [];
-
-  for (const item of items) {
-    const qty = Number(item.qty) || 0;
-    const rate = Number(item.rate) || 0;
-    const discountPct = Number(item.discount) || 0;
-    const taxRate = Number(item.taxRate) || 0;
-
-    const taxableValue = qty * rate * (1 - discountPct / 100);
-    const itemTax = taxableValue * (taxRate / 100);
-
-    let cgst = 0, sgst = 0, igst = 0;
-    if (isIntraState) { cgst = itemTax / 2; sgst = itemTax / 2; }
-    else { igst = itemTax; }
-
-    const total = taxableValue + itemTax;
-    subTotal += taxableValue;
-    taxTotal += itemTax;
-    totalCGST += cgst;
-    totalSGST += sgst;
-    totalIGST += igst;
-
-    processedItems.push({
-      itemRef: item.itemRef, name: item.name, description: item.description,
-      hsnCode: item.hsnCode, qty, unit: item.unit, rate, discount: discountPct,
-      taxRate, taxAmount: itemTax, cgst, sgst, igst, amount: total,
-    });
-  }
-  return { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST };
+function processItems(items, invoiceType, isIntraState) {
+  return processDocumentItems(items, { invoiceType, isIntraState, includeExcise: true });
 }
 
 exports.getProformas = async (req, res) => {
@@ -89,9 +63,8 @@ exports.getProformaById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Proforma not found' });
     }
-    const proforma = await Proforma.findById(req.params.id);
+    const proforma = await Proforma.findOne({ _id: req.params.id, user: req.user._id });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
-    if (proforma.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     res.json(proforma);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -124,9 +97,8 @@ exports.createProforma = async (req, res) => {
     }
     // -------------------------------
 
-    const client = await Client.findById(clientRef);
+    const client = await Client.findOne({ _id: clientRef, user: req.user._id });
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -160,17 +132,18 @@ exports.createProforma = async (req, res) => {
       }
     } else {
       const counter = await Counter.findOneAndUpdate(
-        { id: 'proformaNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+        { id: buildUserCounterId(req.user._id, 'proformaNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
       );
       proformaNo = buildAutoDocumentNumber(proformaPrefix, counter.seq);
     }
 
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+    const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-      processItems(items || [], isIntraState);
+      processItems(items || [], invoiceType || 'Tax Invoice', isIntraState);
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
@@ -211,9 +184,8 @@ exports.updateProforma = async (req, res) => {
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
 
-    const proforma = await Proforma.findById(req.params.id);
+    const proforma = await Proforma.findOne({ _id: req.params.id, user: req.user._id });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
-    if (proforma.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(req.user._id);
@@ -251,9 +223,8 @@ exports.updateProforma = async (req, res) => {
     }
     // -----------------------------------------
 
-    const client = await Client.findById(clientRef);
+    const client = await Client.findOne({ _id: clientRef, user: req.user._id });
     if (!client) return res.status(404).json({ message: 'Client not found' });
-    if (client.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
 
     const clientSnapshot = {
       clientRef: client._id,
@@ -274,11 +245,13 @@ exports.updateProforma = async (req, res) => {
     const userSettings = await Settings.findOne({ user: req.user._id });
     const proformaPrefix = userSettings?.proformaPrefix || 'PRF';
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
-    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+    const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
+    const effectiveType = invoiceType || proforma.invoiceType || 'Tax Invoice';
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-      processItems(items || [], isIntraState);
+      processItems(items || [], effectiveType, isIntraState);
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
@@ -307,7 +280,7 @@ exports.updateProforma = async (req, res) => {
     };
 
     Object.assign(proforma, {
-      invoiceType: invoiceType || proforma.invoiceType,
+      invoiceType: effectiveType,
       client: clientSnapshot, items: processedItems, date, validUntil,
       paymentMode, paymentTerms, subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
@@ -327,9 +300,8 @@ exports.updateProforma = async (req, res) => {
 
 exports.deleteProforma = async (req, res) => {
   try {
-    const proforma = await Proforma.findById(req.params.id);
+    const proforma = await Proforma.findOne({ _id: req.params.id, user: req.user._id });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
-    if (proforma.user.toString() !== req.user.id) return res.status(401).json({ message: 'Not authorized' });
     
     // --- Subscription Check ---
     const userObj = await User.findById(req.user._id);
@@ -345,19 +317,18 @@ exports.deleteProforma = async (req, res) => {
 
 exports.convertToInvoice = async (req, res) => {
   try {
-    const proforma = await Proforma.findById(req.params.id);
+    const proforma = await Proforma.findOne({ _id: req.params.id, user: req.user._id });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
-    if (proforma.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
     if (proforma.status === 'CONVERTED') return res.status(400).json({ message: 'Already converted' });
 
     const userSettings = await Settings.findOne({ user: req.user._id });
     const counter = await Counter.findOneAndUpdate(
-      { id: 'invoiceNo' }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+      { id: buildUserCounterId(req.user._id, 'invoiceNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
     // Fetch fresh client data to ensure correct address format specially for old proformas
-    const client = await Client.findById(proforma.client.clientRef);
+    const client = await Client.findOne({ _id: proforma.client.clientRef, user: req.user._id });
     let clientSnapshot = proforma.client;
     let resolvedShipping = proforma.shippingAddress;
 
@@ -393,10 +364,15 @@ exports.convertToInvoice = async (req, res) => {
     }
 
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = proforma.placeOfSupply || clientSnapshot.address.state || '';
-    const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+    const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
-    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } = processItems(proforma.items, isIntraState);
+    const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } = processItems(proforma.items, proforma.invoiceType, isIntraState);
+    const finalShipping = Number(proforma.shippingCharges) || 0;
+    const finalPackaging = Number(proforma.packagingCharges) || 0;
+    const finalDiscount = Number(proforma.discountTotal) || 0;
+    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount;
 
     const invoice = new Invoice({
       user: proforma.user, invoiceNo, invoiceType: proforma.invoiceType,
@@ -405,18 +381,36 @@ exports.convertToInvoice = async (req, res) => {
       client: clientSnapshot, items: processedItems,
       subTotal, taxTotal,
       totalCGST, totalSGST, totalIGST,
-      shippingCharges: proforma.shippingCharges, packagingCharges: proforma.packagingCharges,
-      customChargeLabel: proforma.customChargeLabel, discountTotal: proforma.discountTotal,
-      grandTotal: proforma.grandTotal, balanceDue: proforma.grandTotal,
+      shippingCharges: finalShipping, packagingCharges: finalPackaging,
+      customChargeLabel: proforma.customChargeLabel, discountTotal: finalDiscount,
+      exciseDuty: { ...(proforma.exciseDuty || {}), totalExcise },
+      grandTotal, balanceDue: grandTotal,
       shippingAddress: resolvedShipping, transport: proforma.transport,
       placeOfSupply: proforma.placeOfSupply, reverseCharge: proforma.reverseCharge,
       notes: proforma.notes, terms: proforma.terms, status: 'DRAFT',
     });
 
     const savedInvoice = await invoice.save();
+    let syncError = null;
+    try {
+      await syncIncomeFromInvoice(savedInvoice);
+    } catch (syncErr) {
+      syncError = syncErr;
+      console.error('syncIncomeFromInvoice failed for proforma:', syncErr);
+    }
+
     proforma.status = 'CONVERTED';
     proforma.convertedToInvoice = savedInvoice._id;
     await proforma.save();
+
+    if (syncError) {
+      return res.status(201).json({
+        invoice: savedInvoice,
+        proforma,
+        warning: 'Invoice created but income sync failed',
+        syncError: syncError.message,
+      });
+    }
 
     res.status(201).json({ invoice: savedInvoice, proforma });
   } catch (e) {
@@ -458,6 +452,7 @@ exports.bulkCreateProformas = async (req, res) => {
 
     const userSettings = await Settings.findOne({ user: req.user._id });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
+    const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
     const createdProformas = [];
     for (const pData of proformas) {
@@ -474,18 +469,17 @@ exports.bulkCreateProformas = async (req, res) => {
       }
 
       const clientState = pData.placeOfSupply || client.billingAddress?.state || '';
-      const isIntraState = clientState.trim().toLowerCase() === COMPANY_STATE.trim().toLowerCase();
+      const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
       const counter = await Counter.findOneAndUpdate(
-        { id: 'proformaNo' },
+        { id: buildUserCounterId(req.user._id, 'proformaNo') },
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
       const proformaNo = buildAutoDocumentNumber(userSettings?.proformaPrefix || 'PRF', counter.seq);
 
-      // processItems only takes two params: items, isIntraState
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-        processItems(pData.items || [], isIntraState);
+        processItems(pData.items || [], pData.invoiceType || 'Tax Invoice', isIntraState);
 
       const finalShipping = Number(pData.shippingCharges) || 0;
       const finalPackaging = Number(pData.packagingCharges) || 0;

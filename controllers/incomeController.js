@@ -1,7 +1,59 @@
 const mongoose = require('mongoose');
 const Income = require('../models/Income');
 const User = require('../models/User');
+const Category = require('../models/Category');
 const escapeRegex = require('../utils/escapeRegex');
+
+const validateIncomeCategory = async (userId, categoryId, subCategoryId) => {
+  const result = { category: categoryId || null, subCategory: subCategoryId || null };
+
+  if (categoryId) {
+    if (!mongoose.Types.ObjectId.isValid(categoryId)) {
+      const error = new Error('Invalid income category');
+      error.statusCode = 400;
+      throw error;
+    }
+    const category = await Category.findOne({ _id: categoryId, user: userId, type: 'income' });
+    if (!category) {
+      const error = new Error('Income category not found');
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  if (subCategoryId) {
+    if (!mongoose.Types.ObjectId.isValid(subCategoryId)) {
+      const error = new Error('Invalid income sub-category');
+      error.statusCode = 400;
+      throw error;
+    }
+    const subCategory = await Category.findOne({ _id: subCategoryId, user: userId, type: 'income' });
+    if (!subCategory) {
+      const error = new Error('Income sub-category not found');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (!subCategory.parent) {
+      const error = new Error('Income sub-category requires a parent category');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (categoryId) {
+      if (String(subCategory.parent) !== String(categoryId)) {
+        const error = new Error('Income sub-category does not belong to selected category');
+        error.statusCode = 400;
+        throw error;
+      }
+    } else {
+      result.category = subCategory.parent;
+    }
+
+    result.subCategory = subCategory._id;
+  }
+
+  return result;
+};
 
 // @desc    Get all incomes
 // @route   GET /api/incomes
@@ -14,6 +66,9 @@ exports.getIncomes = async (req, res) => {
     const skip = (page - 1) * limit;
 
     let query = { user: req.user._id };
+    if (req.query.category) query.category = req.query.category;
+    if (req.query.subCategory) query.subCategory = req.query.subCategory;
+    if (req.query.project) query.project = req.query.project;
 
     if (search) {
       const Client = require('../models/Client');
@@ -33,6 +88,8 @@ exports.getIncomes = async (req, res) => {
     const total = await Income.countDocuments(query);
     const incomes = await Income.find(query)
       .select('-items -terms -privateNotes')
+      .populate('category', 'name type color icon')
+      .populate('subCategory', 'name type color icon parent')
       .lean()
       .sort({ date: -1, createdAt: -1 })
       .skip(skip)
@@ -56,6 +113,10 @@ exports.getIncomes = async (req, res) => {
 exports.createIncome = async (req, res) => {
   try {
     const {
+      category,
+      subCategory,
+      project,
+      department,
       incomeNumber,
       date,
       vendor,
@@ -70,6 +131,8 @@ exports.createIncome = async (req, res) => {
       privateNotes
     } = req.body;
 
+    const categoryData = await validateIncomeCategory(req.user._id, category, subCategory);
+
     // Check if incomeNumber exists for this user (if you want uniqueness per user)
     const existing = await Income.findOne({ incomeNumber, user: req.user._id });
     if (existing) {
@@ -78,6 +141,9 @@ exports.createIncome = async (req, res) => {
 
     const income = await Income.create({
       user: req.user._id,
+      ...categoryData,
+      project: project || null,
+      department: department || null,
       sourceType: 'manual',
       incomeNumber,
       date,
@@ -97,7 +163,7 @@ exports.createIncome = async (req, res) => {
     res.status(201).json(income);
   } catch (error) {
     console.error('Error creating income', error);
-    res.status(500).json({ message: 'Server Error creating income' });
+    res.status(error.statusCode || 500).json({ message: error.message || 'Server Error creating income' });
   }
 };
 
@@ -108,7 +174,9 @@ exports.getIncomeById = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Income not found' });
     
-    const income = await Income.findOne({ _id: req.params.id, user: req.user._id });
+    const income = await Income.findOne({ _id: req.params.id, user: req.user._id })
+      .populate('category', 'name type color icon')
+      .populate('subCategory', 'name type color icon parent');
 
     if (income) {
       res.json(income);
@@ -158,6 +226,10 @@ exports.updateIncome = async (req, res) => {
     // -----------------------------------------
 
     const {
+      category,
+      subCategory,
+      project,
+      department,
       incomeNumber,
       date,
       vendor,
@@ -174,6 +246,10 @@ exports.updateIncome = async (req, res) => {
     } = req.body;
 
     const updateData = {
+      category,
+      subCategory,
+      project,
+      department,
       incomeNumber,
       date,
       vendor,
@@ -189,6 +265,16 @@ exports.updateIncome = async (req, res) => {
       status
     };
 
+    if (category !== undefined || subCategory !== undefined) {
+      const categoryData = await validateIncomeCategory(
+        req.user._id,
+        category !== undefined ? category : income.category,
+        subCategory !== undefined ? subCategory : income.subCategory
+      );
+      updateData.category = categoryData.category;
+      updateData.subCategory = categoryData.subCategory;
+    }
+
     // Remove undefined fields so we don't overwrite with nulls
     Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
 
@@ -196,12 +282,14 @@ exports.updateIncome = async (req, res) => {
       req.params.id,
       { $set: updateData },
       { returnDocument: 'after', runValidators: true }
-    );
+    )
+      .populate('category', 'name type color icon')
+      .populate('subCategory', 'name type color icon parent');
 
     res.json(income);
   } catch (error) {
     console.error('Error updating income', error);
-    res.status(500).json({ message: 'Server Error updating income' });
+    res.status(error.statusCode || 500).json({ message: error.message || 'Server Error updating income' });
   }
 };
 
@@ -220,7 +308,9 @@ exports.deleteIncome = async (req, res) => {
     }
     // -------------------------------------------
 
-    const income = await Income.findOne({ _id: req.params.id, user: req.user._id });
+    const income = await Income.findOne({ _id: req.params.id, user: req.user._id })
+      .populate('category', 'name type color icon')
+      .populate('subCategory', 'name type color icon parent');
 
     if (income) {
       if (income.sourceType === 'invoice' && income.sourceInvoice) {

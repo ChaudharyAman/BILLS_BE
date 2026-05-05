@@ -30,35 +30,42 @@ function mapInvoiceItemsToIncomeItems(items = []) {
   }));
 }
 
-async function buildSyncedIncomeNumber(invoice) {
+async function buildSyncedIncomeNumber(invoice, session = null) {
   const baseNumber = String(invoice.invoiceNo || '').trim() || `INV-${invoice._id}`;
-  const currentMatch = await Income.findOne({
+  const currentMatchQuery = Income.findOne({
     user: invoice.user,
     sourceInvoice: invoice._id,
   }).select('incomeNumber');
+  if (session) currentMatchQuery.session(session);
+  const currentMatch = await currentMatchQuery;
 
   if (currentMatch?.incomeNumber === baseNumber) {
     return baseNumber;
   }
 
-  const conflicting = await Income.findOne({
+  const conflictingQuery = Income.findOne({
     user: invoice.user,
     incomeNumber: baseNumber,
     sourceInvoice: { $ne: invoice._id },
   }).select('_id');
+  if (session) conflictingQuery.session(session);
+  const conflicting = await conflictingQuery;
 
   if (!conflicting) {
     return baseNumber;
   }
 
   let counter = 1;
-  while (true) {
+  const maxAttempts = 200;
+  while (counter <= maxAttempts) {
     const candidate = `${baseNumber}-INV${counter}`;
-    const taken = await Income.findOne({
+    const takenQuery = Income.findOne({
       user: invoice.user,
       incomeNumber: candidate,
       sourceInvoice: { $ne: invoice._id },
     }).select('_id');
+    if (session) takenQuery.session(session);
+    const taken = await takenQuery;
 
     if (!taken) {
       return candidate;
@@ -66,16 +73,23 @@ async function buildSyncedIncomeNumber(invoice) {
 
     counter += 1;
   }
+
+  throw new Error('Cannot generate unique income number');
 }
 
-async function syncIncomeFromInvoice(invoice) {
+async function syncIncomeFromInvoice(invoice, session = null) {
   if (!invoice?._id || !invoice?.user) {
+    return null;
+  }
+
+  if (String(invoice.status || '').toUpperCase() === 'DRAFT') {
+    await removeIncomeForInvoice(invoice._id, invoice.user, session);
     return null;
   }
 
   const vendorRef = invoice.client?.clientRef || null;
   const vendorName = String(invoice.client?.name || '').trim();
-  const incomeNumber = await buildSyncedIncomeNumber(invoice);
+  const incomeNumber = await buildSyncedIncomeNumber(invoice, session);
 
   const payload = {
     user: invoice.user,
@@ -101,24 +115,28 @@ async function syncIncomeFromInvoice(invoice) {
     status: mapInvoiceStatusToIncomeStatus(invoice),
   };
 
-  return Income.findOneAndUpdate(
+  const query = Income.findOneAndUpdate(
     { user: invoice.user, sourceInvoice: invoice._id },
     { $set: payload },
     {
       upsert: true,
-      new: true,
+      returnDocument: 'after',
       runValidators: true,
       setDefaultsOnInsert: true,
     }
   );
+  if (session) query.session(session);
+  return query;
 }
 
-async function removeIncomeForInvoice(invoiceId, userId) {
+async function removeIncomeForInvoice(invoiceId, userId, session = null) {
   if (!invoiceId || !userId) {
     return;
   }
 
-  await Income.deleteOne({ user: userId, sourceInvoice: invoiceId });
+  const deleteQuery = Income.deleteOne({ user: userId, sourceInvoice: invoiceId });
+  if (session) deleteQuery.session(session);
+  await deleteQuery;
 }
 
 module.exports = {

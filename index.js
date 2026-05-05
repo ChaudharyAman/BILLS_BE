@@ -6,6 +6,7 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const connectDB = require('./db');
 const bootstrapAdmin = require('./utils/bootstrap');
+const { startScheduler } = require('./services/recurringTransactionScheduler');
 
 dotenv.config();
 
@@ -23,7 +24,8 @@ app.use(cors({
       process.env.CLIENT_URL,
     ].filter(Boolean);
 
-    const isLocalDevOrigin = typeof origin === 'string' && /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
+    const allowLocalDevOrigin = process.env.NODE_ENV !== 'production';
+    const isLocalDevOrigin = allowLocalDevOrigin && typeof origin === 'string' && /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
 
     if (!origin || allowedOrigins.includes(origin) || isLocalDevOrigin) {
       return callback(null, true);
@@ -56,6 +58,17 @@ app.use('/api/proformas', require('./routes/proformaRoutes'));
 app.use('/api/purchase-orders', require('./routes/purchaseOrderRoutes'));
 app.use('/api/expenses', require('./routes/expenseRoutes'));
 app.use('/api/incomes', require('./routes/incomeRoutes'));
+app.use('/api/categories', require('./routes/categoryRoutes'));
+app.use('/api/departments', require('./routes/departmentRoutes'));
+app.use('/api/employees', require('./routes/employeeRoutes'));
+app.use('/api/payroll', require('./routes/payrollRoutes'));
+app.use('/api/payroll-components', require('./routes/payrollComponentRoutes'));
+app.use('/api/budgets', require('./routes/budgetRoutes'));
+app.use('/api/reports', require('./routes/reportRoutes'));
+app.use('/api/assets', require('./routes/assetRoutes'));
+app.use('/api/liabilities', require('./routes/liabilityRoutes'));
+app.use('/api/recurring', require('./routes/recurringRoutes'));
+app.use('/api/projects', require('./routes/projectRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
@@ -63,12 +76,13 @@ app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/pdf', require('./routes/pdfRoutes'));
 
 app.get('/', (req, res) => {
-  res.send('API is working fine ðŸ‘...');
+  res.send('API is working fine.');
 });
 
 async function startServer(port = process.env.PORT || 5000) {
   await connectDB();
   await bootstrapAdmin();
+  startScheduler();
 
   return new Promise((resolve, reject) => {
     const server = app.listen(port, () => {

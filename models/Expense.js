@@ -14,6 +14,19 @@ const ExpenseItemSchema = new mongoose.Schema({
 
 const ExpenseSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
+  category: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category',
+    default: null,
+    index: true,
+  },
+  subCategory: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category',
+    default: null,
+  },
+  project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', default: null, index: true },
+  department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
   
   // Naming & Reference
   expenseNumber: { type: String, required: true },
@@ -40,6 +53,9 @@ const ExpenseSchema = new mongoose.Schema({
   subTotal: { type: Number, default: 0 },
   taxTotal: { type: Number, default: 0 },
   grandTotal: { type: Number, default: 0 },
+  amountPaid: { type: Number, default: 0, min: 0 },
+  balanceDue: { type: Number, default: 0, min: 0 },
+  dueDate: Date,
 
   // Notes
   terms: String,
@@ -47,13 +63,22 @@ const ExpenseSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['DRAFT', 'PAID', 'UNPAID', 'CANCELLED'],
+    enum: ['DRAFT', 'PAID', 'PARTIAL', 'UNPAID', 'CANCELLED'],
     default: 'DRAFT',
   },
 
 }, { timestamps: true });
 
 // Compound unique index: same expense number is allowed across different users
+ExpenseSchema.pre('save', async function() {
+  const grandTotal = Number(this.grandTotal) || 0;
+  const amountPaid = Number(this.amountPaid) || 0;
+  if (amountPaid > grandTotal) {
+    throw new Error('Amount paid cannot exceed grand total');
+  }
+  this.balanceDue = Math.max(grandTotal - amountPaid, 0);
+});
+
 ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true });
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

@@ -1,7 +1,12 @@
 const User = require('../models/User');
 
 const bootstrapAdmin = async () => {
-  const adminEmail = 'demo@gmail.com';
+  const enabled = String(process.env.BOOTSTRAP_ADMIN_ENABLED || '').toLowerCase() === 'true';
+  const adminEmail = String(process.env.BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
+
+  if (!enabled || !adminEmail) {
+    return;
+  }
   
   try {
     const user = await User.findOne({ email: adminEmail });
@@ -13,7 +18,7 @@ const bootstrapAdmin = async () => {
         console.log(`[BOOTSTRAP] Successfully promoted ${adminEmail} to superadmin.`);
       }
     } else {
-      console.log(`[BOOTSTRAP] Admin user ${adminEmail} not found. Register this email to auto-promote.`);
+      console.log(`[BOOTSTRAP] Admin user ${adminEmail} not found. Bootstrap skipped.`);
     }
   } catch (error) {
     console.error(`[BOOTSTRAP] Error promoting admin: ${error.message}`);

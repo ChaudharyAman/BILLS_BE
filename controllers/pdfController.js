@@ -7,9 +7,20 @@ function getPdfTarget(req) {
 }
 
 async function readPdfText(buffer) {
-  const { PDFParse } = require('pdf-parse');
-  const parser = new PDFParse({ data: buffer });
-  return parser.getText();
+  const pdfParse = require('pdf-parse');
+
+  if (typeof pdfParse === 'function') {
+    return pdfParse(buffer);
+  }
+
+  if (typeof pdfParse.PDFParse === 'function') {
+    const parser = new pdfParse.PDFParse({ data: buffer });
+    const result = await parser.getText();
+    await parser.destroy?.();
+    return result;
+  }
+
+  throw new Error('Unsupported pdf-parse API');
 }
 
 /**

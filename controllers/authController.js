@@ -3,15 +3,30 @@ const jwt = require('jsonwebtoken');
 const { syncExpiredSubscription } = require('../utils/subscriptionLifecycle');
 
 // Generate JWT Token
-const generateToken = (id) => {
+const generateToken = (user) => {
   if (!process.env.JWT_SECRET) {
       console.error('ERROR: JWT_SECRET is not defined in environment variables!');
       throw new Error('JWT_SECRET is missing');
   }
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
+  return jwt.sign({
+    id: user._id,
+    role: user.role,
+    subscription: user.subscription,
+  }, process.env.JWT_SECRET, {
     expiresIn: '30d'
   });
 };
+
+const buildAuthResponse = (user, token) => ({
+  user: {
+    _id: user._id,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+    subscription: user.subscription
+  },
+  ...(process.env.NODE_ENV !== 'production' ? { token } : {}),
+});
 
 // Safari/Chrome Cookie Helper
 const getCookieOptions = (req) => {
@@ -20,8 +35,8 @@ const getCookieOptions = (req) => {
   
   return {
     httpOnly: true,
-    secure: true, // Default to secure
-    sameSite: 'none',
+    secure: true,
+    sameSite: process.env.COOKIE_SAME_SITE || 'strict',
     maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
     // Override for local dev if not using HTTPS
     ...(isLocalhost && {
@@ -60,19 +75,10 @@ exports.register = async (req, res) => {
     });
 
     if (user) {
-      const token = generateToken(user._id);
+      const token = generateToken(user);
       res.cookie('token', token, getCookieOptions(req));
 
-      res.status(201).json({
-        user: {
-          _id: user._id,
-          username: user.username,
-          email: user.email,
-          role: user.role,
-          subscription: user.subscription
-        },
-        token
-      });
+      res.status(201).json(buildAuthResponse(user, token));
     } else {
       res.status(400).json({ message: 'Invalid user data' });
     }
@@ -113,19 +119,10 @@ exports.login = async (req, res) => {
       // Ensure users whose Pro end date has passed are downgraded at login.
       await syncExpiredSubscription(user);
 
-      const token = generateToken(user._id);
+      const token = generateToken(user);
       res.cookie('token', token, getCookieOptions(req));
 
-      res.json({
-        user: {
-          _id: user._id,
-          username: user.username,
-          email: user.email,
-          role: user.role,
-          subscription: user.subscription
-        },
-        token
-      });
+      res.json(buildAuthResponse(user, token));
     } else {
       res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -133,6 +130,19 @@ exports.login = async (req, res) => {
     console.error(error);
     res.status(500).json({ message: 'Server error' });
   }
+};
+
+exports.me = async (req, res) => {
+  res.json({
+    user: {
+      _id: req.user._id,
+      username: req.user.username,
+      email: req.user.email,
+      phone: req.user.phone,
+      role: req.user.role,
+      subscription: req.user.subscription,
+    },
+  });
 };
 
 // @desc    Update logged-in user's profile (username, email, phone, password)
