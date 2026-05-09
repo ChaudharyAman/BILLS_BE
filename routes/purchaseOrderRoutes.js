@@ -7,6 +7,7 @@ router.get('/', protect, purchaseOrderController.getPurchaseOrders);
 router.post('/', protect, purchaseOrderController.createPurchaseOrder);
 router.post('/bulk', protect, purchaseOrderController.bulkCreatePurchaseOrders);
 router.post('/:id/convert', protect, purchaseOrderController.convertToInvoice);
+router.post('/:id/receive', protect, purchaseOrderController.markPurchaseOrderReceived);
 router.get('/:id', protect, purchaseOrderController.getPurchaseOrderById);
 router.put('/:id', protect, purchaseOrderController.updatePurchaseOrder);
 router.delete('/:id', protect, purchaseOrderController.deletePurchaseOrder);
