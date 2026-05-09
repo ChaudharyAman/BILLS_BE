@@ -25,9 +25,14 @@ exports.getPurchaseOrders = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || '';
+    const status = String(req.query.status || '').trim().toUpperCase();
     const skip = (page - 1) * limit;
 
     let query = { user: req.user._id };
+
+    if (status && status !== 'ALL') {
+      query.status = status;
+    }
 
     if (search) {
       const safeSearch = escapeRegex(search);
@@ -45,7 +50,6 @@ exports.getPurchaseOrders = async (req, res) => {
 
     const total = await PurchaseOrder.countDocuments(query);
     const purchaseOrders = await PurchaseOrder.find(query)
-      .select('-notes -terms -shippingAddress')
       .lean()
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -399,6 +403,28 @@ exports.convertToInvoice = async (req, res) => {
 };
 
 // ─── BULK create purchaseOrders ───────────────────────────────────────────────────
+exports.markPurchaseOrderReceived = async (req, res) => {
+  try {
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: req.user._id });
+    if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
+    if (purchaseOrder.status === 'BILLED') {
+      return res.status(400).json({ message: 'Already converted to invoice' });
+    }
+    if (purchaseOrder.status === 'CANCELLED') {
+      return res.status(400).json({ message: 'Cancelled purchase orders cannot be marked as received' });
+    }
+    if (purchaseOrder.status === 'RECEIVED') {
+      return res.status(400).json({ message: 'Purchase order is already marked as received' });
+    }
+
+    purchaseOrder.status = 'RECEIVED';
+    const saved = await purchaseOrder.save();
+    res.json(saved);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 exports.bulkCreatePurchaseOrders = async (req, res) => {
   try {
     const purchaseOrders = req.body.purchaseOrders;
@@ -435,6 +461,7 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
             name: qData.vendorName || 'Unknown Vendor',
             email: qData.vendorEmail || '',
             phone: qData.vendorPhone || '',
+            gstin: qData.vendorGST || '',
             billingAddress: { state: qData.vendorState || '' },
             user: req.user._id,
             isVendor: true,
@@ -470,6 +497,7 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
         paymentTerms: qData.paymentTerms || '',
         shippingAddress: qData.shippingAddress,
         transport: qData.transport,
+        refNumber: qData.refNumber || '',
         placeOfSupply: qData.placeOfSupply || vendorState,
         reverseCharge: !!qData.reverseCharge,
         customChargeLabel: qData.customChargeLabel || 'Custom Amount',
@@ -496,7 +524,7 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
         subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
         shippingCharges: finalShipping, packagingCharges: finalPackaging,
         discountTotal: finalDiscount, grandTotal,
-        status: 'DRAFT',
+        status: qData.status || 'DRAFT',
         user: req.user._id
       });
       

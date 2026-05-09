@@ -3,6 +3,7 @@ const Payroll = require('../models/Payroll');
 const Employee = require('../models/Employee');
 const Expense = require('../models/Expense');
 const Category = require('../models/Category');
+const Settings = require('../models/Settings');
 
 const sumNamedAmounts = (items = []) => items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
 
@@ -310,6 +311,7 @@ exports.generatePayslip = async (req, res) => {
         path: 'employee',
         populate: { path: 'department', select: 'name code' },
       });
+    const settings = await Settings.findOne({ user: req.user._id }).lean();
 
     if (!payroll) {
       console.log(`Payroll ${req.params.id} not found for user ${req.user._id}`);
@@ -331,8 +333,23 @@ exports.generatePayslip = async (req, res) => {
         presentDays: payroll.presentDays,
         paidLeaves: payroll.paidLeaves,
         unpaidLeaves: payroll.unpaidLeaves,
+        paymentMethod: payroll.paymentMethod,
+        transactionId: payroll.transactionId,
         paymentDate: payroll.paymentDate,
         status: payroll.status,
+        generatedAt: new Date(),
+        company: settings ? {
+          companyName: settings.companyName,
+          contactName: settings.contactName,
+          email: settings.email,
+          phone: settings.phone,
+          website: settings.website,
+          gstin: settings.gstin,
+          pan: settings.pan,
+          logoUrl: settings.logoUrl,
+          signatureUrl: settings.signatureUrl,
+          address: settings.address,
+        } : null,
       },
     });
   } catch (error) {

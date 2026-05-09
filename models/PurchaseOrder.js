@@ -70,7 +70,7 @@ const PurchaseOrderSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['DRAFT', 'SENT', 'ACCEPTED', 'REJECTED', 'BILLED', 'CANCELLED'],
+    enum: ['DRAFT', 'SENT', 'ACCEPTED', 'RECEIVED', 'REJECTED', 'BILLED', 'CANCELLED'],
     default: 'DRAFT',
   },
 
