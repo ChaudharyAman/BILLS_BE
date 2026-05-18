@@ -183,6 +183,57 @@ function buildExciseDutySnapshot(exciseDuty = {}, totalExcise = 0) {
   };
 }
 
+function roundToTwo(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function hasImportValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== '';
+}
+
+function parseImportedStatus(status, balanceDue) {
+  const text = String(status || '').trim().toUpperCase();
+
+  if (['PAID', 'PAYMENT RECEIVED'].includes(text)) return 'PAID';
+  if (['PARTIAL', 'PARTIALLY PAID'].includes(text)) return 'PARTIAL';
+  if (['SENT'].includes(text)) return 'SENT';
+  if (['DRAFT'].includes(text)) return 'DRAFT';
+  if (['CANCELLED', 'CANCELED', 'VOID'].includes(text)) return 'CANCELLED';
+  if (['UNPAID', 'OVERDUE', 'PENDING'].includes(text)) return 'UNPAID';
+
+  return Number(balanceDue) > 0 ? 'UNPAID' : 'PAID';
+}
+
+function deriveImportedTaxBreakdown(taxTotal, invoiceType, isIntraState) {
+  const normalizedTaxTotal = roundToTwo(taxTotal);
+  if (normalizedTaxTotal <= 0) {
+    return { totalCGST: 0, totalSGST: 0, totalIGST: 0 };
+  }
+
+  if (invoiceType === 'Tax Invoice' || invoiceType === 'Excise Invoice') {
+    if (isIntraState) {
+      const half = roundToTwo(normalizedTaxTotal / 2);
+      return {
+        totalCGST: half,
+        totalSGST: roundToTwo(normalizedTaxTotal - half),
+        totalIGST: 0,
+      };
+    }
+
+    return {
+      totalCGST: 0,
+      totalSGST: 0,
+      totalIGST: normalizedTaxTotal,
+    };
+  }
+
+  return {
+    totalCGST: 0,
+    totalSGST: 0,
+    totalIGST: 0,
+  };
+}
+
 // ─── GET all invoices ─────────────────────────────────────────────────────────
 exports.getInvoices = async (req, res) => {
   try {
@@ -362,7 +413,7 @@ exports.createInvoice = async (req, res) => {
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
     const finalDiscountTotal = Number(discountTotal) || 0;
-    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
+    const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
     const finalTds = Number(tds) || 0;
     const finalAdvance = Number(advancePaid) || 0;
@@ -537,7 +588,7 @@ exports.updateInvoice = async (req, res) => {
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
     const finalDiscountTotal = Number(discountTotal) || 0;
-    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
+    const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
     const finalTds = Number(tds) || 0;
     const finalAdvance = Number(advancePaid) || 0;
@@ -645,28 +696,91 @@ exports.bulkCreateInvoices = async (req, res) => {
 
     const createdInvoices = [];
     for (const invData of invoices) {
-      let client = await Client.findOne({ name: invData.clientName, user: req.user._id });
+      const clientName = String(invData.clientName || '').trim();
+      if (!clientName) {
+        throw new Error('Client name is required for each imported invoice.');
+      }
+
+      let client = await Client.findOne({
+        user: req.user._id,
+        name: { $regex: buildExactNameRegex(clientName) },
+      });
+
       if (!client) {
-         client = new Client({
-            name: invData.clientName || 'Unknown Client',
-            email: invData.clientEmail || '',
-            phone: invData.clientPhone || '',
-            billingAddress: { state: invData.clientState || '' },
-            user: req.user._id
-         });
-         await client.save();
+        client = new Client({
+          name: clientName || 'Unknown Client',
+          email: invData.clientEmail || '',
+          phone: invData.clientPhone || '',
+          gstin: invData.clientGST || '',
+          gstTreatment: invData.clientGST ? 'Registered Business' : 'Unregistered Business',
+          billingAddress: {
+            city: invData.clientCity || '',
+            state: invData.clientState || '',
+            country: 'India',
+          },
+          placeOfSupply: invData.placeOfSupply || invData.clientState || 'Delhi',
+          user: req.user._id,
+        });
+        await client.save();
+      } else {
+        let shouldSaveClient = false;
+
+        if (invData.clientEmail && !client.email) {
+          client.email = invData.clientEmail;
+          shouldSaveClient = true;
+        }
+        if (invData.clientPhone && !client.phone) {
+          client.phone = invData.clientPhone;
+          shouldSaveClient = true;
+        }
+        if (invData.clientGST && !client.gstin) {
+          client.gstin = String(invData.clientGST).trim().toUpperCase();
+          client.gstTreatment = 'Registered Business';
+          shouldSaveClient = true;
+        }
+        if (invData.clientCity && !client.billingAddress?.city) {
+          client.billingAddress = {
+            ...(client.billingAddress || {}),
+            city: invData.clientCity,
+            country: client.billingAddress?.country || 'India',
+          };
+          shouldSaveClient = true;
+        }
+        if (invData.clientState && !client.billingAddress?.state) {
+          client.billingAddress = {
+            ...(client.billingAddress || {}),
+            state: invData.clientState,
+            country: client.billingAddress?.country || 'India',
+          };
+          shouldSaveClient = true;
+        }
+        if (invData.placeOfSupply && !client.placeOfSupply) {
+          client.placeOfSupply = invData.placeOfSupply;
+          shouldSaveClient = true;
+        }
+
+        if (shouldSaveClient) {
+          await client.save();
+        }
       }
 
       const clientState = invData.placeOfSupply || client.billingAddress?.state || '';
-      const normalizeState = (s) => s.trim().split('(')[0].trim().toLowerCase();
       const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
-      const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(req.user._id, 'invoiceNo') },
-        { $inc: { seq: 1 } },
-        { returnDocument: 'after', upsert: true }
-      );
-      const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
+      let invoiceNo = String(invData.invoiceNo || '').trim();
+      if (!invoiceNo || invoiceNo === 'Auto-generated') {
+        const counter = await Counter.findOneAndUpdate(
+          { id: buildUserCounterId(req.user._id, 'invoiceNo') },
+          { $inc: { seq: 1 } },
+          { returnDocument: 'after', upsert: true }
+        );
+        invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
+      } else {
+        const existingInvoice = await Invoice.findOne({ user: req.user._id, invoiceNo });
+        if (existingInvoice) {
+          throw new Error(`Invoice number "${invoiceNo}" already exists.`);
+        }
+      }
 
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } =
         processItems(invData.items || [], invData.invoiceType || 'Tax Invoice', isIntraState);
@@ -676,16 +790,31 @@ exports.bulkCreateInvoices = async (req, res) => {
       const finalDiscount = Number(invData.discountTotal) || 0;
       const finalTcs = Number(invData.tcs) || 0;
       const finalTds = Number(invData.tds) || 0;
-      const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount + finalTcs;
-      const advancePaid = Number(invData.advancePaid) || 0;
-      const balanceDue = Math.max(0, grandTotal - advancePaid - finalTds);
+      const computedGrandTotal = subTotal + (invData.reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscount + finalTcs;
+      const importedSubTotal = hasImportValue(invData.importedSubTotal) ? roundToTwo(invData.importedSubTotal) : null;
+      const importedTaxTotal = hasImportValue(invData.importedTaxTotal) ? roundToTwo(invData.importedTaxTotal) : null;
+      const importedGrandTotal = hasImportValue(invData.importedGrandTotal) ? roundToTwo(invData.importedGrandTotal) : null;
+      const importedBalanceDue = hasImportValue(invData.importedBalanceDue) ? roundToTwo(invData.importedBalanceDue) : null;
+      const importedAdvancePaid = hasImportValue(invData.advancePaid) ? roundToTwo(invData.advancePaid) : null;
 
-      const invoice = new Invoice({
-        invoiceNo,
-        invoiceType: invData.invoiceType || 'Tax Invoice',
-        date: invData.date || new Date(),
-        dueDate: invData.dueDate || new Date(),
-        paymentMode: invData.paymentMode || 'Cash',
+      const finalSubTotal = importedSubTotal !== null ? importedSubTotal : subTotal;
+      const finalTaxTotal = importedTaxTotal !== null ? importedTaxTotal : taxTotal;
+      const finalExciseTotal = totalExcise;
+      const finalGrandTotal = importedGrandTotal !== null ? importedGrandTotal : roundToTwo(computedGrandTotal);
+      const advancePaid = importedAdvancePaid !== null ? importedAdvancePaid : 0;
+      const balanceDue = importedBalanceDue !== null
+        ? importedBalanceDue
+        : Math.max(0, roundToTwo(finalGrandTotal - advancePaid - finalTds));
+      const finalTaxBreakdown = importedTaxTotal !== null
+        ? deriveImportedTaxBreakdown(finalTaxTotal, invData.invoiceType || 'Tax Invoice', isIntraState)
+        : { totalCGST, totalSGST, totalIGST };
+      const finalStatus = parseImportedStatus(invData.status, balanceDue);
+        const invoice = new Invoice({
+          invoiceNo,
+          invoiceType: invData.invoiceType || 'Tax Invoice',
+          date: invData.date || new Date(),
+          dueDate: invData.dueDate || new Date(),
+        paymentMode: invData.paymentMode || '',
         paymentTerms: invData.paymentTerms || '',
         shippingAddress: invData.shippingAddress,
         transport: invData.transport,
@@ -693,19 +822,16 @@ exports.bulkCreateInvoices = async (req, res) => {
         placeOfSupply: invData.placeOfSupply || clientState,
         reverseCharge: !!invData.reverseCharge,
         fy: invData.fy || getFinancialYear(invData.date || new Date()),
-        currency: invData.currency || 'INR',
-        tds: finalTds,
-        tcs: Number(invData.tcs) || 0,
-        drCr: invData.drCr || 'Dr.',
-        customChargeLabel: invData.customChargeLabel || 'Custom Amount',
-        notes: invData.notes || '',
-        terms: invData.terms || '',
-        exciseDuty: buildExciseDutySnapshot(invData.exciseDuty, totalExcise),
-        clientRef: client._id,
-        client: {
-           clientRef: client._id,
-           name: client.name,
-           email: client.email,
+          currency: invData.currency || 'INR',
+          tds: finalTds,
+          tcs: Number(invData.tcs) || 0,
+          drCr: invData.drCr || 'Dr.',
+          customChargeLabel: invData.customChargeLabel || 'Custom Amount',
+          clientRef: client._id,
+          client: {
+             clientRef: client._id,
+             name: client.name,
+             email: client.email,
            phone: client.phone,
            address: {
              line1: client.billingAddress?.line1 || '',
@@ -718,12 +844,23 @@ exports.bulkCreateInvoices = async (req, res) => {
            gstin: client.gstin || '',
         },
         items: processedItems,
-        subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
+        subTotal: finalSubTotal,
+        taxTotal: finalTaxTotal,
+        totalCGST: finalTaxBreakdown.totalCGST,
+        totalSGST: finalTaxBreakdown.totalSGST,
+        totalIGST: finalTaxBreakdown.totalIGST,
         shippingCharges: finalShipping, packagingCharges: finalPackaging,
-        discountTotal: finalDiscount, grandTotal, advancePaid, balanceDue,
-        status: balanceDue <= 0 ? 'PAID' : 'DRAFT',
-        user: req.user._id
-      });
+        discountTotal: finalDiscount,
+          grandTotal: finalGrandTotal,
+          advancePaid,
+          balanceDue,
+          paymentDate: invData.paymentDate || undefined,
+          status: finalStatus,
+          notes: String(invData.notes || '').trim(),
+          terms: invData.terms || '',
+          exciseDuty: buildExciseDutySnapshot(invData.exciseDuty, finalExciseTotal),
+          user: req.user._id
+        });
       
       const savedInvoice = await invoice.save();
       await syncIncomeFromInvoice(savedInvoice);
