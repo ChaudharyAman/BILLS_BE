@@ -413,7 +413,7 @@ exports.createInvoice = async (req, res) => {
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
     const finalDiscountTotal = Number(discountTotal) || 0;
-    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
+    const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
     const finalTds = Number(tds) || 0;
     const finalAdvance = Number(advancePaid) || 0;
@@ -588,7 +588,7 @@ exports.updateInvoice = async (req, res) => {
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
     const finalDiscountTotal = Number(discountTotal) || 0;
-    const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
+    const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
     const finalTds = Number(tds) || 0;
     const finalAdvance = Number(advancePaid) || 0;
@@ -790,7 +790,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       const finalDiscount = Number(invData.discountTotal) || 0;
       const finalTcs = Number(invData.tcs) || 0;
       const finalTds = Number(invData.tds) || 0;
-      const computedGrandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount + finalTcs;
+      const computedGrandTotal = subTotal + (invData.reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscount + finalTcs;
       const importedSubTotal = hasImportValue(invData.importedSubTotal) ? roundToTwo(invData.importedSubTotal) : null;
       const importedTaxTotal = hasImportValue(invData.importedTaxTotal) ? roundToTwo(invData.importedTaxTotal) : null;
       const importedGrandTotal = hasImportValue(invData.importedGrandTotal) ? roundToTwo(invData.importedGrandTotal) : null;
