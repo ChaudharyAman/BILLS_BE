@@ -32,7 +32,7 @@ const aggregateTotals = async (Model, userId, startDate, endDate, fields) => {
       $match: {
         user: userId,
         date: { $gte: startDate, $lte: endDate },
-        status: { $ne: 'CANCELLED' },
+        status: { $nin: ['DRAFT', 'CANCELLED'] },
       },
     },
     { $group: { _id: null, ...project } },
@@ -46,7 +46,7 @@ const getExpenseCategories = async (userId, startDate, endDate) => Expense.aggre
     $match: {
       user: userId,
       date: { $gte: startDate, $lte: endDate },
-      status: { $ne: 'CANCELLED' },
+      status: { $nin: ['DRAFT', 'CANCELLED'] },
     },
   },
   { $group: { _id: '$category', total: { $sum: '$grandTotal' } } },
@@ -73,7 +73,7 @@ const getExpenseCategories = async (userId, startDate, endDate) => Expense.aggre
 const getRecentIncome = async (userId, startDate, endDate) => Income.find({
   user: userId,
   date: { $gte: startDate, $lte: endDate },
-  status: { $ne: 'CANCELLED' },
+  status: { $nin: ['DRAFT', 'CANCELLED'] },
 })
   .sort({ date: -1, createdAt: -1 })
   .limit(4)
@@ -85,7 +85,7 @@ const getRecentIncome = async (userId, startDate, endDate) => Income.find({
 const getRecentExpenses = async (userId, startDate, endDate) => Expense.find({
   user: userId,
   date: { $gte: startDate, $lte: endDate },
-  status: { $ne: 'CANCELLED' },
+  status: { $nin: ['DRAFT', 'CANCELLED'] },
 })
   .sort({ date: -1, createdAt: -1 })
   .limit(4)
@@ -104,7 +104,7 @@ const getTrend = async (userId, endDate) => {
       $match: {
         user: userId,
         date: { $gte: start, $lte: endOfRange },
-        status: { $ne: 'CANCELLED' },
+        status: { $nin: ['DRAFT', 'CANCELLED'] },
       },
     },
     {
@@ -184,7 +184,7 @@ const getReceivables = async (userId) => {
     {
       $match: {
         user: userId,
-        status: { $nin: ['PAID', 'CANCELLED'] },
+        status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] },
       },
     },
     { $group: { _id: null, total: { $sum: '$balanceDue' } } },
@@ -198,7 +198,7 @@ const getPayables = async (userId) => {
     {
       $match: {
         user: userId,
-        status: { $nin: ['PAID', 'CANCELLED'] },
+        status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] },
       },
     },
     { $group: { _id: null, total: { $sum: '$balanceDue' } } },

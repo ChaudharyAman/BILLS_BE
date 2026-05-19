@@ -25,8 +25,8 @@ exports.getCashFlow = async (req, res) => {
     }
 
     const [totalIncome, totalExpense, assetPurchases, assetDisposals, liabilityPrincipal] = await Promise.all([
-      sumField(Income, { user: req.user._id, date: { $gte: startDate, $lte: endDate }, status: { $ne: 'CANCELLED' } }, '$grandTotal'),
-      sumField(Expense, { user: req.user._id, date: { $gte: startDate, $lte: endDate }, status: { $ne: 'CANCELLED' } }, '$grandTotal'),
+      sumField(Income, { user: req.user._id, date: { $gte: startDate, $lte: endDate }, status: { $nin: ['DRAFT', 'CANCELLED'] } }, '$grandTotal'),
+      sumField(Expense, { user: req.user._id, date: { $gte: startDate, $lte: endDate }, status: { $nin: ['DRAFT', 'CANCELLED'] } }, '$grandTotal'),
       sumField(Asset, { user: req.user._id, purchaseDate: { $gte: startDate, $lte: endDate } }, '$purchaseValue'),
       sumField(Asset, { user: req.user._id, disposalDate: { $gte: startDate, $lte: endDate }, status: { $in: ['disposed', 'sold'] } }, '$disposalValue'),
       sumField(Liability, { user: req.user._id, startDate: { $gte: startDate, $lte: endDate } }, '$principalAmount'),
