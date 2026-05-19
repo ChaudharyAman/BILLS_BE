@@ -8,8 +8,9 @@ exports.getItems = async (req, res) => {
   try {
     if (!req.user || !req.user._id) { return res.status(401).json({ message: 'Not authorized' }); }
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const exportAll = req.query.all === 'true';
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 10;
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
@@ -25,18 +26,22 @@ exports.getItems = async (req, res) => {
     }
 
     const total = await Item.countDocuments(query);
-    const items = await Item.find(query)
+    const itemsQuery = Item.find(query)
       .lean()
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
+      .sort({ createdAt: -1 });
+
+    if (!exportAll) {
+      itemsQuery.skip(skip).limit(limit);
+    }
+
+    const items = await itemsQuery;
 
     res.json({
       data: items,
       total,
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit)
+      page: exportAll ? 1 : page,
+      limit: exportAll ? total : limit,
+      totalPages: exportAll ? 1 : Math.ceil(total / limit)
     });
   } catch (error) { res.status(500).json({ message: error.message }); }
 };

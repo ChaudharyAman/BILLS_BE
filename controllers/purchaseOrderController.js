@@ -22,8 +22,9 @@ exports.getPurchaseOrders = async (req, res) => {
   try {
     if (!req.user?._id) return res.status(401).json({ message: 'Not authorized' });
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const exportAll = req.query.all === 'true';
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 10;
     const search = req.query.search || '';
     const status = String(req.query.status || '').trim().toUpperCase();
     const skip = (page - 1) * limit;
@@ -49,18 +50,22 @@ exports.getPurchaseOrders = async (req, res) => {
     }
 
     const total = await PurchaseOrder.countDocuments(query);
-    const purchaseOrders = await PurchaseOrder.find(query)
+    const purchaseOrdersQuery = PurchaseOrder.find(query)
       .lean()
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
+      .sort({ createdAt: -1 });
+
+    if (!exportAll) {
+      purchaseOrdersQuery.skip(skip).limit(limit);
+    }
+
+    const purchaseOrders = await purchaseOrdersQuery;
 
     res.json({
       data: purchaseOrders,
       total,
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit)
+      page: exportAll ? 1 : page,
+      limit: exportAll ? total : limit,
+      totalPages: exportAll ? 1 : Math.ceil(total / limit)
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
