@@ -785,6 +785,32 @@ async function expenseAndBillingCases() {
     });
     ok(update.data.paymentMethod === 'UPI', 'Expense update failed');
     await api('DELETE', `/api/expenses/${state.ids.expense}`, { token: state.tokens.pro, expectedStatus: 200 });
+
+    // Reverse Charge Math test case (RCM)
+    const rcmExpenseNumber = unique('expense-rcm');
+    const rcmCreate = await api('POST', '/api/expenses', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        expenseNumber: rcmExpenseNumber,
+        date: '2026-04-11',
+        vendor: { vendorRef: state.ids.vendor, name: 'RCM Vendor' },
+        client: { clientRef: state.ids.client, name: 'RCM Client' },
+        paymentMethod: 'UPI',
+        reverseCharge: true,
+        items: [{ itemRef: state.ids.item, name: unique('rcm-item'), qty: 1, unit: 'pcs', rate: 32143, taxRate: 12, taxAmount: 3857.16, amount: 36000.16 }],
+        subTotal: 32143,
+        taxTotal: 3857.16,
+        grandTotal: 36000.16,
+        amountPaid: 32143,
+        status: 'PAID'
+      },
+    });
+    ok(rcmCreate.data.grandTotal === 36000.16, 'RCM Grand Total should be full amount including tax');
+    ok(rcmCreate.data.balanceDue === 0, 'RCM balanceDue should be 0 because amountPaid covers base payable amount');
+    ok(rcmCreate.data.amountPaid === 32143, 'RCM amountPaid should be base payable amount');
+    await api('DELETE', `/api/expenses/${rcmCreate.data._id}`, { token: state.tokens.pro, expectedStatus: 200 });
+
     return expenseNumber;
   });
 

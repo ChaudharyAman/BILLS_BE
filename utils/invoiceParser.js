@@ -138,17 +138,47 @@ function detectSections(lines) {
   return { sections, sectionsMissing };
 }
 
-function normalizeDate(raw, monthMap) {
+function normalizeDate(raw, monthMap, preferUSFormat = false) {
   let match = raw.match(/^(\d{4})[-/.](\d{2})[-/.](\d{2})$/);
   if (match) return `${match[1]}-${match[2]}-${match[3]}`;
 
   match = raw.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
-  if (match) return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+  if (match) {
+    const p1 = parseInt(match[1], 10);
+    const p2 = parseInt(match[2], 10);
+    if (p2 > 12) {
+      // MM-DD-YYYY
+      return `${match[3]}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
+    } else if (p1 > 12) {
+      // DD-MM-YYYY
+      return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+    } else {
+      if (preferUSFormat) {
+        // MM-DD-YYYY
+        return `${match[3]}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
+      } else {
+        // Default to DD-MM-YYYY
+        return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+      }
+    }
+  }
 
   match = raw.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})$/);
   if (match) {
     const year = parseInt(match[3], 10) > 50 ? `19${match[3]}` : `20${match[3]}`;
-    return `${year}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+    const p1 = parseInt(match[1], 10);
+    const p2 = parseInt(match[2], 10);
+    if (p2 > 12) {
+      return `${year}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
+    } else if (p1 > 12) {
+      return `${year}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+    } else {
+      if (preferUSFormat) {
+        return `${year}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
+      } else {
+        return `${year}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+      }
+    }
   }
 
   match = raw.match(/^(\d{1,2})[-/.]([A-Za-z]+)[-/.](\d{2,4})$/);
@@ -224,7 +254,7 @@ function extractInvoiceNumber(lines, section) {
   return null;
 }
 
-function extractInvoiceDate(lines, section) {
+function extractInvoiceDate(lines, section, preferUSFormat = false) {
   const monthMap = {
     jan: '01', january: '01', feb: '02', february: '02', mar: '03', march: '03',
     apr: '04', april: '04', may: '05', jun: '06', june: '06',
@@ -247,17 +277,17 @@ function extractInvoiceDate(lines, section) {
   searchPools.push(lines.slice(0, Math.min(45, lines.length)));
   searchPools.push(lines);
 
-  for (const searchLines of searchPools) {
-    const raw = findFirstMatchingValue(searchLines, patterns);
+  for (const searchPool of searchPools) {
+    const raw = findFirstMatchingValue(searchPool, patterns);
     if (!raw) continue;
-    const normalized = normalizeDate(raw, monthMap);
+    const normalized = normalizeDate(raw, monthMap, preferUSFormat);
     if (normalized && isValidDate(normalized)) return normalized;
   }
 
   for (let i = 0; i < lines.length; i++) {
     if (!/^dated$/i.test(lines[i].text)) continue;
     for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
-      const normalized = normalizeDate(lines[j].text, monthMap);
+      const normalized = normalizeDate(lines[j].text, monthMap, preferUSFormat);
       if (normalized && isValidDate(normalized)) return normalized;
     }
   }
@@ -265,7 +295,7 @@ function extractInvoiceDate(lines, section) {
   return null;
 }
 
-function extractDueDate(lines, section) {
+function extractDueDate(lines, section, preferUSFormat = false) {
   const monthMap = {
     jan: '01', january: '01', feb: '02', february: '02', mar: '03', march: '03',
     apr: '04', april: '04', may: '05', jun: '06', june: '06',
@@ -283,11 +313,17 @@ function extractDueDate(lines, section) {
     /Due\s+Date\s*:?\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})/i,
     /Due\s+Date\s*:?\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})/i,
     /Payment\s+Due\s*:?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})/i,
+    /Due\s*(?:on|by)?\s*:?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})/i,
+    /Due\s*(?:on|by)?\s*:?\s*(\d{4}[-/.]\d{2}[-/.]\d{2})/i,
+    /Due\s*(?:on|by)?\s*:?\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})/i,
+    /Due\s*(?:on|by)?\s*:?\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})/i,
+    /Pay\s*By\s*:?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})/i,
+    /Pay\s*By\s*:?\s*(\d{4}[-/.]\d{2}[-/.]\d{2})/i,
   ];
 
   const raw = findFirstMatchingValue(searchLines, patterns);
   if (!raw) return null;
-  const normalized = normalizeDate(raw, monthMap);
+  const normalized = normalizeDate(raw, monthMap, preferUSFormat);
   return normalized && isValidDate(normalized) ? normalized : null;
 }
 
@@ -476,7 +512,17 @@ function extractPaymentMode(lines) {
     /Mode\s+of\s+Payment\s*:?\s*(.+)/i,
     /Paid\s+(?:via|by|through)\s+(.+)/i,
   ]);
-  return raw ? raw.replace(/[.,]+$/, '') : null;
+  if (!raw) return null;
+  const mode = raw.replace(/[.,]+$/, '').trim();
+  const isCreditTerm = /\b\d+\s*days?\b/i.test(mode) ||
+    /net\s*\d+/i.test(mode) ||
+    /due\s*on\s*receipt/i.test(mode) ||
+    /immediate/i.test(mode) ||
+    /payment\s*terms?/i.test(mode);
+  if (isCreditTerm) {
+    return null; // Clean up terms leaking into payment mode
+  }
+  return mode;
 }
 
 function extractPONumber(lines) {
@@ -487,7 +533,7 @@ function extractPONumber(lines) {
   return raw || null;
 }
 
-function extractPODate(lines) {
+function extractPODate(lines, preferUSFormat = false) {
   const monthMap = {
     jan: '01', january: '01', feb: '02', february: '02', mar: '03', march: '03',
     apr: '04', april: '04', may: '05', jun: '06', june: '06',
@@ -500,7 +546,7 @@ function extractPODate(lines) {
     /P\.?O\.?\s*Date\s*:?\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})/i,
   ]);
   if (!raw) return null;
-  const normalized = normalizeDate(raw, monthMap);
+  const normalized = normalizeDate(raw, monthMap, preferUSFormat);
   return normalized && isValidDate(normalized) ? normalized : null;
 }
 
@@ -684,7 +730,16 @@ function validateAndScore(result) {
     confidence -= 5;
   }
 
-  if (result.clientGST) confidence += 5;
+  // Indian GSTIN structural validation
+  const gstRegex = /^\d{2}[A-Z0-9]{13}$/i;
+  if (result.clientGST) {
+    if (!gstRegex.test(result.clientGST)) {
+      warnings.push(`Extracted client GSTIN "${result.clientGST}" is structurally invalid (must be 15 alphanumeric characters).`);
+      result.clientGST = null;
+    } else {
+      confidence += 5;
+    }
+  }
 
   if (result.items.length > 0) {
     confidence += 15;
@@ -769,19 +824,92 @@ function parseInvoice(rawText, fileName) {
     if (sections.totalsSection) sectionsDetected.push('totals');
 
     const invoiceNumber = extractInvoiceNumber(lines, sections.headerSection);
-    const invoiceDate = extractInvoiceDate(lines, sections.headerSection);
-    const dueDate = extractDueDate(lines, sections.headerSection);
+    let invoiceDate = extractInvoiceDate(lines, sections.headerSection, false);
+    let dueDate = extractDueDate(lines, sections.headerSection, false);
     const clientName = extractClientName(lines, sections.billingSection);
     const clientGST = extractClientGST(lines, sections.billingSection);
     const placeOfSupply = extractPlaceOfSupply(lines);
     const paymentMode = extractPaymentMode(lines);
     const poNumber = extractPONumber(lines);
-    const poDate = extractPODate(lines);
+    let poDate = extractPODate(lines, false);
+
+    // Self-heal date format ambiguity if it results in chronology error
+    if (invoiceDate && dueDate) {
+      const iDate = new Date(invoiceDate);
+      const dDate = new Date(dueDate);
+      if (!isNaN(iDate.getTime()) && !isNaN(dDate.getTime()) && dDate < iDate) {
+        // Chronology error! Try parsing both as US format (MM-DD-YYYY) to see if it fixes the chronology
+        const usInvoiceDate = extractInvoiceDate(lines, sections.headerSection, true);
+        const usDueDate = extractDueDate(lines, sections.headerSection, true);
+        if (usInvoiceDate && usDueDate) {
+          const iDateUS = new Date(usInvoiceDate);
+          const dDateUS = new Date(usDueDate);
+          if (!isNaN(iDateUS.getTime()) && !isNaN(dDateUS.getTime()) && dDateUS >= iDateUS) {
+            invoiceDate = usInvoiceDate;
+            dueDate = usDueDate;
+            const usPoDate = extractPODate(lines, true);
+            if (usPoDate) poDate = usPoDate;
+          }
+        }
+      }
+    }
     const items = extractItems(lines, sections.itemsSection);
+
+    // Self-heal GST Rate from item amount and price (for CGST/SGST split representation, e.g. 9% SGST + 9% CGST = 18% total)
+    items.forEach(item => {
+      const qty = Number(item.quantity) || 1;
+      const price = Number(item.price) || 0;
+      const discount = Number(item.discount) || 0;
+      const reportedAmount = Number(item.amount) || 0;
+      const itemTaxable = qty * price * (1 - discount / 100);
+
+      if (itemTaxable > 0 && reportedAmount > itemTaxable) {
+        const calculatedTax = reportedAmount - itemTaxable;
+        const impliedGstRate = (calculatedTax / itemTaxable) * 100;
+
+        const standardRates = [5, 12, 18, 28];
+        for (const r of standardRates) {
+          if (Math.abs(impliedGstRate - r) < 0.5) {
+            const currentGst = Number(item.gst) || 0;
+            if (Math.abs(currentGst * 2 - r) < 0.5 || currentGst === 0 || Math.abs(currentGst - r) > 0.5) {
+              item.gst = r;
+            }
+            break;
+          }
+        }
+      }
+    });
 
     const subTotal = extractSubTotal(lines, sections.totalsSection)
       || (items.length > 0 ? Math.round(items.reduce((sum, item) => sum + (item.amount || 0), 0) * 100) / 100 : null);
-    const taxAmount = extractTaxAmount(lines, sections.totalsSection);
+
+    const rawTaxAmount = extractTaxAmount(lines, sections.totalsSection);
+
+    // Calculate mathematically expected tax amount
+    let calculatedTaxAmount = 0;
+    items.forEach(item => {
+      const qty = Number(item.quantity) || 1;
+      const price = Number(item.price) || 0;
+      const discount = Number(item.discount) || 0;
+      const gst = Number(item.gst) || 0;
+      calculatedTaxAmount += (qty * price * (1 - discount / 100) * gst) / 100;
+    });
+    calculatedTaxAmount = Math.round(calculatedTaxAmount * 100) / 100;
+
+    let resolvedTaxAmount = rawTaxAmount;
+    if (resolvedTaxAmount !== null && calculatedTaxAmount > 0) {
+      const ratio = resolvedTaxAmount / calculatedTaxAmount;
+      // Case 1: parsedTaxAmount is roughly half of calculatedTaxAmount (CGST/SGST split, e.g. 0.4 to 0.6 to capture OCR errors like 11185.74 misread as 11815.74)
+      if (ratio >= 0.4 && ratio <= 0.6) {
+        resolvedTaxAmount = calculatedTaxAmount;
+      }
+      // Case 2: parsedTaxAmount is close to calculatedTaxAmount (minor rounding/OCR mismatch, within 10%)
+      else if (Math.abs(resolvedTaxAmount - calculatedTaxAmount) <= calculatedTaxAmount * 0.1) {
+        resolvedTaxAmount = calculatedTaxAmount;
+      }
+    }
+
+    const taxAmount = resolvedTaxAmount !== null ? resolvedTaxAmount : calculatedTaxAmount;
     const roundOff = extractRoundOff(lines, sections.totalsSection);
     const totalAmount = extractTotalAmount(lines, sections.totalsSection)
       || ((subTotal || 0) + (taxAmount || 0) + (roundOff || 0) || null);

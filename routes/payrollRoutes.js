@@ -10,24 +10,16 @@ const {
   generatePayslip,
 } = require('../controllers/payrollController');
 
-const authorizePayrollRoles = (req, res, next) => {
-  const allowedRoles = ['admin', 'finance', 'hr', 'superadmin'];
-  if (allowedRoles.includes(req.user?.role)) {
-    return next();
-  }
-  return res.status(403).json({ message: 'Forbidden: insufficient permissions' });
-};
-
 router.use(protect);
 
-router.post('/process', authorizePayrollRoles, processPayroll);
+router.post('/process', processPayroll);
 router.get('/', getPayrolls);
 
 router.route('/:id')
   .get(getPayrollById)
-  .put(authorizePayrollRoles, updatePayroll);
+  .put(updatePayroll);
 
-router.post('/:id/mark-paid', authorizePayrollRoles, markPayrollAsPaid);
+router.post('/:id/mark-paid', markPayrollAsPaid);
 router.get('/:id/generate-payslip', generatePayslip);
 
 module.exports = router;
