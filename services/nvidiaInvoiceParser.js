@@ -13,6 +13,18 @@ function buildInvoiceJsonSchema(fileName = 'unknown.pdf') {
   "dueDate": "",
   "vendorName": "",
   "vendorGST": "",
+  "vendorAddress": "",
+  "vendorAddressObject": {
+    "line1": "",
+    "line2": "",
+    "city": "",
+    "state": "",
+    "zip": "",
+    "country": "India"
+  },
+  "vendorPhone": "",
+  "vendorEmail": "",
+  "vendorPAN": "",
   "clientName": "",
   "clientGST": "",
   "placeOfSupply": "",
@@ -79,6 +91,8 @@ ${buildInvoiceJsonSchema(fileName)}
 
 Rules:
 ${buildDocumentPerspectiveRules(documentType)}
+- GST rate ("gst" field in items) MUST be extracted as a percentage number between 0 and 100 (e.g., 5, 12, 18, or 28), NOT a decimal fraction (like 0.18) and NOT the calculated tax amount (like 180).
+- If separate CGST (e.g., 9%) and SGST (e.g., 9%) rates are listed, combine/sum them to get the total total GST rate (e.g., 18) for the "gst" field.
 - Dates should be YYYY-MM-DD when confidently known.
 - confidence must be a number from 0 to 100.
 - status must be one of: auto-approved, needs-review, low-confidence, rejected.
@@ -101,6 +115,8 @@ ${buildInvoiceJsonSchema(fileName)}
 Rules:
 ${buildDocumentPerspectiveRules(documentType)}
 - Read the images carefully and use OCR-style reasoning to recover invoice fields and line items.
+- GST rate ("gst" field in items) MUST be extracted as a percentage number between 0 and 100 (e.g., 5, 12, 18, or 28), NOT a decimal fraction (like 0.18) and NOT the calculated tax amount (like 180).
+- If separate CGST (e.g., 9%) and SGST (e.g., 9%) rates are listed, combine/sum them to get the total total GST rate (e.g., 18) for the "gst" field.
 - Dates should be YYYY-MM-DD when confidently known.
 - confidence must be a number from 0 to 100.
 - status must be one of: auto-approved, needs-review, low-confidence, rejected.
@@ -119,6 +135,8 @@ ${buildInvoiceJsonSchema(fileName)}
 Rules:
 ${buildDocumentPerspectiveRules(documentType)}
 - Convert prose, markdown, bullets, or OCR notes into the JSON fields.
+- GST rate ("gst" field in items) MUST be extracted as a percentage number between 0 and 100 (e.g., 5, 12, 18, or 28), NOT a decimal fraction (like 0.18) and NOT the calculated tax amount (like 180).
+- If separate CGST (e.g., 9%) and SGST (e.g., 9%) rates are listed, combine/sum them to get the total total GST rate (e.g., 18) for the "gst" field.
 - Dates should be YYYY-MM-DD when confidently known.
 - confidence must be a number from 0 to 100.
 - status must be one of: auto-approved, needs-review, low-confidence, rejected.
@@ -157,12 +175,26 @@ async function parsePossiblyLooseInvoiceJson(content, fileName, options = {}) {
 }
 
 function normalizeItem(item) {
+  let rawGst = item?.gst;
+  let gst = 0;
+  if (typeof rawGst === 'number') {
+    gst = rawGst;
+  } else if (rawGst) {
+    const cleanStr = String(rawGst).replace('%', '').trim();
+    gst = parseFloat(cleanStr) || 0;
+  }
+
+  // If the model returned it as a fraction (e.g. 0.18 or 0.05 instead of 18 or 5), convert to percentage
+  if (gst > 0 && gst <= 1) {
+    gst = Math.round(gst * 100);
+  }
+
   return {
     name: String(item?.name || '').trim(),
     quantity: Number(item?.quantity) || 0,
     unit: String(item?.unit || '').trim(),
     price: Number(item?.price) || 0,
-    gst: Number(item?.gst) || 0,
+    gst: gst,
     discount: Number(item?.discount) || 0,
     amount: Number(item?.amount) || 0,
     hsnCode: String(item?.hsnCode || '').trim(),
@@ -187,6 +219,18 @@ function normalizeInvoiceResult(parsed, fileName, rawText, options = {}) {
     dueDate: String(parsed?.dueDate || '').trim() || null,
     vendorName: String(parsed?.vendorName || '').trim() || null,
     vendorGST: String(parsed?.vendorGST || '').trim() || null,
+    vendorAddress: String(parsed?.vendorAddress || '').trim() || null,
+    vendorAddressObject: {
+      line1: String(parsed?.vendorAddressObject?.line1 || '').trim() || null,
+      line2: String(parsed?.vendorAddressObject?.line2 || '').trim() || null,
+      city: String(parsed?.vendorAddressObject?.city || '').trim() || null,
+      state: String(parsed?.vendorAddressObject?.state || '').trim() || null,
+      zip: String(parsed?.vendorAddressObject?.zip || '').trim() || null,
+      country: String(parsed?.vendorAddressObject?.country || 'India').trim() || 'India'
+    },
+    vendorPhone: String(parsed?.vendorPhone || '').trim() || null,
+    vendorEmail: String(parsed?.vendorEmail || '').trim() || null,
+    vendorPAN: String(parsed?.vendorPAN || '').trim() || null,
     clientName: String(parsed?.clientName || '').trim() || null,
     clientGST: String(parsed?.clientGST || '').trim() || null,
     placeOfSupply: String(parsed?.placeOfSupply || '').trim() || null,

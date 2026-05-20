@@ -17,6 +17,145 @@ function processItems(items, invoiceType, isIntraState) {
   return processDocumentItems(items, { invoiceType, isIntraState, includeExcise: true });
 }
 
+// --- Resolve or auto-create vendor from PDF import ---
+async function resolveVendor({
+  userId,
+  vendorRef,
+  vendorName,
+  vendorGST,
+  placeOfSupply,
+  importSource,
+  vendorAddressObject,
+  vendorPhone,
+  vendorEmail,
+  vendorPAN,
+}) {
+  if (vendorRef && mongoose.Types.ObjectId.isValid(vendorRef)) {
+    const vendor = await VendorModel.findOne({ _id: vendorRef, user: userId });
+    if (!vendor) throw new Error('Vendor not found');
+
+    // Self-heal: If existing vendor is missing key details, populate them from PDF
+    let needsUpdate = false;
+    if (!vendor.gstin && vendorGST) {
+      vendor.gstin = String(vendorGST).trim().toUpperCase();
+      vendor.gstTreatment = 'Registered Business';
+      needsUpdate = true;
+    }
+    if (!vendor.phone && vendorPhone) {
+      vendor.phone = String(vendorPhone).trim();
+      needsUpdate = true;
+    }
+    if (!vendor.email && vendorEmail) {
+      vendor.email = String(vendorEmail).trim().toLowerCase();
+      needsUpdate = true;
+    }
+    if (!vendor.pan && vendorPAN) {
+      vendor.pan = String(vendorPAN).trim().toUpperCase();
+      needsUpdate = true;
+    }
+    if (vendorAddressObject && (!vendor.billingAddress || !vendor.billingAddress.line1)) {
+      vendor.billingAddress = {
+        line1: vendorAddressObject.line1 || vendor.billingAddress?.line1 || '',
+        line2: vendorAddressObject.line2 || vendor.billingAddress?.line2 || '',
+        city: vendorAddressObject.city || vendor.billingAddress?.city || '',
+        state: vendorAddressObject.state || placeOfSupply || vendor.billingAddress?.state || '',
+        zip: vendorAddressObject.zip || vendor.billingAddress?.zip || '',
+        country: vendorAddressObject.country || vendor.billingAddress?.country || 'India',
+      };
+      if (vendorAddressObject.state || placeOfSupply) {
+        vendor.placeOfSupply = vendorAddressObject.state || placeOfSupply;
+      }
+      needsUpdate = true;
+    }
+    if (needsUpdate) {
+      await vendor.save();
+    }
+
+    return vendor;
+  }
+  if (importSource !== 'pdf') throw new Error('Vendor not found');
+  const name = String(vendorName || '').trim();
+  if (!name) throw new Error('Vendor name is required for PDF import');
+  const safe = escapeRegex(name);
+  const existing = await VendorModel.findOne({
+    user: userId,
+    isVendor: true,
+    name: { $regex: new RegExp('^\\s*' + safe + '\\s*$', 'i') },
+  });
+
+  if (existing) {
+    // Self-heal: If existing vendor is missing key details, populate them from PDF
+    let needsUpdate = false;
+    if (!existing.gstin && vendorGST) {
+      existing.gstin = String(vendorGST).trim().toUpperCase();
+      existing.gstTreatment = 'Registered Business';
+      needsUpdate = true;
+    }
+    if (!existing.phone && vendorPhone) {
+      existing.phone = String(vendorPhone).trim();
+      needsUpdate = true;
+    }
+    if (!existing.email && vendorEmail) {
+      existing.email = String(vendorEmail).trim().toLowerCase();
+      needsUpdate = true;
+    }
+    if (!existing.pan && vendorPAN) {
+      existing.pan = String(vendorPAN).trim().toUpperCase();
+      needsUpdate = true;
+    }
+    if (vendorAddressObject && (!existing.billingAddress || !existing.billingAddress.line1)) {
+      existing.billingAddress = {
+        line1: vendorAddressObject.line1 || existing.billingAddress?.line1 || '',
+        line2: vendorAddressObject.line2 || existing.billingAddress?.line2 || '',
+        city: vendorAddressObject.city || existing.billingAddress?.city || '',
+        state: vendorAddressObject.state || placeOfSupply || existing.billingAddress?.state || '',
+        zip: vendorAddressObject.zip || existing.billingAddress?.zip || '',
+        country: vendorAddressObject.country || existing.billingAddress?.country || 'India',
+      };
+      if (vendorAddressObject.state || placeOfSupply) {
+        existing.placeOfSupply = vendorAddressObject.state || placeOfSupply;
+      }
+      needsUpdate = true;
+    }
+    if (needsUpdate) {
+      await existing.save();
+    }
+    return existing;
+  }
+
+  const gstin = String(vendorGST || '').trim().toUpperCase();
+  const state = String(vendorAddressObject?.state || placeOfSupply || '').trim();
+  const vendor = new VendorModel({
+    user: userId,
+    name,
+    gstin: gstin || undefined,
+    gstTreatment: gstin ? 'Registered Business' : 'Unregistered Business',
+    placeOfSupply: state || 'Delhi',
+    billingAddress: {
+      line1: vendorAddressObject?.line1 || '',
+      line2: vendorAddressObject?.line2 || '',
+      city: vendorAddressObject?.city || '',
+      state: state || '',
+      zip: vendorAddressObject?.zip || '',
+      country: vendorAddressObject?.country || 'India',
+    },
+    shippingAddress: {
+      line1: vendorAddressObject?.line1 || '',
+      line2: vendorAddressObject?.line2 || '',
+      city: vendorAddressObject?.city || '',
+      state: state || '',
+      zip: vendorAddressObject?.zip || '',
+      country: vendorAddressObject?.country || 'India',
+    },
+    phone: vendorPhone ? String(vendorPhone).trim() : undefined,
+    email: vendorEmail ? String(vendorEmail).trim().toLowerCase() : undefined,
+    pan: vendorPAN ? String(vendorPAN).trim().toUpperCase() : undefined,
+    isVendor: true,
+    isClient: false,
+  });
+  return vendor.save();
+}
+
 // ─── GET all purchaseOrders ───────────────────────────────────────────────────────────
 exports.getPurchaseOrders = async (req, res) => {
   try {
@@ -107,7 +246,18 @@ exports.createPurchaseOrder = async (req, res) => {
     }
     // -------------------------------
 
-    const vendor = await VendorModel.findOne({ _id: vendorRef, user: req.user._id });
+    const vendor = await resolveVendor({
+      userId: req.user._id,
+      vendorRef: req.body.vendorRef,
+      vendorName: req.body.vendorName,
+      vendorGST: req.body.vendorGST,
+      placeOfSupply,
+      importSource: req.body.importSource,
+      vendorAddressObject: req.body.vendorAddressObject,
+      vendorPhone: req.body.vendorPhone,
+      vendorEmail: req.body.vendorEmail,
+      vendorPAN: req.body.vendorPAN,
+    });
     if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
 
     const vendorSnapshot = {
@@ -230,7 +380,18 @@ exports.updatePurchaseOrder = async (req, res) => {
     }
     // -----------------------------------------
 
-    const vendor = await VendorModel.findOne({ _id: vendorRef, user: req.user._id });
+    const vendor = await resolveVendor({
+      userId: req.user._id,
+      vendorRef: req.body.vendorRef,
+      vendorName: req.body.vendorName,
+      vendorGST: req.body.vendorGST,
+      placeOfSupply,
+      importSource: req.body.importSource,
+      vendorAddressObject: req.body.vendorAddressObject,
+      vendorPhone: req.body.vendorPhone,
+      vendorEmail: req.body.vendorEmail,
+      vendorPAN: req.body.vendorPAN,
+    });
     if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
 
     const vendorSnapshot = {
