@@ -112,6 +112,165 @@ exports.getIncomes = async (req, res) => {
   }
 };
 
+// --- Resolve or auto-create vendor/client from name/ref ---
+async function resolveParty({
+  userId,
+  partyRef,
+  partyName,
+  isVendor,
+  isClient,
+  partyGST,
+  partyAddressObject,
+  partyPhone,
+  partyEmail,
+  partyPAN,
+  placeOfSupply,
+}) {
+  const ClientModel = require('../models/Client');
+
+  if (partyRef && mongoose.Types.ObjectId.isValid(partyRef)) {
+    const party = await ClientModel.findOne({ _id: partyRef, user: userId });
+    if (!party) throw new Error(`${isVendor ? 'Vendor' : 'Client'} not found`);
+
+    let needsUpdate = false;
+    if (isVendor && !party.isVendor) {
+      party.isVendor = true;
+      needsUpdate = true;
+    }
+    if (isClient && !party.isClient) {
+      party.isClient = true;
+      needsUpdate = true;
+    }
+    if (!party.gstin && partyGST) {
+      party.gstin = String(partyGST).trim().toUpperCase();
+      party.gstTreatment = 'Registered Business';
+      needsUpdate = true;
+    }
+    if (!party.phone && partyPhone) {
+      party.phone = String(partyPhone).trim();
+      needsUpdate = true;
+    }
+    if (!party.email && partyEmail) {
+      party.email = String(partyEmail).trim().toLowerCase();
+      needsUpdate = true;
+    }
+    if (!party.pan && partyPAN) {
+      party.pan = String(partyPAN).trim().toUpperCase();
+      needsUpdate = true;
+    }
+    if (partyAddressObject && (!party.billingAddress || !party.billingAddress.line1)) {
+      party.billingAddress = {
+        line1: partyAddressObject.line1 || party.billingAddress?.line1 || '',
+        line2: partyAddressObject.line2 || party.billingAddress?.line2 || '',
+        city: partyAddressObject.city || party.billingAddress?.city || '',
+        state: partyAddressObject.state || placeOfSupply || party.billingAddress?.state || '',
+        zip: partyAddressObject.zip || party.billingAddress?.zip || '',
+        country: partyAddressObject.country || party.billingAddress?.country || 'India',
+      };
+      if (partyAddressObject.state || placeOfSupply) {
+        party.placeOfSupply = partyAddressObject.state || placeOfSupply;
+      }
+      needsUpdate = true;
+    }
+    if (needsUpdate) {
+      await party.save();
+    }
+
+    return party;
+  }
+
+  const name = String(partyName || '').trim();
+  if (!name) return null;
+
+  const escaped = escapeRegex(name).replace(/\s+/g, '\\s+');
+  const regex = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
+
+  const existing = await ClientModel.findOne({
+    user: userId,
+    name: { $regex: regex }
+  });
+
+  if (existing) {
+    let needsUpdate = false;
+    if (isVendor && !existing.isVendor) {
+      existing.isVendor = true;
+      needsUpdate = true;
+    }
+    if (isClient && !existing.isClient) {
+      existing.isClient = true;
+      needsUpdate = true;
+    }
+    if (!existing.gstin && partyGST) {
+      existing.gstin = String(partyGST).trim().toUpperCase();
+      existing.gstTreatment = 'Registered Business';
+      needsUpdate = true;
+    }
+    if (!existing.phone && partyPhone) {
+      existing.phone = String(partyPhone).trim();
+      needsUpdate = true;
+    }
+    if (!existing.email && partyEmail) {
+      existing.email = String(partyEmail).trim().toLowerCase();
+      needsUpdate = true;
+    }
+    if (!existing.pan && partyPAN) {
+      existing.pan = String(partyPAN).trim().toUpperCase();
+      needsUpdate = true;
+    }
+    if (partyAddressObject && (!existing.billingAddress || !existing.billingAddress.line1)) {
+      existing.billingAddress = {
+        line1: partyAddressObject.line1 || existing.billingAddress?.line1 || '',
+        line2: partyAddressObject.line2 || existing.billingAddress?.line2 || '',
+        city: partyAddressObject.city || existing.billingAddress?.city || '',
+        state: partyAddressObject.state || placeOfSupply || existing.billingAddress?.state || '',
+        zip: partyAddressObject.zip || existing.billingAddress?.zip || '',
+        country: partyAddressObject.country || existing.billingAddress?.country || 'India',
+      };
+      if (partyAddressObject.state || placeOfSupply) {
+        existing.placeOfSupply = partyAddressObject.state || placeOfSupply;
+      }
+      needsUpdate = true;
+    }
+    if (needsUpdate) {
+      await existing.save();
+    }
+    return existing;
+  }
+
+  const gstin = String(partyGST || '').trim().toUpperCase();
+  const state = String(partyAddressObject?.state || placeOfSupply || '').trim();
+  const party = new ClientModel({
+    user: userId,
+    name,
+    isVendor: !!isVendor,
+    isClient: !!isClient,
+    gstin: gstin || undefined,
+    gstTreatment: gstin ? 'Registered Business' : 'Unregistered Business',
+    placeOfSupply: state || 'Delhi',
+    billingAddress: {
+      line1: partyAddressObject?.line1 || '',
+      line2: partyAddressObject?.line2 || '',
+      city: partyAddressObject?.city || '',
+      state: state || '',
+      zip: partyAddressObject?.zip || '',
+      country: partyAddressObject?.country || 'India',
+    },
+    shippingAddress: {
+      line1: partyAddressObject?.line1 || '',
+      line2: partyAddressObject?.line2 || '',
+      city: partyAddressObject?.city || '',
+      state: state || '',
+      zip: partyAddressObject?.zip || '',
+      country: partyAddressObject?.country || 'India',
+    },
+    phone: partyPhone ? String(partyPhone).trim() : undefined,
+    email: partyEmail ? String(partyEmail).trim().toLowerCase() : undefined,
+    pan: partyPAN ? String(partyPAN).trim().toUpperCase() : undefined,
+  });
+
+  return party.save();
+}
+
 // @desc    Create new income
 // @route   POST /api/incomes
 // @access  Private
@@ -136,6 +295,40 @@ exports.createIncome = async (req, res) => {
       privateNotes
     } = req.body;
 
+    let resolvedVendor = null;
+    if (vendor) {
+      resolvedVendor = await resolveParty({
+        userId: req.user._id,
+        partyRef: vendor.vendorRef,
+        partyName: vendor.name,
+        isVendor: true,
+        isClient: false,
+        partyGST: vendor.gstin || vendor.vendorGST,
+        partyAddressObject: vendor.vendorAddressObject || vendor.address,
+        partyPhone: vendor.vendorPhone || vendor.phone,
+        partyEmail: vendor.vendorEmail || vendor.email,
+        partyPAN: vendor.vendorPAN || vendor.pan,
+        placeOfSupply: req.body.placeOfSupply,
+      });
+    }
+
+    let resolvedClient = null;
+    if (client) {
+      resolvedClient = await resolveParty({
+        userId: req.user._id,
+        partyRef: client.clientRef,
+        partyName: client.name,
+        isVendor: false,
+        isClient: true,
+        partyGST: client.gstin || client.clientGST,
+        partyAddressObject: client.clientAddressObject || client.address,
+        partyPhone: client.clientPhone || client.phone,
+        partyEmail: client.clientEmail || client.email,
+        partyPAN: client.clientPAN || client.pan,
+        placeOfSupply: req.body.placeOfSupply,
+      });
+    }
+
     const categoryData = await validateIncomeCategory(req.user._id, category, subCategory);
 
     // Check if incomeNumber exists for this user (if you want uniqueness per user)
@@ -152,8 +345,8 @@ exports.createIncome = async (req, res) => {
       sourceType: 'manual',
       incomeNumber,
       date,
-      vendor,
-      client,
+      vendor: resolvedVendor ? { vendorRef: resolvedVendor._id, name: resolvedVendor.name } : { vendorRef: undefined, name: vendor?.name || '' },
+      client: resolvedClient ? { clientRef: resolvedClient._id, name: resolvedClient.name } : { clientRef: undefined, name: client?.name || '' },
       paymentMethod,
       reverseCharge,
       items,
@@ -250,6 +443,50 @@ exports.updateIncome = async (req, res) => {
       status
     } = req.body;
 
+    let resolvedVendor = undefined;
+    if (vendor !== undefined) {
+      if (vendor) {
+        const vParty = await resolveParty({
+          userId: req.user._id,
+          partyRef: vendor.vendorRef,
+          partyName: vendor.name,
+          isVendor: true,
+          isClient: false,
+          partyGST: vendor.gstin || vendor.vendorGST,
+          partyAddressObject: vendor.vendorAddressObject || vendor.address,
+          partyPhone: vendor.vendorPhone || vendor.phone,
+          partyEmail: vendor.vendorEmail || vendor.email,
+          partyPAN: vendor.vendorPAN || vendor.pan,
+          placeOfSupply: req.body.placeOfSupply,
+        });
+        resolvedVendor = vParty ? { vendorRef: vParty._id, name: vParty.name } : { vendorRef: undefined, name: vendor.name || '' };
+      } else {
+        resolvedVendor = { vendorRef: undefined, name: '' };
+      }
+    }
+
+    let resolvedClient = undefined;
+    if (client !== undefined) {
+      if (client) {
+        const cParty = await resolveParty({
+          userId: req.user._id,
+          partyRef: client.clientRef,
+          partyName: client.name,
+          isVendor: false,
+          isClient: true,
+          partyGST: client.gstin || client.clientGST,
+          partyAddressObject: client.clientAddressObject || client.address,
+          partyPhone: client.clientPhone || client.phone,
+          partyEmail: client.clientEmail || client.email,
+          partyPAN: client.clientPAN || client.pan,
+          placeOfSupply: req.body.placeOfSupply,
+        });
+        resolvedClient = cParty ? { clientRef: cParty._id, name: cParty.name } : { clientRef: undefined, name: client.name || '' };
+      } else {
+        resolvedClient = { clientRef: undefined, name: '' };
+      }
+    }
+
     const updateData = {
       category,
       subCategory,
@@ -257,8 +494,8 @@ exports.updateIncome = async (req, res) => {
       department,
       incomeNumber,
       date,
-      vendor,
-      client,
+      vendor: resolvedVendor,
+      client: resolvedClient,
       paymentMethod,
       reverseCharge,
       items,

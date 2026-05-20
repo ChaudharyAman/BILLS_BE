@@ -24,7 +24,7 @@ const aggregateByCategory = async (Model, userId, startDate, endDate) => {
       $match: {
         user: matchUser,
         date: { $gte: startDate, $lte: endDate },
-        status: { $ne: 'CANCELLED' },
+        status: { $nin: ['DRAFT', 'CANCELLED'] },
       },
     },
   { $group: { _id: '$category', total: { $sum: '$grandTotal' } } },

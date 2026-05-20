@@ -2,6 +2,7 @@ const Income = require('../../models/Income');
 const Expense = require('../../models/Expense');
 const Invoice = require('../../models/Invoice');
 const Payroll = require('../../models/Payroll');
+const PurchaseOrder = require('../../models/PurchaseOrder');
 
 const parseDateRange = (query) => {
   const now = new Date();
@@ -32,7 +33,7 @@ const aggregateTotals = async (Model, userId, startDate, endDate, fields) => {
       $match: {
         user: userId,
         date: { $gte: startDate, $lte: endDate },
-        status: { $ne: 'CANCELLED' },
+        status: { $nin: ['DRAFT', 'CANCELLED'] },
       },
     },
     { $group: { _id: null, ...project } },
@@ -46,7 +47,7 @@ const getExpenseCategories = async (userId, startDate, endDate) => Expense.aggre
     $match: {
       user: userId,
       date: { $gte: startDate, $lte: endDate },
-      status: { $ne: 'CANCELLED' },
+      status: { $nin: ['DRAFT', 'CANCELLED'] },
     },
   },
   { $group: { _id: '$category', total: { $sum: '$grandTotal' } } },
@@ -73,7 +74,7 @@ const getExpenseCategories = async (userId, startDate, endDate) => Expense.aggre
 const getRecentIncome = async (userId, startDate, endDate) => Income.find({
   user: userId,
   date: { $gte: startDate, $lte: endDate },
-  status: { $ne: 'CANCELLED' },
+  status: { $nin: ['DRAFT', 'CANCELLED'] },
 })
   .sort({ date: -1, createdAt: -1 })
   .limit(4)
@@ -85,7 +86,7 @@ const getRecentIncome = async (userId, startDate, endDate) => Income.find({
 const getRecentExpenses = async (userId, startDate, endDate) => Expense.find({
   user: userId,
   date: { $gte: startDate, $lte: endDate },
-  status: { $ne: 'CANCELLED' },
+  status: { $nin: ['DRAFT', 'CANCELLED'] },
 })
   .sort({ date: -1, createdAt: -1 })
   .limit(4)
@@ -104,7 +105,7 @@ const getTrend = async (userId, endDate) => {
       $match: {
         user: userId,
         date: { $gte: start, $lte: endOfRange },
-        status: { $ne: 'CANCELLED' },
+        status: { $nin: ['DRAFT', 'CANCELLED'] },
       },
     },
     {
@@ -184,7 +185,7 @@ const getReceivables = async (userId) => {
     {
       $match: {
         user: userId,
-        status: { $nin: ['PAID', 'CANCELLED'] },
+        status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] },
       },
     },
     { $group: { _id: null, total: { $sum: '$balanceDue' } } },
@@ -198,13 +199,108 @@ const getPayables = async (userId) => {
     {
       $match: {
         user: userId,
-        status: { $nin: ['PAID', 'CANCELLED'] },
+        status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] },
       },
     },
     { $group: { _id: null, total: { $sum: '$balanceDue' } } },
   ]);
 
   return result?.total || 0;
+};
+
+/* ── NEW: Overdue Invoice Aging ───────────────────────────────────── */
+const getOverdueInvoices = async (userId) => {
+  const now = new Date();
+  const invoices = await Invoice.aggregate([
+    {
+      $match: {
+        user: userId,
+        status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] },
+        dueDate: { $lt: now, $exists: true },
+      },
+    },
+    {
+      $project: {
+        balanceDue: 1,
+        daysOverdue: {
+          $ceil: { $divide: [{ $subtract: [now, '$dueDate'] }, 1000 * 60 * 60 * 24] },
+        },
+      },
+    },
+  ]);
+
+  const aging = { d0_30: 0, d31_60: 0, d61_90: 0, d90plus: 0 };
+  let total = 0;
+  invoices.forEach((inv) => {
+    const days = Math.max(0, Math.ceil(inv.daysOverdue || 0));
+    const amount = Number(inv.balanceDue) || 0;
+    total += amount;
+    if (days <= 30) aging.d0_30 += amount;
+    else if (days <= 60) aging.d31_60 += amount;
+    else if (days <= 90) aging.d61_90 += amount;
+    else aging.d90plus += amount;
+  });
+  return { total, count: invoices.length, aging };
+};
+
+/* ── NEW: Top 5 Clients by Revenue ───────────────────────────────── */
+const getTopClients = async (userId, startDate, endDate) =>
+  Income.aggregate([
+    {
+      $match: {
+        user: userId,
+        date: { $gte: startDate, $lte: endDate },
+        status: { $nin: ['DRAFT', 'CANCELLED'] },
+      },
+    },
+    {
+      $group: {
+        _id: { $ifNull: ['$vendor.name', { $ifNull: ['$client.name', 'Unknown'] }] },
+        total: { $sum: '$grandTotal' },
+      },
+    },
+    { $sort: { total: -1 } },
+    { $limit: 5 },
+    { $project: { _id: 0, name: '$_id', total: 1 } },
+  ]);
+
+/* ── NEW: Pending Purchase Orders ────────────────────────────────── */
+const getPendingPO = async (userId) => {
+  const [result] = await PurchaseOrder.aggregate([
+    {
+      $match: {
+        user: userId,
+        status: { $nin: ['DRAFT', 'RECEIVED', 'BILLED', 'CANCELLED'] },
+      },
+    },
+    { $group: { _id: null, total: { $sum: '$grandTotal' }, count: { $sum: 1 } } },
+  ]);
+  return { total: result?.total || 0, count: result?.count || 0 };
+};
+
+/* ── NEW: Draft Document Counts ──────────────────────────────────── */
+const getDraftCounts = async (userId) => {
+  const [invoices, expenses] = await Promise.all([
+    Invoice.countDocuments({ user: userId, status: 'DRAFT' }),
+    Expense.countDocuments({ user: userId, status: 'DRAFT' }),
+  ]);
+  return { invoices, expenses, total: invoices + expenses };
+};
+
+/* ── NEW: Previous Period Totals (for % delta KPIs) ──────────────── */
+const getPreviousPeriodTotals = async (userId, startDate, endDate) => {
+  const durationMs = endDate.getTime() - startDate.getTime();
+  const prevEnd = new Date(startDate.getTime() - 1);
+  const prevStart = new Date(prevEnd.getTime() - durationMs);
+  prevEnd.setHours(23, 59, 59, 999);
+  const [prevIncome, prevExpense] = await Promise.all([
+    aggregateTotals(Income, userId, prevStart, prevEnd, ['grandTotal']),
+    aggregateTotals(Expense, userId, prevStart, prevEnd, ['grandTotal']),
+  ]);
+  return {
+    revenue: Number(prevIncome.grandTotal) || 0,
+    expenses: Number(prevExpense.grandTotal) || 0,
+  };
 };
 
 exports.getTaxDashboard = async (req, res) => {
@@ -223,6 +319,11 @@ exports.getTaxDashboard = async (req, res) => {
       tdsPayable,
       receivables,
       payables,
+      overdueInvoices,
+      topClients,
+      pendingPO,
+      draftCounts,
+      previousPeriod,
     ] = await Promise.all([
       aggregateTotals(Income, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal']),
       aggregateTotals(Expense, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal']),
@@ -234,6 +335,11 @@ exports.getTaxDashboard = async (req, res) => {
       getPayrollTdsPayable(userId, startDate, endDate),
       getReceivables(userId),
       getPayables(userId),
+      getOverdueInvoices(userId),
+      getTopClients(userId, startDate, endDate),
+      getPendingPO(userId),
+      getDraftCounts(userId),
+      getPreviousPeriodTotals(userId, startDate, endDate),
     ]);
 
     const gstLiability = Number(invoiceTotals.taxTotal) || 0;
@@ -258,6 +364,10 @@ exports.getTaxDashboard = async (req, res) => {
         payables,
         netTaxPayable,
         tcsCollected: Number(invoiceTotals.tcs) || 0,
+        pendingPO: pendingPO.total,
+        pendingPOCount: pendingPO.count,
+        overdueTotal: overdueInvoices.total,
+        overdueCount: overdueInvoices.count,
       },
       gst: {
         cgst: Number(invoiceTotals.totalCGST) || 0,
@@ -287,6 +397,11 @@ exports.getTaxDashboard = async (req, res) => {
         status: item.status,
       })),
       trend,
+      overdueInvoices,
+      topClients,
+      pendingPO,
+      draftCounts,
+      previousPeriod,
       totals: {
         incomeTax: Number(incomeTotals.taxTotal) || 0,
         expenseTax: Number(expenseTotals.taxTotal) || 0,

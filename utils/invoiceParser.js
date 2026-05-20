@@ -506,16 +506,26 @@ function extractPODate(lines) {
 
 function extractDefaultTaxRate(lines) {
   const patterns = [
-    /\b(?:CGST|SGST|IGST)\b[^\n%]*?(\d+(?:\.\d+)?)%/i,
+    /\b(CGST|SGST|IGST|GST)\b[^\n%]*?(\d+(?:\.\d+)?)%/i,
     /^\d{4,8}\s+[\d,]+(?:\.\d+)?\s+[\d,]+(?:\.\d+)?\s+(\d+(?:\.\d+)?)%\s+[\d,]+(?:\.\d+)?$/i,
   ];
 
   for (const line of lines) {
     for (const pattern of patterns) {
       const match = line.text.match(pattern);
-      if (!match || !match[1]) continue;
-      const rate = parseFloat(match[1]);
-      if (Number.isFinite(rate) && rate >= 0 && rate <= 100) return rate;
+      if (!match) continue;
+
+      const hasTaxType = match[2] !== undefined;
+      const type = hasTaxType ? match[1].toUpperCase() : '';
+      const rateStr = hasTaxType ? match[2] : match[1];
+
+      let rate = parseFloat(rateStr);
+      if (Number.isFinite(rate) && rate >= 0 && rate <= 100) {
+        if (type === 'CGST' || type === 'SGST') {
+          rate = rate * 2;
+        }
+        return rate;
+      }
     }
   }
 
