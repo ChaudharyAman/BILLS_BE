@@ -63,26 +63,28 @@ const sanitizeItems = (items = []) =>
     itemRef: item.itemRef && String(item.itemRef).trim() ? item.itemRef : undefined,
   }));
 
-const resolvePaymentState = (grandTotal, amountPaid, requestedStatus) => {
+const resolvePaymentState = (grandTotal, amountPaid, requestedStatus, reverseCharge = false, taxTotal = 0) => {
   const total = Number(grandTotal) || 0;
+  const tax = Number(taxTotal) || 0;
+  const payableAmount = reverseCharge ? Math.max(total - tax, 0) : total;
 
   if (requestedStatus === 'CANCELLED' || requestedStatus === 'DRAFT') {
     return {
       amountPaid: Number(amountPaid) || 0,
-      balanceDue: Math.max(total - (Number(amountPaid) || 0), 0),
+      balanceDue: Math.max(payableAmount - (Number(amountPaid) || 0), 0),
       status: requestedStatus,
     };
   }
 
   if (requestedStatus === 'PAID') {
-    return { amountPaid: total, balanceDue: 0, status: 'PAID' };
+    return { amountPaid: payableAmount, balanceDue: 0, status: 'PAID' };
   }
 
-  const paid = Math.min(Math.max(Number(amountPaid) || 0, 0), total);
-  const balanceDue = Math.max(total - paid, 0);
+  const paid = Math.min(Math.max(Number(amountPaid) || 0, 0), payableAmount);
+  const balanceDue = Math.max(payableAmount - paid, 0);
   let status = 'UNPAID';
 
-  if (total <= 0 || balanceDue === 0) status = 'PAID';
+  if (payableAmount <= 0 || balanceDue === 0) status = 'PAID';
   else if (paid > 0) status = 'PARTIAL';
 
   return { amountPaid: paid, balanceDue, status };
@@ -367,8 +369,9 @@ exports.createExpense = async (req, res) => {
       return res.status(400).json({ message: 'Expense number already exists' });
     }
 
-    const budgetWarning = await checkBudgetWarning(categoryData.category, req.user._id, grandTotal);
-    const paymentState = resolvePaymentState(grandTotal, amountPaid, status);
+    const payableAmount = reverseCharge ? Math.max(grandTotal - taxTotal, 0) : grandTotal;
+    const budgetWarning = await checkBudgetWarning(categoryData.category, req.user._id, payableAmount);
+    const paymentState = resolvePaymentState(grandTotal, amountPaid, status, !!reverseCharge, taxTotal);
 
     const expense = await Expense.create({
       user: req.user._id,
@@ -380,7 +383,7 @@ exports.createExpense = async (req, res) => {
       vendor: resolvedVendor ? { vendorRef: resolvedVendor._id, name: resolvedVendor.name } : { vendorRef: undefined, name: vendor?.name || '' },
       client: resolvedClient ? { clientRef: resolvedClient._id, name: resolvedClient.name } : { clientRef: undefined, name: client?.name || '' },
       paymentMethod,
-      reverseCharge,
+      reverseCharge: !!reverseCharge,
       items: sanitizeItems(items),
       subTotal,
       taxTotal,
@@ -514,11 +517,16 @@ exports.updateExpense = async (req, res) => {
       }
     }
 
-    const paymentState = grandTotal !== undefined || amountPaid !== undefined || status !== undefined
+    const finalGrandTotal = grandTotal !== undefined ? grandTotal : expense.grandTotal;
+    const finalTaxTotal = taxTotal !== undefined ? taxTotal : expense.taxTotal;
+    const finalReverseCharge = reverseCharge !== undefined ? !!reverseCharge : !!expense.reverseCharge;
+    const paymentState = grandTotal !== undefined || amountPaid !== undefined || status !== undefined || reverseCharge !== undefined || taxTotal !== undefined
       ? resolvePaymentState(
-          grandTotal !== undefined ? grandTotal : expense.grandTotal,
+          finalGrandTotal,
           amountPaid !== undefined ? amountPaid : expense.amountPaid,
-          status !== undefined ? status : expense.status
+          status !== undefined ? status : expense.status,
+          finalReverseCharge,
+          finalTaxTotal
         )
       : {};
 
@@ -532,7 +540,7 @@ exports.updateExpense = async (req, res) => {
       vendor: resolvedVendor,
       client: resolvedClient,
       paymentMethod,
-      reverseCharge,
+      reverseCharge: reverseCharge !== undefined ? !!reverseCharge : undefined,
       items: sanitizeItems(items),
       subTotal,
       taxTotal,

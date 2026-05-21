@@ -72,11 +72,15 @@ const ExpenseSchema = new mongoose.Schema({
 // Compound unique index: same expense number is allowed across different users
 ExpenseSchema.pre('save', async function() {
   const grandTotal = Number(this.grandTotal) || 0;
-  const amountPaid = Number(this.amountPaid) || 0;
-  if (amountPaid > grandTotal) {
-    throw new Error('Amount paid cannot exceed grand total');
+  const amountPaid = Math.round((Number(this.amountPaid) || 0) * 100) / 100;
+  const taxTotal = Number(this.taxTotal) || 0;
+  const payableAmount = Math.round((this.reverseCharge ? Math.max(grandTotal - taxTotal, 0) : grandTotal) * 100) / 100;
+  
+  if (amountPaid > payableAmount) {
+    throw new Error('Amount paid cannot exceed payable amount');
   }
-  this.balanceDue = Math.max(grandTotal - amountPaid, 0);
+  this.amountPaid = amountPaid;
+  this.balanceDue = Math.round(Math.max(payableAmount - amountPaid, 0) * 100) / 100;
 });
 
 ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true });
