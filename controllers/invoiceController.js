@@ -9,9 +9,11 @@ const { buildAutoDocumentNumber } = require('../utils/documentNumber');
 const { syncIncomeFromInvoice, removeIncomeForInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
+const { parseOptionalDateRange } = require('../utils/dateRange');
 
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
+const ACTIVE_INVOICE_STATUSES = ['SENT', 'PAID', 'PARTIAL', 'UNPAID'];
 
 // Helper to calculate Financial Year (April - March)
 function getFinancialYear(date) {
@@ -392,7 +394,7 @@ exports.createInvoice = async (req, res) => {
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
-    // Normalize: extract state name before parenthesis for comparison e.g. "HR (06)" → "HR", "Haryana (06)" → "Haryana"
+    // Normalize: extract state name before parenthesis e.g. "HR (06)" → "HR", "Haryana (06)" → "Haryana"
     const normalizeState = (s) => s.trim().split('(')[0].trim().toLowerCase();
     const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
@@ -422,8 +424,16 @@ exports.createInvoice = async (req, res) => {
     const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
     const finalTds = Number(tds) || 0;
-    const finalAdvance = Number(advancePaid) || 0;
-    const finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
+
+    let finalStatus = status || 'DRAFT';
+    let finalAdvance = Number(advancePaid) || 0;
+    if (finalStatus === 'PAID') {
+      finalAdvance = grandTotal - finalTds;
+    }
+    let finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
+    if (finalBalance === 0 && finalStatus !== 'DRAFT' && finalStatus !== 'CANCELLED') {
+      finalStatus = 'PAID';
+    }
 
     const invoice = new Invoice({
       user: req.user._id,
@@ -447,7 +457,7 @@ exports.createInvoice = async (req, res) => {
       grandTotal,
       advancePaid: finalAdvance,
       balanceDue: finalBalance,
-      status: status || 'DRAFT',
+      status: finalStatus,
       shippingAddress: resolvedShippingAddress,
       transport,
       bankDetails,
@@ -597,8 +607,16 @@ exports.updateInvoice = async (req, res) => {
     const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
     const finalTds = Number(tds) || 0;
-    const finalAdvance = Number(advancePaid) || 0;
-    const finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
+
+    let finalStatus = status || invoice.status || 'DRAFT';
+    let finalAdvance = Number(advancePaid) || 0;
+    if (finalStatus === 'PAID') {
+      finalAdvance = grandTotal - finalTds;
+    }
+    let finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
+    if (finalBalance === 0 && finalStatus !== 'DRAFT' && finalStatus !== 'CANCELLED') {
+      finalStatus = 'PAID';
+    }
 
     // Apply updates
     invoice.invoiceType = effectiveType;
@@ -639,7 +657,7 @@ exports.updateInvoice = async (req, res) => {
     invoice.notes = notes;
     invoice.terms = terms;
     invoice.exciseDuty = buildExciseDutySnapshot(exciseDuty || invoice.exciseDuty, totalExcise);
-    if (status) invoice.status = status;
+    invoice.status = finalStatus;
 
     const updatedInvoice = await invoice.save();
     await syncIncomeFromInvoice(updatedInvoice);
@@ -807,14 +825,23 @@ exports.bulkCreateInvoices = async (req, res) => {
       const finalTaxTotal = importedTaxTotal !== null ? importedTaxTotal : taxTotal;
       const finalExciseTotal = totalExcise;
       const finalGrandTotal = importedGrandTotal !== null ? importedGrandTotal : roundToTwo(computedGrandTotal);
-      const advancePaid = importedAdvancePaid !== null ? importedAdvancePaid : 0;
-      const balanceDue = importedBalanceDue !== null
+      
+      let tempAdvancePaid = importedAdvancePaid !== null ? importedAdvancePaid : 0;
+      let tempBalanceDue = importedBalanceDue !== null
         ? importedBalanceDue
-        : Math.max(0, roundToTwo(finalGrandTotal - advancePaid - finalTds));
+        : Math.max(0, roundToTwo(finalGrandTotal - tempAdvancePaid - finalTds));
+      
+      let finalStatus = parseImportedStatus(invData.status, tempBalanceDue);
+      if (finalStatus === 'PAID') {
+        tempAdvancePaid = finalGrandTotal - finalTds;
+        tempBalanceDue = 0;
+      } else if (tempBalanceDue === 0 && finalStatus !== 'DRAFT' && finalStatus !== 'CANCELLED') {
+        finalStatus = 'PAID';
+      }
+
       const finalTaxBreakdown = importedTaxTotal !== null
         ? deriveImportedTaxBreakdown(finalTaxTotal, invData.invoiceType || 'Tax Invoice', isIntraState)
         : { totalCGST, totalSGST, totalIGST };
-      const finalStatus = parseImportedStatus(invData.status, balanceDue);
         const invoice = new Invoice({
           invoiceNo,
           invoiceType: invData.invoiceType || 'Tax Invoice',
@@ -858,8 +885,8 @@ exports.bulkCreateInvoices = async (req, res) => {
         shippingCharges: finalShipping, packagingCharges: finalPackaging,
         discountTotal: finalDiscount,
           grandTotal: finalGrandTotal,
-          advancePaid,
-          balanceDue,
+          advancePaid: tempAdvancePaid,
+          balanceDue: tempBalanceDue,
           paymentDate: invData.paymentDate || undefined,
           status: finalStatus,
           notes: String(invData.notes || '').trim(),
@@ -883,15 +910,19 @@ exports.bulkCreateInvoices = async (req, res) => {
 exports.getGSTReport = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
+    const parsedDateRange = parseOptionalDateRange(req.query);
     
     // Filter by user
-    const matchStage = { user: req.user._id };
+    const matchStage = {
+      user: req.user._id,
+      status: { $in: ACTIVE_INVOICE_STATUSES },
+    };
 
     // Apply date filters if provided
     if (startDate || endDate) {
       matchStage.date = {};
-      if (startDate) matchStage.date.$gte = new Date(startDate);
-      if (endDate) matchStage.date.$lte = new Date(endDate);
+      if (parsedDateRange.startDate) matchStage.date.$gte = parsedDateRange.startDate;
+      if (parsedDateRange.endDate) matchStage.date.$lte = parsedDateRange.endDate;
     }
 
     const report = await Invoice.aggregate([
@@ -949,6 +980,9 @@ exports.getGSTReport = async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching GST Report:', error);
+    if (error.message === 'Invalid startDate' || error.message === 'Invalid endDate') {
+      return res.status(400).json({ message: error.message });
+    }
     res.status(500).json({ message: 'Error fetching GST Report', error: error.message });
   }
 };
@@ -957,15 +991,19 @@ exports.getGSTReport = async (req, res) => {
 exports.getRevenueReport = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
+    const parsedDateRange = parseOptionalDateRange(req.query);
     
     // Filter by user
-    const matchStage = { user: req.user._id };
+    const matchStage = {
+      user: req.user._id,
+      status: { $in: ACTIVE_INVOICE_STATUSES },
+    };
 
     // Apply date filters if provided
     if (startDate || endDate) {
       matchStage.date = {};
-      if (startDate) matchStage.date.$gte = new Date(startDate);
-      if (endDate) matchStage.date.$lte = new Date(endDate);
+      if (parsedDateRange.startDate) matchStage.date.$gte = parsedDateRange.startDate;
+      if (parsedDateRange.endDate) matchStage.date.$lte = parsedDateRange.endDate;
     }
 
     const report = await Invoice.aggregate([
@@ -988,6 +1026,9 @@ exports.getRevenueReport = async (req, res) => {
     res.json(report);
   } catch (error) {
     console.error('Error fetching Revenue Report:', error);
+    if (error.message === 'Invalid startDate' || error.message === 'Invalid endDate') {
+      return res.status(400).json({ message: error.message });
+    }
     res.status(500).json({ message: 'Error fetching Revenue Report', error: error.message });
   }
 };
@@ -998,7 +1039,8 @@ exports.getPaymentCollection = async (req, res) => {
     // Find all invoices where balance is > 0
     const matchStage = { 
       user: req.user._id,
-      balanceDue: { $gt: 0 }
+      balanceDue: { $gt: 0 },
+      status: { $in: ACTIVE_INVOICE_STATUSES },
     };
 
     const invoices = await Invoice.find(matchStage)
@@ -1031,6 +1073,7 @@ exports.getPaymentCollection = async (req, res) => {
 exports.getAccountStatement = async (req, res) => {
   try {
     const { clientId, startDate, endDate } = req.query;
+    const parsedDateRange = parseOptionalDateRange(req.query);
 
     if (!clientId) {
       return res.status(400).json({ message: 'clientId is required for an account statement.' });
@@ -1038,13 +1081,14 @@ exports.getAccountStatement = async (req, res) => {
 
     const matchStage = { 
       user: req.user._id,
-      "client.clientRef": new mongoose.Types.ObjectId(clientId)
+      "client.clientRef": new mongoose.Types.ObjectId(clientId),
+      status: { $in: ACTIVE_INVOICE_STATUSES },
     };
 
     if (startDate || endDate) {
       matchStage.date = {};
-      if (startDate) matchStage.date.$gte = new Date(startDate);
-      if (endDate) matchStage.date.$lte = new Date(endDate);
+      if (parsedDateRange.startDate) matchStage.date.$gte = parsedDateRange.startDate;
+      if (parsedDateRange.endDate) matchStage.date.$lte = parsedDateRange.endDate;
     }
 
     const invoices = await Invoice.find(matchStage)
@@ -1069,6 +1113,9 @@ exports.getAccountStatement = async (req, res) => {
     res.json({ summary, invoices });
   } catch (error) {
     console.error('Error fetching Account Statement:', error);
+    if (error.message === 'Invalid startDate' || error.message === 'Invalid endDate') {
+      return res.status(400).json({ message: error.message });
+    }
     res.status(500).json({ message: 'Error fetching Account Statement', error: error.message });
   }
 };

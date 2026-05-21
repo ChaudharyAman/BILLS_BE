@@ -2,6 +2,7 @@ const Income = require('../../models/Income');
 const Expense = require('../../models/Expense');
 const Asset = require('../../models/Asset');
 const Liability = require('../../models/Liability');
+const { parseMonthlyDateRange } = require('../../utils/dateRange');
 
 const sumField = async (Model, match, field) => {
   const result = await Model.aggregate([
@@ -13,16 +14,7 @@ const sumField = async (Model, match, field) => {
 
 exports.getCashFlow = async (req, res) => {
   try {
-    const now = new Date();
-    const startDate = req.query.startDate ? new Date(req.query.startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
-    const endDate = req.query.endDate ? new Date(req.query.endDate) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-
-    if (req.query.startDate && Number.isNaN(startDate.getTime())) {
-      return res.status(400).json({ message: 'Invalid startDate' });
-    }
-    if (req.query.endDate && Number.isNaN(endDate.getTime())) {
-      return res.status(400).json({ message: 'Invalid endDate' });
-    }
+    const { startDate, endDate } = parseMonthlyDateRange(req.query);
 
     const [totalIncome, totalExpense, assetPurchases, assetDisposals, liabilityPrincipal] = await Promise.all([
       sumField(Income, { user: req.user._id, date: { $gte: startDate, $lte: endDate }, status: { $nin: ['DRAFT', 'CANCELLED'] } }, '$grandTotal'),
@@ -44,6 +36,9 @@ exports.getCashFlow = async (req, res) => {
     });
   } catch (error) {
     console.error('Error building cash flow report:', error);
+    if (error.message === 'Invalid startDate' || error.message === 'Invalid endDate') {
+      return res.status(400).json({ message: error.message });
+    }
     res.status(500).json({ message: 'Server error building cash flow report' });
   }
 };
