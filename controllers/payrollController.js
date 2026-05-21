@@ -35,7 +35,9 @@ const buildPayrollSnapshot = (employee, adjustments = {}) => {
     sumNamedAmounts(earnings.otherEarnings);
 
   const deductions = {
-    pf: Number(employeeDeductions.pf) || earnings.basic * 0.12,
+    pf: (employeeDeductions.pf !== undefined && employeeDeductions.pf !== null && employeeDeductions.pf !== '')
+      ? Number(employeeDeductions.pf)
+      : earnings.basic * 0.12,
     esi: Number(employeeDeductions.esi) || 0,
     professionalTax: Number(employeeDeductions.professionalTax) || 0,
     tds: Number(employeeDeductions.tds) || 0,
