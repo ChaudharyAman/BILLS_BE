@@ -12,6 +12,10 @@ const DEFAULT_CATEGORIES = {
     { name: 'Travel & Transportation', color: '#ea580c', icon: 'FaCar' },
     { name: 'Professional Services', color: '#0f766e', icon: 'FaBriefcase', children: ['Legal', 'Accounting', 'Consulting'] },
     { name: 'Technology & Software', color: '#4f46e5', icon: 'FaLaptopCode', children: ['Subscriptions', 'Hardware', 'Licenses'] },
+    { name: 'Bank & Financial Charges', color: '#be123c', icon: 'FaUniversity', children: ['Bank Fees & SMS Charges', 'Payment Gateway Fees', 'Interest Paid'] },
+    { name: 'Outsource & Contractor Costs', color: '#0369a1', icon: 'FaUserTie', children: ['Freelancers', 'Contract Agencies', 'Outsourced Developers'] },
+    { name: 'Employee Welfare & Benefits', color: '#047857', icon: 'FaHeart', children: ['Staff Welfare & Pantry', 'Training & Seminars', 'Team Outings & Offsites'] },
+    { name: 'Shipping & Logistics', color: '#d97706', icon: 'FaTruck', children: ['Courier & Postage', 'Freight Charges', 'Customs & Import Duties'] },
     { name: 'Insurance', color: '#16a34a', icon: 'FaShieldAlt' },
     { name: 'Taxes & Licenses', color: '#ca8a04', icon: 'FaFileInvoiceDollar' },
     { name: 'Maintenance & Repairs', color: '#475569', icon: 'FaTools' },
@@ -21,6 +25,7 @@ const DEFAULT_CATEGORIES = {
     { name: 'Sales Revenue', color: '#16a34a', icon: 'FaChartLine', children: ['Product Sales', 'Service Revenue'] },
     { name: 'Consulting Income', color: '#0f766e', icon: 'FaHandshake' },
     { name: 'Investment Income', color: '#7c3aed', icon: 'FaCoins', children: ['Interest', 'Dividends', 'Capital Gains'] },
+    { name: 'Reimbursements & Billable Income', color: '#0d9488', icon: 'FaFileInvoice', children: ['Travel Reimbursements', 'Client-Billed Out-of-Pocket Expenses'] },
     { name: 'Other Income', color: '#64748b', icon: 'FaPlusCircle' },
   ],
 };
@@ -165,8 +170,22 @@ exports.updateCategory = async (req, res) => {
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    if (category.isSystem && (req.body.name || req.body.type || Object.prototype.hasOwnProperty.call(req.body, 'parent'))) {
-      return res.status(400).json({ message: 'System categories cannot be renamed, moved, or retyped' });
+    if (category.isSystem) {
+      const nameChanged = req.body.name !== undefined && normalizeName(req.body.name) !== category.name;
+      const typeChanged = req.body.type !== undefined && req.body.type !== category.type;
+      
+      let parentChanged = false;
+      if (Object.prototype.hasOwnProperty.call(req.body, 'parent')) {
+        const newParent = req.body.parent ? String(req.body.parent) : null;
+        const oldParent = category.parent ? String(category.parent) : null;
+        if (newParent !== oldParent) {
+          parentChanged = true;
+        }
+      }
+
+      if (nameChanged || typeChanged || parentChanged) {
+        return res.status(400).json({ message: 'System categories cannot be renamed, moved, or retyped' });
+      }
     }
 
     const updateData = {};
