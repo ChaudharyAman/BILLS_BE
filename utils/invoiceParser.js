@@ -14,8 +14,11 @@
 
 const BUYER_LABEL_PATTERNS = [
   /^buyer(?:\s*:)?$/i,
+  /^buyer\b.*bill\s*to.*$/i,
   /^bill\s*to(?:\s*:)?$/i,
+  /^bill\s*to\b.*$/i,
   /^billed\s*to(?:\s*:)?$/i,
+  /^billed\s*to\b.*$/i,
   /^customer(?:\s*:)?$/i,
 ];
 
@@ -29,6 +32,7 @@ function preprocessText(rawText) {
   text = text.replace(/Rs\.?\s*/gi, 'Rs ');
   text = text.replace(/INR\s*/gi, 'Rs ');
   text = text.replace(/R\s+s\s+/gi, 'Rs ');
+  text = text.replace(/₹\s*/g, 'Rs ');
   text = text.replace(/₹\s*/g, 'Rs ');
   text = text.replace(/â‚¹\s*/g, 'Rs ');
   text = text.replace(/ī\s*(?=\d)/g, 'Rs ');
@@ -52,6 +56,24 @@ function parseAmount(value) {
 
 function sanitizeInvoiceNumber(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').replace(/[.,:]+$/, '');
+}
+
+function calculateItemTaxable(item = {}) {
+  const quantity = Number(item.quantity) || 0;
+  const price = Number(item.price) || 0;
+  const discount = Number(item.discount) || 0;
+  return Math.round(quantity * price * (1 - discount / 100) * 100) / 100;
+}
+
+function dedupeRepeatedPartyName(value = '') {
+  const words = String(value || '').trim().split(/\s+/).filter(Boolean);
+  if (words.length >= 4 && words.length % 2 === 0) {
+    const half = words.length / 2;
+    const first = words.slice(0, half).join(' ');
+    const second = words.slice(half).join(' ');
+    if (first.toLowerCase() === second.toLowerCase()) return first;
+  }
+  return String(value || '').trim();
 }
 
 function isLikelyMetadataLine(text) {
@@ -108,8 +130,8 @@ function detectSections(lines) {
   const itemsHeaderPattern = /(?=.*(?:s\.?\s*no|sr\.?\s*no|description|particular|goods|product))(?=.*(?:qty|quantity|qnty|rate|price|amount))/i;
   const itemsStart = lines.findIndex(line => itemsHeaderPattern.test(line.text));
   if (itemsStart !== -1) {
-    const totalsPattern = /(?:sub\s*total|total\s*amount|taxable\s*amount|grand\s*total|net\s*amount|amount\s*payable|amount\s*chargeable|^igst\b|^cgst\b|^sgst\b|^round\s*off\b|^total\b|^bill\s+details\b|continued\s+to\s+page)/i;
-    let itemsEnd = lines.findIndex((line, index) => index > itemsStart + 1 && totalsPattern.test(line.text));
+    const totalsPattern = /(?:sub\s*total|total\s*amount|taxable\s*amount|grand\s*total|net\s*amount|amount\s*payable|amount\s*chargeable|^round\s*off\b|^total\b|^bill\s+details\b|^(?:add\s*:\s*)?(?:igst|cgst|sgst)\b.*\d)/i;
+    let itemsEnd = lines.findIndex((line, index) => index > itemsStart + 3 && totalsPattern.test(line.text));
     if (itemsEnd === -1) itemsEnd = Math.min(itemsStart + 60, lines.length - 1);
     sections.itemsSection = { start: itemsStart, end: itemsEnd };
   } else {
@@ -139,6 +161,11 @@ function detectSections(lines) {
 }
 
 function normalizeDate(raw, monthMap, preferUSFormat = false) {
+  raw = String(raw || '')
+    .trim()
+    .replace(/\s*([\-/.])\s*/g, '$1')
+    .replace(/\s+/g, ' ');
+
   let match = raw.match(/^(\d{4})[-/.](\d{2})[-/.](\d{2})$/);
   if (match) return `${match[1]}-${match[2]}-${match[3]}`;
 
@@ -218,6 +245,11 @@ function isValidDate(dateStr) {
 
 function extractInvoiceNumber(lines, section) {
   for (let i = 0; i < lines.length; i++) {
+    const hashOnlyMatch = lines[i].text.match(/^#\s*([A-Z0-9/_-]+)$/i);
+    if (hashOnlyMatch && hashOnlyMatch[1]) return sanitizeInvoiceNumber(hashOnlyMatch[1]);
+  }
+
+  for (let i = 0; i < lines.length; i++) {
     if (!/invoice\s+no/i.test(lines[i].text)) continue;
     for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
       const match = lines[j].text.match(/\b([A-Z0-9]+(?:\/[A-Z0-9-]+){1,})\b/);
@@ -226,10 +258,13 @@ function extractInvoiceNumber(lines, section) {
   }
 
   const patterns = [
-    /Invoice\s+No\.?\s*:?\s*([A-Z0-9/_#-]+(?:\s*[A-Z0-9/_#-]+)*)/i,
+    /Invoice\s+No\.?\s*:?\s*([A-Z0-9/_#-]+(?:\s*[A-Z0-9/_#-]+)*?)(?=\s+(?:Place\s+of\s+Supply|Dated|Reverse\s+Charge|Bill\s+To|Ship\s+To|GSTIN|GST|$))/i,
     /Bill\s+No\.?\s*:?\s*([A-Z0-9/_#-]+(?:\s*[A-Z0-9/_#-]+)*)/i,
     /Ref(?:erence)?\s+No\.?\s*:?\s*([A-Z0-9/_#-]+(?:\s*[A-Z0-9/_#-]+)*)/i,
     /Invoice\s*#\s*([A-Z0-9/_#-]+)/i,
+    /(?:Quotation|Quote)\s*#\s*([A-Z0-9/_#-]+)/i,
+    /TAX\s+INVOICE\s*#\s*([A-Z0-9/_#-]+)/i,
+    /^#\s*([A-Z0-9/_#-]+)$/i,
     /\b(INV-?\d{4,})\b/i,
   ];
 
@@ -263,10 +298,17 @@ function extractInvoiceDate(lines, section, preferUSFormat = false) {
   };
 
   const patterns = [
+    /Issue\s+Date\s*:?\s*(\d{1,2}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{2,4})/i,
+    /Issue\s+Date\s*:?\s*(\d{1,2}\s*[-/.]\s*[A-Za-z]{3,9}\s*[-/.]\s*\d{2,4})/i,
+    /Issue\s+Date\s*:?\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})/i,
+    /Issue\s+Date\s*:?\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})/i,
     /(?:Invoice\s+)?Date\s*:?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})/i,
+    /(?:Invoice\s+)?Date\s*:?\s*(\d{1,2}\s*[-/.]\s*[A-Za-z]{3,9}\s*[-/.]\s*\d{2,4})/i,
     /(?:Invoice\s+)?Date\s*:?\s*(\d{4}[-/.]\d{2}[-/.]\d{2})/i,
     /(?:Invoice\s+)?Date\s*:?\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})/i,
     /(?:Invoice\s+)?Date\s*:?\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})/i,
+    /Dated\s*:?\s*(\d{1,2}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{2,4})/i,
+    /Dated\s*:?\s*(\d{1,2}\s*[-/.]\s*[A-Za-z]{3,9}\s*[-/.]\s*\d{2,4})/i,
     /\bdt\.?\s*(\d{1,2}[-/.][A-Za-z]{3,9}[-/.]\d{2,4})/i,
     /Ack\s+Date\s*:?\s*(\d{1,2}[-/.][A-Za-z]{3,9}[-/.]\d{2,4})/i,
     /\b(\d{2}[-/.]\d{2}[-/.]\d{4})\b/,
@@ -309,6 +351,7 @@ function extractDueDate(lines, section, preferUSFormat = false) {
 
   const patterns = [
     /Due\s+Date\s*:?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})/i,
+    /Due\s+Date\s*:?\s*(\d{1,2}\s*[-/.]\s*[A-Za-z]{3,9}\s*[-/.]\s*\d{2,4})/i,
     /Due\s+Date\s*:?\s*(\d{4}[-/.]\d{2}[-/.]\d{2})/i,
     /Due\s+Date\s*:?\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})/i,
     /Due\s+Date\s*:?\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})/i,
@@ -336,7 +379,7 @@ function extractPartyNameNearLabel(lines, labelPatterns) {
     if (candidate.length < 3) continue;
     if (isLikelyMetadataLine(candidate)) continue;
     if (/^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/.test(candidate)) continue;
-    return candidate;
+    return dedupeRepeatedPartyName(candidate);
   }
 
   return null;
@@ -345,6 +388,17 @@ function extractPartyNameNearLabel(lines, labelPatterns) {
 function extractClientName(lines, section) {
   const buyerName = extractPartyNameNearLabel(lines, BUYER_LABEL_PATTERNS);
   if (buyerName) return buyerName;
+
+  const dualBillShipIndex = lines.findIndex(line => /billed?\s*to\s*:.*shipped?\s*to\s*:/i.test(line.text));
+  if (dualBillShipIndex !== -1) {
+    for (let i = dualBillShipIndex + 1; i < Math.min(dualBillShipIndex + 5, lines.length); i++) {
+      const candidate = lines[i].text.trim().replace(/[.,]+$/, '');
+      if (candidate.length < 3) continue;
+      if (/^shipped?\s*to\b/i.test(candidate)) continue;
+      if (isLikelyMetadataLine(candidate)) continue;
+      return dedupeRepeatedPartyName(candidate);
+    }
+  }
 
   const searchLines = section ? lines.slice(section.start, section.end + 1) : lines;
   const patterns = [
@@ -357,7 +411,8 @@ function extractClientName(lines, section) {
   for (const pattern of patterns) {
     const raw = findFirstMatchingValue(searchLines, [pattern]);
     if (!raw) continue;
-    const name = raw.replace(/[.,]+$/, '');
+    const name = dedupeRepeatedPartyName(raw.replace(/[.,]+$/, ''));
+    if (/^shipped?\s*to\b/i.test(name)) continue;
     if (name.length >= 3 && name.length <= 100) return name;
   }
 
@@ -368,7 +423,7 @@ function extractClientName(lines, section) {
       if (candidate.length < 3) continue;
       if (/^(GST|GSTIN|Phone|Email|Address|State|PAN)/i.test(candidate)) continue;
       if (/^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/.test(candidate)) continue;
-      return candidate;
+      return dedupeRepeatedPartyName(candidate);
     }
   }
 
@@ -417,7 +472,17 @@ function extractPlaceOfSupply(lines) {
 
 function extractTotalAmount(lines, section) {
   const searchLines = section ? lines.slice(section.start, section.end + 1) : lines.slice(Math.floor(lines.length * 0.5));
+
+  for (const line of searchLines) {
+    if (!/grand\s+total/i.test(line.text)) continue;
+    const amounts = [...line.text.matchAll(/([\d,]+(?:\.\d+)?)/g)]
+      .map(match => parseAmount(match[1]))
+      .filter(value => value !== null);
+    if (amounts.length > 0) return Math.max(...amounts);
+  }
+
   const patterns = [
+    /Total\s+Value\s+\(in\s+figure\)\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/i,
     /(?:Grand\s+)?Total\s*(?:Amount)?\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/i,
     /Amount\s+Payable\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/i,
     /Net\s+(?:Amount|Total)\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/i,
@@ -430,15 +495,23 @@ function extractTotalAmount(lines, section) {
   for (const pattern of patterns) {
     const raw = findFirstMatchingValue(searchLines, [pattern]);
     const amount = parseAmount(raw);
-    if (amount && amount > 0) return amount;
+    if (amount !== null && amount >= 0) return amount;
   }
 
   for (const line of searchLines) {
-    if (!/total\s+inv\s+amt|grand\s+total|amount\s+payable/i.test(line.text)) continue;
+    if (!/total\s+inv\s+amt|grand\s+total|amount\s+payable|total\s+value\s+\(in\s+figure\)/i.test(line.text)) continue;
     const amounts = [...line.text.matchAll(/([\d,]+(?:\.\d+)?)/g)]
       .map(match => parseAmount(match[1]))
-      .filter(value => value && value > 0);
+      .filter(value => value !== null);
     if (amounts.length > 0) return Math.max(...amounts);
+  }
+
+  for (const line of searchLines) {
+    if (!/^Total\s*@\s*\d+(?:\.\d+)?%/i.test(line.text)) continue;
+    const amounts = [...line.text.matchAll(/([\d,]+(?:\.\d+)?)/g)]
+      .map(match => parseAmount(match[1]))
+      .filter(value => value !== null);
+    if (amounts.length > 0) return amounts[amounts.length - 1];
   }
 
   return null;
@@ -447,6 +520,7 @@ function extractTotalAmount(lines, section) {
 function extractSubTotal(lines, section) {
   const searchLines = section ? lines.slice(section.start, section.end + 1) : lines.slice(Math.floor(lines.length * 0.5));
   const patterns = [
+    /Total\s+Taxable\s+Value\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/i,
     /Sub\s*Total\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/i,
     /Taxable\s*(?:Value|Amount)\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/i,
     /Total\s+Before\s+Tax\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/i,
@@ -463,29 +537,51 @@ function extractSubTotal(lines, section) {
 }
 
 function extractTaxAmount(lines, section) {
-  const searchLines = section ? lines.slice(section.start, section.end + 1) : lines;
+  const searchPools = [];
+  if (section) searchPools.push(lines.slice(section.start, section.end + 1));
+  searchPools.push(lines);
 
-  const explicitTax = findFirstMatchingValue(searchLines, [
-    /(?:Total\s+)?(?:Tax|GST)\s*(?:Amount)?\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/i,
-  ]);
-  const explicitTaxAmount = parseAmount(explicitTax);
-  if (explicitTaxAmount !== null) return explicitTaxAmount;
+  for (const searchLines of searchPools) {
+    const explicitTax = findFirstMatchingValue(searchLines, [
+      /(?:Total\s+)?(?:Tax|GST)\s*(?:Amount)?\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/i,
+    ]);
+    const explicitTaxAmount = parseAmount(explicitTax);
+    if (explicitTaxAmount !== null) return explicitTaxAmount;
 
-  let totalTax = 0;
-  const componentPattern = /(?:CGST|SGST|IGST)\s*(?:[@(]?\s*\d+\.?\d*%?\)?)?\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/gi;
-  for (const line of searchLines) {
-    let match;
-    while ((match = componentPattern.exec(line.text)) !== null) {
-      totalTax += parseAmount(match[1]) || 0;
+    let totalTax = 0;
+    const componentPattern = /(?:CGST|SGST|IGST)\s*(?:[@(]?\s*\d+\.?\d*%?\)?)?\s*:?\s*(?:Rs\.?\s*)?([\d,]+(?:\.\d+)?)/gi;
+    for (const line of searchLines) {
+      let match;
+      while ((match = componentPattern.exec(line.text)) !== null) {
+        totalTax += parseAmount(match[1]) || 0;
+      }
     }
-  }
-  if (totalTax > 0) return Math.round(totalTax * 100) / 100;
+    if (totalTax > 0) return Math.round(totalTax * 100) / 100;
 
-  for (const line of searchLines) {
-    const tableMatch = line.text.match(/^\d{4,8}\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+\d+(?:\.\d+)?%\s+[\d,]+(?:\.\d+)?$/i);
-    if (tableMatch) {
-      const amount = parseAmount(tableMatch[2] || tableMatch[1]);
-      if (amount !== null) return amount;
+    for (const line of searchLines) {
+      if (!/^Add\s*:\s*(?:CGST|SGST|IGST)\b/i.test(line.text)) continue;
+      const match = line.text.match(/([\d,]+(?:\.\d+)?)\s*$/);
+      if (match) totalTax += parseAmount(match[1]) || 0;
+    }
+    if (totalTax > 0) return Math.round(totalTax * 100) / 100;
+
+    for (const line of searchLines) {
+      if (!/^Total\s*@\s*\d+(?:\.\d+)?%/i.test(line.text)) continue;
+      const amounts = [...line.text.matchAll(/([\d,]+(?:\.\d+)?)/g)]
+        .map(match => parseAmount(match[1]))
+        .filter(value => value !== null);
+      if (amounts.length >= 4) {
+        const summaryAmounts = amounts.slice(-4);
+        return Math.round((Number(summaryAmounts[1]) + Number(summaryAmounts[2])) * 100) / 100;
+      }
+    }
+
+    for (const line of searchLines) {
+      const tableMatch = line.text.match(/^\d{4,8}\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+\d+(?:\.\d+)?%\s+[\d,]+(?:\.\d+)?$/i);
+      if (tableMatch) {
+        const amount = parseAmount(tableMatch[2] || tableMatch[1]);
+        if (amount !== null) return amount;
+      }
     }
   }
 
@@ -552,8 +648,11 @@ function extractPODate(lines, preferUSFormat = false) {
 
 function extractDefaultTaxRate(lines) {
   const patterns = [
-    /\b(CGST|SGST|IGST|GST)\b[^\n%]*?(\d+(?:\.\d+)?)%/i,
+    /\b(CGST|SGST|IGST|GST)\b[^\n%]*?(\d+(?:\.\d+)?)\s*%/i,
     /^\d{4,8}\s+[\d,]+(?:\.\d+)?\s+[\d,]+(?:\.\d+)?\s+(\d+(?:\.\d+)?)%\s+[\d,]+(?:\.\d+)?$/i,
+    /Total\s*@\s*(\d+(?:\.\d+)?)%/i,
+    /^[\d,]+(?:\.\d+)?\s+[\d,]+(?:\.\d+)?\s+(\d+(?:\.\d+)?)%\s+[\d,]+(?:\.\d+)?$/i,
+    /^\d{4,8}\s+(\d+(?:\.\d+)?)%\s+[\d,]+(?:\.\d+)?\s+[\d,]+(?:\.\d+)?\s+[\d,]+(?:\.\d+)?\s+[\d,]+(?:\.\d+)?$/i,
   ];
 
   for (const line of lines) {
@@ -578,8 +677,188 @@ function extractDefaultTaxRate(lines) {
   return 0;
 }
 
-function extractItems(lines, section) {
+function extractRentalItems(lines, section, defaultTaxRate) {
   const items = [];
+  if (!section) return items;
+
+  for (let i = section.start + 1; i < section.end; i++) {
+    const line = lines[i];
+    if (!line) continue;
+
+    const match = line.text.match(
+      /^(\d+)\s+(.+?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\s+(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\s+([A-Z0-9-]{4,12})$/i
+    );
+
+    if (!match) continue;
+
+    const quantity = parseFloat(match[5]) || 1;
+    const price = parseAmount(match[4]) || parseAmount(match[3]) || 0;
+    const gst = defaultTaxRate || 0;
+
+    items.push({
+      name: match[2].trim().replace(/^[^A-Za-z0-9(]+/, ''),
+      quantity,
+      unit: 'pcs',
+      price,
+      gst,
+      discount: 0,
+      amount: gst > 0
+        ? Math.round((price * quantity * (1 + gst / 100)) * 100) / 100
+        : (parseAmount(match[3]) || Math.round(price * quantity * 100) / 100),
+      hsnCode: match[8] || '',
+    });
+  }
+
+  return items;
+}
+
+function extractMyBillItems(lines, section) {
+  const items = [];
+  if (!section) return items;
+
+  for (let i = section.start + 1; i < section.end; i++) {
+    const compactMatch = lines[i]?.text.match(
+      /^(\d+)[.)]?\s+(.+?)\s+([A-Z0-9-]{4,12})\s+(\d+(?:\.\d+)?)\s+([A-Za-z]+)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s*%\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)$/i
+    );
+    if (compactMatch) {
+      items.push({
+        name: compactMatch[2].trim(),
+        quantity: parseFloat(compactMatch[4]) || 1,
+        unit: compactMatch[5] || 'pcs',
+        price: parseAmount(compactMatch[8]) || parseAmount(compactMatch[6]) || 0,
+        gst: extractDefaultTaxRate(lines) || 0,
+        discount: parseAmount(compactMatch[7]) || 0,
+        amount: parseAmount(compactMatch[9]) || 0,
+        hsnCode: compactMatch[3] || '',
+      });
+      continue;
+    }
+
+    const startMatch = lines[i]?.text.match(/^(\d+)\s+(.+)$/);
+    if (!startMatch) continue;
+    if (/^Total\b/i.test(lines[i].text)) break;
+
+    const descParts = [startMatch[2].trim()];
+    let quantity = 1;
+    let unit = 'pcs';
+    let hsnCode = '';
+    let price = 0;
+    let taxable = 0;
+    let cgstAmount = 0;
+    let sgstAmount = 0;
+    let cgstRate = 0;
+    let sgstRate = 0;
+    let amount = 0;
+    let cursor = i + 1;
+    let consumed = i;
+
+    while (cursor < section.end) {
+      const text = lines[cursor].text;
+      if (/^\d+[.)]?\s+[A-Za-z]/.test(text) || /^(?:Total|Add\s*:|Grand\s+Total|Amount\s+Chargeable|Tax Amount)/i.test(text)) break;
+
+      let match = text.match(/^([A-Z0-9-]{4,12})\s+(\d+(?:\.\d+)?)$/i);
+      if (match) {
+        hsnCode = match[1];
+        quantity = parseFloat(match[2]) || quantity;
+        consumed = cursor;
+        cursor++;
+        continue;
+      }
+
+      match = text.match(/^([\d,]+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$/);
+      if (match && !price) {
+        price = parseAmount(match[1]) || 0;
+        taxable = price;
+        quantity = parseFloat(match[2]) || quantity;
+        consumed = cursor;
+        cursor++;
+        continue;
+      }
+
+      match = text.match(/^([A-Z0-9-]{4,12})\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)$/i);
+      if (match) {
+        hsnCode = match[1];
+        price = parseAmount(match[2]) || 0;
+        taxable = parseAmount(match[3]) || price;
+        cgstAmount = parseAmount(match[4]) || 0;
+        consumed = cursor;
+        cursor++;
+        continue;
+      }
+
+      if (/^(pcs|piece|pieces|unit|units|month|months|service|services)$/i.test(text)) {
+        unit = text;
+        consumed = cursor;
+        cursor++;
+        continue;
+      }
+
+      match = text.match(/^([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)$/);
+      if (match) {
+        price = parseAmount(match[1]) || 0;
+        taxable = parseAmount(match[2]) || price;
+        cgstAmount = parseAmount(match[3]) || 0;
+        consumed = cursor;
+        cursor++;
+        continue;
+      }
+
+      match = text.match(/^([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)$/);
+      if (match && price > 0) {
+        taxable = parseAmount(match[1]) || price;
+        cgstAmount = parseAmount(match[2]) || 0;
+        consumed = cursor;
+        cursor++;
+        continue;
+      }
+
+      match = text.match(/^(\d+(?:\.\d+)?)%$/);
+      if (match) {
+        if (!cgstRate) cgstRate = parseFloat(match[1]) || 0;
+        else if (!sgstRate) sgstRate = parseFloat(match[1]) || 0;
+        consumed = cursor;
+        cursor++;
+        continue;
+      }
+
+      match = text.match(/^([\d,]+(?:\.\d+)?)$/);
+      if (match) {
+        const numeric = parseAmount(match[1]) || 0;
+        if (cgstAmount > 0 && !sgstAmount) sgstAmount = numeric;
+        else amount = numeric;
+        consumed = cursor;
+        cursor++;
+        continue;
+      }
+
+      descParts.push(text);
+      consumed = cursor;
+      cursor++;
+    }
+
+    if (price > 0 || taxable > 0 || amount > 0 || (descParts.join(' ').trim() && consumed > i && quantity > 0)) {
+      const effectivePrice = price || taxable || 0;
+      const effectiveTaxable = taxable || effectivePrice * quantity;
+      const gst = Math.round((cgstRate + sgstRate) * 100) / 100;
+      items.push({
+        name: descParts.join(' ').replace(/\s+/g, ' ').trim(),
+        quantity,
+        unit,
+        price: effectivePrice,
+        gst,
+        discount: 0,
+        amount: amount || Math.round((effectiveTaxable + cgstAmount + sgstAmount) * 100) / 100,
+        hsnCode,
+      });
+      i = consumed;
+    }
+  }
+
+  return items;
+}
+
+function extractItems(lines, section) {
+  let items = [];
   if (!section) return items;
 
   const startIdx = section.start;
@@ -590,6 +869,19 @@ function extractItems(lines, section) {
   if (!headerLine) return items;
 
   const defaultTaxRate = extractDefaultTaxRate(lines);
+  const headerLineText = headerLine.text.toLowerCase();
+  const rentalItems = /particular/.test(headerLineText)
+    ? extractRentalItems(lines, section, defaultTaxRate)
+    : [];
+  const myBillItems = /(item|description|goods)/.test(headerLineText)
+    ? extractMyBillItems(lines, section)
+    : [];
+
+  items = [...rentalItems, ...myBillItems];
+  if (items.length > 0) {
+    return items;
+  }
+
   let separator = 'multispaces';
   const sampleLine = lines[startIdx + 1]?.text || '';
   if (sampleLine.includes('|')) separator = '|';
@@ -748,15 +1040,20 @@ function validateAndScore(result) {
     errors.push('No items found');
   }
 
-  if (result.totalAmount) {
+  if (result.totalAmount !== null && result.totalAmount !== undefined) {
     confidence += 10;
     if (result.items.length > 0) {
-      const itemsTotal = result.items.reduce((sum, item) => sum + (item.amount || 0), 0);
-      const difference = Math.abs(result.totalAmount - itemsTotal);
+      const computedSubTotal = result.items.reduce((sum, item) => sum + calculateItemTaxable(item), 0);
+      const computedTaxAmount = result.items.reduce((sum, item) => sum + ((calculateItemTaxable(item) * (Number(item.gst) || 0)) / 100), 0);
+      const computedGrandTotal = Math.round((computedSubTotal + computedTaxAmount + (Number(result.roundOff) || 0)) * 100) / 100;
+      const comparisonBase = result.subTotal !== null && result.taxAmount !== null
+        ? Math.round(((Number(result.subTotal) || 0) + (Number(result.taxAmount) || 0) + (Number(result.roundOff) || 0)) * 100) / 100
+        : computedGrandTotal;
+      const difference = Math.abs(result.totalAmount - comparisonBase);
       const tolerance = result.totalAmount * 0.05;
       if (difference <= tolerance) confidence += 15;
       else {
-        warnings.push(`Total mismatch: Invoice=Rs ${result.totalAmount}, Items Sum=Rs ${itemsTotal.toFixed(2)}`);
+        warnings.push(`Total mismatch: Invoice=Rs ${result.totalAmount}, Computed=Rs ${comparisonBase.toFixed(2)}`);
         if (difference > result.totalAmount * 0.2) confidence -= 10;
       }
     }
@@ -880,8 +1177,14 @@ function parseInvoice(rawText, fileName) {
       }
     });
 
-    const subTotal = extractSubTotal(lines, sections.totalsSection)
-      || (items.length > 0 ? Math.round(items.reduce((sum, item) => sum + (item.amount || 0), 0) * 100) / 100 : null);
+    const computedSubTotalFromItems = items.length > 0
+      ? Math.round(items.reduce((sum, item) => sum + calculateItemTaxable(item), 0) * 100) / 100
+      : null;
+
+    const extractedSubTotal = extractSubTotal(lines, sections.totalsSection);
+    const subTotal = extractedSubTotal !== null
+      ? extractedSubTotal
+      : computedSubTotalFromItems;
 
     const rawTaxAmount = extractTaxAmount(lines, sections.totalsSection);
 
@@ -911,8 +1214,11 @@ function parseInvoice(rawText, fileName) {
 
     const taxAmount = resolvedTaxAmount !== null ? resolvedTaxAmount : calculatedTaxAmount;
     const roundOff = extractRoundOff(lines, sections.totalsSection);
-    const totalAmount = extractTotalAmount(lines, sections.totalsSection)
-      || ((subTotal || 0) + (taxAmount || 0) + (roundOff || 0) || null);
+    const extractedTotalAmount = extractTotalAmount(lines, sections.totalsSection);
+    const computedTotalAmount = Math.round(((subTotal || 0) + (taxAmount || 0) + (roundOff || 0)) * 100) / 100;
+    const totalAmount = extractedTotalAmount !== null
+      ? extractedTotalAmount
+      : (items.length > 0 || subTotal !== null || taxAmount !== null ? computedTotalAmount : null);
 
     const result = {
       invoiceNumber,
