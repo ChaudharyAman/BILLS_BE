@@ -3,7 +3,7 @@ const { parseInvoiceWithNvidia, parseScannedInvoicePdfWithNvidia } = require('..
 
 function getPdfTarget(req) {
   const target = String(req.query?.target || 'invoice').toLowerCase();
-  return ['invoice', 'expense', 'income'].includes(target) ? target : 'invoice';
+  return ['invoice', 'expense', 'income', 'purchaseorder'].includes(target) ? target : 'invoice';
 }
 
 async function readPdfText(buffer) {
@@ -88,21 +88,23 @@ const extractInvoiceFromPDFAI = async (req, res) => {
     const fileName = req.file.originalname || 'unknown.pdf';
     const documentType = getPdfTarget(req);
 
-    let pdfData;
+    let pdfData = { text: '', total: 1 };
+    let parseWarning = '';
     try {
       pdfData = await readPdfText(req.file.buffer);
     } catch (pdfErr) {
       console.error('AI Invoice PDF Parse Error:', pdfErr);
-      return res.status(400).json({
-        message: 'Failed to read PDF file. The file may be corrupted or image-based (scanned).',
-        error: pdfErr.message,
-      });
+      parseWarning = `Embedded PDF text could not be read, so OCR/vision fallback was used: ${pdfErr.message}`;
     }
 
     const rawText = pdfData.text || '';
     const result = (!rawText || rawText.trim().length < 20)
       ? await parseScannedInvoicePdfWithNvidia(req.file.buffer, fileName, { documentType })
       : await parseInvoiceWithNvidia(rawText, fileName, { documentType });
+
+    if (parseWarning) {
+      result.warnings = [...(result.warnings || []), parseWarning];
+    }
 
     result.metadata = {
       ...result.metadata,

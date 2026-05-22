@@ -5,6 +5,9 @@ const { renderPdfPagesToImages } = require('./pdfVisionRenderer');
 const NVIDIA_BASE_URL = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
 const NVIDIA_MODEL = process.env.NVIDIA_INVOICE_MODEL || process.env.NVIDIA_MODEL || 'meta/llama-3.1-8b-instruct';
 const NVIDIA_VISION_MODEL = process.env.NVIDIA_INVOICE_VISION_MODEL || 'meta/llama-3.2-11b-vision-instruct';
+const TEXT_CHUNK_LINE_LIMIT = Number(process.env.NVIDIA_INVOICE_TEXT_CHUNK_LINES || 80);
+const TEXT_CHUNK_LIMIT = Number(process.env.NVIDIA_INVOICE_TEXT_CHUNK_LIMIT || 6);
+const TEXT_SINGLE_PASS_CHAR_LIMIT = Number(process.env.NVIDIA_INVOICE_TEXT_SINGLE_PASS_CHAR_LIMIT || 7000);
 
 function buildInvoiceJsonSchema(fileName = 'unknown.pdf') {
   return `{
@@ -75,9 +78,52 @@ function buildDocumentPerspectiveRules(documentType = 'invoice') {
 - invoiceNumber is the income invoice/receipt/reference number.`;
   }
 
+  if (documentType === 'purchaseorder') {
+    return `- Treat this as a purchase order or procurement document being recorded by the user.
+- vendorName is the supplier, seller, or vendor receiving the purchase order.
+- clientName is the buyer, purchaser, consignee, or issuing company if visible.
+- invoiceNumber is the PO number, order number, or document reference number.`;
+  }
+
   return `- vendorName is the seller, supplier, or invoice issuer if visible.
 - clientName is the buyer, customer, bill-to party, or recipient.
 - invoiceNumber is the invoice/bill/reference number.`;
+}
+
+function buildPageExtractionSchema(pageNumber = 1) {
+  return `{
+  "pageNumber": ${pageNumber},
+  "pageRole": "unknown",
+  "invoiceNumber": "",
+  "invoiceDate": "",
+  "dueDate": "",
+  "vendorName": "",
+  "vendorGST": "",
+  "clientName": "",
+  "clientGST": "",
+  "placeOfSupply": "",
+  "items": [
+    {
+      "name": "",
+      "quantity": 0,
+      "unit": "",
+      "price": 0,
+      "gst": 0,
+      "discount": 0,
+      "amount": 0,
+      "hsnCode": ""
+    }
+  ],
+  "subTotal": 0,
+  "taxAmount": 0,
+  "roundOff": 0,
+  "totalAmount": 0,
+  "paymentMode": "",
+  "poNumber": "",
+  "poDate": "",
+  "warnings": [],
+  "notes": []
+}`;
 }
 
 function buildInvoicePrompt(rawText, fileName = 'unknown.pdf', options = {}) {
@@ -107,6 +153,26 @@ Invoice text:
 ${rawText}`;
 }
 
+function buildTextPagePrompt(pageText, pageNumber, totalPages, fileName = 'unknown.pdf', options = {}) {
+  const documentType = options.documentType || 'invoice';
+  return `You are analyzing page ${pageNumber} of ${totalPages} from a ${documentType} PDF.
+Extract only the facts visible on this page/segment. Do not invent totals or items from other pages.
+
+Return ONLY a valid JSON object with this exact structure:
+${buildPageExtractionSchema(pageNumber)}
+
+Rules:
+${buildDocumentPerspectiveRules(documentType)}
+- pageRole must be one of: header, items, totals, mixed, unknown.
+- If a field is not clearly present on this page, leave it blank, zero, or empty.
+- Preserve item names exactly as closely as possible.
+- Keep warnings concise and factual.
+- Do not wrap the JSON in markdown.
+
+Page text:
+${pageText}`;
+}
+
 function buildScannedInvoicePrompt(fileName = 'unknown.pdf', options = {}) {
   const documentType = options.documentType || 'invoice';
   return `You are an expert invoice parser reading invoice pages from images rendered from a scanned PDF.
@@ -129,6 +195,24 @@ ${buildDocumentPerspectiveRules(documentType)}
 - Use empty strings, zero, or empty arrays when information is missing.
 - Preserve invoice item names as closely as possible.
 - If multiple pages are shown, combine them into one invoice.
+- Do not wrap the JSON in markdown.`;
+}
+
+function buildScannedPagePrompt(pageNumber, totalPages, fileName = 'unknown.pdf', options = {}) {
+  const documentType = options.documentType || 'invoice';
+  return `You are analyzing scanned page ${pageNumber} of ${totalPages} from a ${documentType} PDF.
+Extract only the facts visible on this page image. Do not infer items or totals from missing pages.
+
+Return ONLY a valid JSON object with this exact structure:
+${buildPageExtractionSchema(pageNumber)}
+
+Rules:
+${buildDocumentPerspectiveRules(documentType)}
+- pageRole must be one of: header, items, totals, mixed, unknown.
+- Read the page like OCR output and recover text conservatively.
+- If a field is not clearly visible on this page, leave it blank, zero, or empty.
+- Preserve item names exactly as closely as possible.
+- Keep warnings concise and factual.
 - Do not wrap the JSON in markdown.`;
 }
 
@@ -156,6 +240,37 @@ Input:
 ${rawContent}`;
 }
 
+function buildMultiPageConsolidationPrompt(pageExtractions, fileName = 'unknown.pdf', options = {}) {
+  const documentType = options.documentType || 'invoice';
+  const totalPages = pageExtractions.length;
+  const pagePayload = pageExtractions
+    .map((page) => `Page ${page.pageNumber}:\n${JSON.stringify(page.data, null, 2)}`)
+    .join('\n\n');
+
+  return `You are consolidating ${totalPages} extracted page results from one ${documentType} PDF into a single final document JSON.
+
+Return ONLY a valid JSON object with this exact structure:
+${buildInvoiceJsonSchema(fileName)}
+
+Rules:
+${buildDocumentPerspectiveRules(documentType)}
+- Merge all pages into one final document.
+- Prefer header pages for document numbers and dates.
+- Prefer totals pages for subtotal, taxAmount, roundOff, and totalAmount.
+- Merge line items from all pages in order and avoid duplicates.
+- If page-level totals and item math disagree, keep the explicit totals but add warnings.
+- "totalAmount" must be the final transaction total, never an outstanding balance or ledger balance.
+- Do not invent missing items, taxes, or party names.
+- Preserve useful warnings from page-level extraction.
+- confidence must reflect the overall combined certainty from all pages.
+- status must be one of: auto-approved, needs-review, low-confidence, rejected.
+- Dates must be YYYY-MM-DD.
+- Do not wrap the JSON in markdown.
+
+Page extraction inputs:
+${pagePayload}`;
+}
+
 function parseJsonObject(content = '') {
   const text = String(content || '').trim();
   if (!text) return {};
@@ -181,6 +296,42 @@ async function parsePossiblyLooseInvoiceJson(content, fileName, options = {}) {
     });
     return parseJsonObject(structuredContent);
   }
+}
+
+function splitRawTextIntoChunks(rawText) {
+  const normalized = String(rawText || '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) return [];
+
+  const pageBreakChunks = normalized
+    .split(/\f+/)
+    .map(chunk => chunk.trim())
+    .filter(Boolean);
+
+  if (pageBreakChunks.length > 1) {
+    return pageBreakChunks.slice(0, TEXT_CHUNK_LIMIT).map((content, index) => ({
+      pageNumber: index + 1,
+      content,
+      source: 'page',
+    }));
+  }
+
+  const lines = normalized.split('\n').map(line => line.trimEnd()).filter(Boolean);
+  if (lines.length <= TEXT_CHUNK_LINE_LIMIT && normalized.length <= TEXT_SINGLE_PASS_CHAR_LIMIT) {
+    return [{ pageNumber: 1, content: normalized, source: 'single' }];
+  }
+
+  const chunks = [];
+  for (let index = 0; index < lines.length && chunks.length < TEXT_CHUNK_LIMIT; index += TEXT_CHUNK_LINE_LIMIT) {
+    const slice = lines.slice(index, index + TEXT_CHUNK_LINE_LIMIT).join('\n').trim();
+    if (!slice) continue;
+    chunks.push({
+      pageNumber: chunks.length + 1,
+      content: slice,
+      source: 'chunk',
+    });
+  }
+
+  return chunks;
 }
 
 function formatToStandardDate(dateStr, preferUSFormat = false) {
@@ -536,6 +687,161 @@ function normalizeInvoiceResult(parsed, fileName, rawText, options = {}) {
   };
 }
 
+function dedupeStrings(values = []) {
+  return [...new Set(values.map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+function isPresentText(value) {
+  return typeof value === 'string' ? value.trim().length > 0 : Boolean(value);
+}
+
+function hasNumericValue(value) {
+  return value !== null && value !== undefined && Number.isFinite(Number(value));
+}
+
+function getStatusRank(status) {
+  if (status === 'auto-approved') return 3;
+  if (status === 'needs-review') return 2;
+  if (status === 'low-confidence') return 1;
+  return 0;
+}
+
+function getResultMetrics(result = {}) {
+  const items = Array.isArray(result.items) ? result.items : [];
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  const populatedFields = [
+    result.invoiceNumber,
+    result.invoiceDate,
+    result.dueDate,
+    result.vendorName,
+    result.vendorGST,
+    result.clientName,
+    result.clientGST,
+    result.placeOfSupply,
+    result.paymentMode,
+    result.poNumber,
+    result.poDate,
+  ].filter(isPresentText).length;
+
+  return {
+    itemsCount: items.length,
+    populatedFields,
+    hasSubtotal: hasNumericValue(result.subTotal),
+    hasTaxAmount: hasNumericValue(result.taxAmount),
+    hasTotalAmount: hasNumericValue(result.totalAmount),
+    severeFinancialWarnings: warnings.some(warning => /Reported subtotal|Reported tax total|Financial discrepancy|Total mismatch/i.test(String(warning || ''))),
+    confidence: Number(result.confidence) || 0,
+    statusRank: getStatusRank(result.status),
+  };
+}
+
+function choosePreferredText(preferred, fallback) {
+  return isPresentText(preferred) ? preferred : fallback;
+}
+
+function choosePreferredNumber(preferred, fallback) {
+  return hasNumericValue(preferred) ? Number(preferred) : fallback;
+}
+
+function getBuiltInPreferenceReasons(aiResult, builtInResult) {
+  const aiMetrics = getResultMetrics(aiResult);
+  const builtInMetrics = getResultMetrics(builtInResult);
+  const reasons = [];
+
+  if (
+    builtInMetrics.itemsCount > aiMetrics.itemsCount &&
+    (
+      builtInMetrics.itemsCount >= aiMetrics.itemsCount + 2 ||
+      (aiMetrics.itemsCount > 0 && builtInMetrics.itemsCount >= aiMetrics.itemsCount * 2)
+    )
+  ) {
+    reasons.push('more-complete-line-items');
+  }
+
+  if (aiMetrics.severeFinancialWarnings && !builtInMetrics.severeFinancialWarnings) {
+    reasons.push('financials-are-more-consistent');
+  }
+
+  if (
+    builtInMetrics.confidence >= aiMetrics.confidence + 15 &&
+    builtInMetrics.statusRank >= aiMetrics.statusRank
+  ) {
+    reasons.push('higher-confidence');
+  }
+
+  if (
+    builtInMetrics.populatedFields >= aiMetrics.populatedFields + 2 &&
+    builtInMetrics.confidence >= aiMetrics.confidence
+  ) {
+    reasons.push('more-complete-header-fields');
+  }
+
+  if (
+    (!aiMetrics.hasSubtotal && builtInMetrics.hasSubtotal) ||
+    (!aiMetrics.hasTaxAmount && builtInMetrics.hasTaxAmount) ||
+    (!aiMetrics.hasTotalAmount && builtInMetrics.hasTotalAmount)
+  ) {
+    reasons.push('more-complete-financial-summary');
+  }
+
+  return dedupeStrings(reasons);
+}
+
+function reconcileWithBuiltInTextParser(aiResult, builtInResult) {
+  const reasons = getBuiltInPreferenceReasons(aiResult, builtInResult);
+  if (!reasons.length) {
+    return aiResult;
+  }
+
+  const filteredAiWarnings = (Array.isArray(aiResult.warnings) ? aiResult.warnings : [])
+    .map(warning => String(warning || '').trim())
+    .filter(Boolean)
+    .filter(warning => !/Used sequential .* extraction and a consolidation pass|Reported subtotal|Reported tax total|Financial discrepancy/i.test(warning));
+
+  const warnings = dedupeStrings([
+    ...(Array.isArray(builtInResult.warnings) ? builtInResult.warnings : []),
+    ...filteredAiWarnings,
+    'AI output was reconciled with the built-in multi-page parser for higher accuracy.',
+  ]);
+
+  return {
+    ...aiResult,
+    invoiceNumber: choosePreferredText(builtInResult.invoiceNumber, aiResult.invoiceNumber),
+    invoiceDate: choosePreferredText(builtInResult.invoiceDate, aiResult.invoiceDate),
+    dueDate: choosePreferredText(builtInResult.dueDate, aiResult.dueDate),
+    clientName: choosePreferredText(builtInResult.clientName, aiResult.clientName),
+    clientGST: choosePreferredText(builtInResult.clientGST, aiResult.clientGST),
+    placeOfSupply: choosePreferredText(builtInResult.placeOfSupply, aiResult.placeOfSupply),
+    items: Array.isArray(builtInResult.items) && builtInResult.items.length ? builtInResult.items : aiResult.items,
+    subTotal: choosePreferredNumber(builtInResult.subTotal, aiResult.subTotal),
+    taxAmount: choosePreferredNumber(builtInResult.taxAmount, aiResult.taxAmount),
+    roundOff: choosePreferredNumber(builtInResult.roundOff, aiResult.roundOff),
+    totalAmount: choosePreferredNumber(builtInResult.totalAmount, aiResult.totalAmount),
+    paymentMode: choosePreferredText(builtInResult.paymentMode, aiResult.paymentMode),
+    poNumber: choosePreferredText(builtInResult.poNumber, aiResult.poNumber),
+    poDate: choosePreferredText(builtInResult.poDate, aiResult.poDate),
+    confidence: Math.max(Number(aiResult.confidence) || 0, Number(builtInResult.confidence) || 0),
+    status: builtInResult.status || aiResult.status,
+    errors: Array.isArray(builtInResult.errors) ? builtInResult.errors : aiResult.errors,
+    warnings,
+    metadata: {
+      ...(aiResult.metadata || {}),
+      provider: 'nvidia-openai-compatible+heuristic-reconciliation',
+      parsedWithAI: true,
+      reconciledWithBuiltIn: true,
+      reconciliationReasons: reasons,
+      aiConfidence: Number(aiResult.confidence) || 0,
+      builtInConfidence: Number(builtInResult.confidence) || 0,
+      aiStatus: aiResult.status || null,
+      builtInStatus: builtInResult.status || null,
+      itemsCount: Array.isArray(builtInResult.items) && builtInResult.items.length
+        ? builtInResult.items.length
+        : (aiResult.metadata?.itemsCount || 0),
+      totalLines: builtInResult.metadata?.totalLines || aiResult.metadata?.totalLines || 0,
+    },
+  };
+}
+
 function buildBuiltInFallback(rawText, fileName, warningMessage) {
   const fallback = parseInvoice(rawText, fileName);
   return {
@@ -584,6 +890,77 @@ function buildRejectedScannedResult(fileName, errorMessage, warningMessage = '')
   };
 }
 
+async function extractTextPagesSequentially(rawText, fileName, options = {}) {
+  const chunks = splitRawTextIntoChunks(rawText);
+  if (!chunks.length) return [];
+
+  const results = [];
+  for (const chunk of chunks) {
+    const content = await callNvidiaChat({
+      model: NVIDIA_MODEL,
+      messages: [{
+        role: 'user',
+        content: buildTextPagePrompt(chunk.content, chunk.pageNumber, chunks.length, fileName, options),
+      }],
+      maxTokens: 2200,
+      timeoutMs: Number(process.env.NVIDIA_INVOICE_TIMEOUT_MS || 30000),
+    });
+
+    results.push({
+      pageNumber: chunk.pageNumber,
+      source: chunk.source,
+      data: await parsePossiblyLooseInvoiceJson(content, fileName, options),
+    });
+  }
+
+  return results;
+}
+
+async function extractScannedPagesSequentially(images, fileName, options = {}) {
+  const results = [];
+
+  for (const image of images) {
+    const content = await callNvidiaChat({
+      model: NVIDIA_VISION_MODEL,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: buildScannedPagePrompt(image.pageNumber, images.length, fileName, options) },
+            {
+              type: 'image_url',
+              image_url: { url: image.dataUrl },
+            },
+          ],
+        },
+      ],
+      maxTokens: 1800,
+      timeoutMs: Number(process.env.NVIDIA_INVOICE_VISION_TIMEOUT_MS || 45000),
+    });
+
+    results.push({
+      pageNumber: image.pageNumber,
+      data: await parsePossiblyLooseInvoiceJson(content, fileName, options),
+    });
+  }
+
+  return results;
+}
+
+async function consolidatePageExtractions(pageExtractions, fileName, options = {}, model = NVIDIA_MODEL) {
+  const content = await callNvidiaChat({
+    model,
+    messages: [{
+      role: 'user',
+      content: buildMultiPageConsolidationPrompt(pageExtractions, fileName, options),
+    }],
+    maxTokens: 2400,
+    timeoutMs: Number(process.env.NVIDIA_INVOICE_TIMEOUT_MS || 30000),
+  });
+
+  return parsePossiblyLooseInvoiceJson(content, fileName, options);
+}
+
 async function callNvidiaChat({ model, messages, maxTokens = 2200, timeoutMs }) {
   const apiKey = process.env.NVIDIA_API_KEY;
   const response = await axios.post(
@@ -615,17 +992,37 @@ async function parseInvoiceWithNvidia(rawText, fileName, options = {}) {
   }
 
   try {
-    const content = await callNvidiaChat({
-      model: NVIDIA_MODEL,
-      messages: [{ role: 'user', content: buildInvoicePrompt(rawText, fileName, options) }],
-      timeoutMs: Number(process.env.NVIDIA_INVOICE_TIMEOUT_MS || 30000),
-    });
-    const parsed = await parsePossiblyLooseInvoiceJson(content, fileName, options);
-    return normalizeInvoiceResult(parsed, fileName, rawText, {
+    const textChunks = splitRawTextIntoChunks(rawText);
+    const useMultiPass = textChunks.length > 1 || textChunks[0]?.source !== 'single';
+
+    const parsed = useMultiPass
+      ? await consolidatePageExtractions(
+          await extractTextPagesSequentially(rawText, fileName, options),
+          fileName,
+          options,
+          NVIDIA_MODEL
+        )
+      : await parsePossiblyLooseInvoiceJson(
+          await callNvidiaChat({
+            model: NVIDIA_MODEL,
+            messages: [{ role: 'user', content: buildInvoicePrompt(rawText, fileName, options) }],
+            timeoutMs: Number(process.env.NVIDIA_INVOICE_TIMEOUT_MS || 30000),
+          }),
+          fileName,
+          options
+        );
+
+    const normalized = normalizeInvoiceResult(parsed, fileName, rawText, {
       model: NVIDIA_MODEL,
       provider: 'nvidia-openai-compatible',
       parsedWithAI: true,
+      extraWarnings: useMultiPass
+        ? [`Used sequential ${textChunks[0]?.source === 'page' ? 'page' : 'chunk'} extraction and a consolidation pass for better multi-page accuracy.`]
+        : [],
     });
+
+    const builtIn = parseInvoice(rawText, fileName);
+    return reconcileWithBuiltInTextParser(normalized, builtIn);
   } catch (error) {
     return buildBuiltInFallback(
       rawText,
@@ -658,32 +1055,15 @@ async function parseScannedInvoicePdfWithNvidia(pdfBuffer, fileName, options = {
       );
     }
 
-    const content = await callNvidiaChat({
-      model: NVIDIA_VISION_MODEL,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: buildScannedInvoicePrompt(fileName, options) },
-            ...rendered.images.map((image) => ({
-              type: 'image_url',
-              image_url: { url: image.dataUrl },
-            })),
-          ],
-        },
-      ],
-      maxTokens: 2200,
-      timeoutMs: Number(process.env.NVIDIA_INVOICE_VISION_TIMEOUT_MS || 45000),
-    });
-
-    const parsed = await parsePossiblyLooseInvoiceJson(content, fileName, options);
+    const pageExtractions = await extractScannedPagesSequentially(rendered.images, fileName, options);
+    const parsed = await consolidatePageExtractions(pageExtractions, fileName, options, NVIDIA_MODEL);
     const result = normalizeInvoiceResult(parsed, fileName, '', {
       model: NVIDIA_VISION_MODEL,
       provider: 'nvidia-vision',
       parsedWithAI: true,
       extraWarnings: [
         'The PDF had no readable embedded text, so OCR/vision parsing was used.',
-        'Vision output was normalized into strict invoice JSON.',
+        'Each page was read separately and then consolidated into one final document.',
       ],
     });
 

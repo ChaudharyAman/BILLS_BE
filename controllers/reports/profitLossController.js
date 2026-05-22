@@ -1,23 +1,9 @@
 const mongoose = require('mongoose');
 const Income = require('../../models/Income');
 const Expense = require('../../models/Expense');
+const { parseMonthlyDateRange } = require('../../utils/dateRange');
 
-const parseDateRange = (query) => {
-  const now = new Date();
-  const startDate = query.startDate ? new Date(query.startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
-  const endDate = query.endDate ? new Date(query.endDate) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-
-  if (query.startDate && Number.isNaN(startDate.getTime())) {
-    throw new Error('Invalid startDate');
-  }
-  if (query.endDate && Number.isNaN(endDate.getTime())) {
-    throw new Error('Invalid endDate');
-  }
-
-  return { startDate, endDate };
-};
-
-const aggregateByCategory = async (Model, userId, startDate, endDate) => {
+const aggregateByCategory = async (Model, userId, startDate, endDate, totalExpression = '$grandTotal') => {
   const matchUser = mongoose.Types.ObjectId.isValid(String(userId)) ? new mongoose.Types.ObjectId(String(userId)) : userId;
   return Model.aggregate([
     {
@@ -27,33 +13,47 @@ const aggregateByCategory = async (Model, userId, startDate, endDate) => {
         status: { $nin: ['DRAFT', 'CANCELLED'] },
       },
     },
-  { $group: { _id: '$category', total: { $sum: '$grandTotal' } } },
-  {
-    $lookup: {
-      from: 'categories',
-      localField: '_id',
-      foreignField: '_id',
-      as: 'category',
+    { $group: { _id: '$category', total: { $sum: totalExpression } } },
+    {
+      $lookup: {
+        from: 'categories',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'category',
+      },
     },
-  },
-  { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
-  {
-    $project: {
-      _id: 0,
-      categoryId: '$_id',
-      name: { $ifNull: ['$category.name', 'Uncategorized'] },
-      total: 1,
+    { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        _id: 0,
+        categoryId: '$_id',
+        name: { $ifNull: ['$category.name', 'Uncategorized'] },
+        total: 1,
+      },
     },
-  },
-  { $sort: { total: -1 } },
-]);
+    { $sort: { total: -1 } },
+  ]);
 };
 
 exports.getProfitLoss = async (req, res) => {
   try {
-    const { startDate, endDate } = parseDateRange(req.query);
+    const { startDate, endDate } = parseMonthlyDateRange(req.query);
+    const netRevenueExpression = {
+      $cond: [
+        { $gt: ['$subTotal', 0] },
+        '$subTotal',
+        {
+          $cond: [
+            { $gt: ['$taxTotal', 0] },
+            { $subtract: ['$grandTotal', '$taxTotal'] },
+            '$grandTotal',
+          ],
+        },
+      ],
+    };
+
     const [revenue, expenses] = await Promise.all([
-      aggregateByCategory(Income, req.user._id, startDate, endDate),
+      aggregateByCategory(Income, req.user._id, startDate, endDate, netRevenueExpression),
       aggregateByCategory(Expense, req.user._id, startDate, endDate),
     ]);
     const totalRevenue = revenue.reduce((sum, item) => sum + item.total, 0);

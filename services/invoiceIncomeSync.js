@@ -87,8 +87,8 @@ async function syncIncomeFromInvoice(invoice, session = null) {
     return null;
   }
 
-  const vendorRef = invoice.client?.clientRef || null;
-  const vendorName = String(invoice.client?.name || '').trim();
+  const clientRef = invoice.client?.clientRef || null;
+  const clientName = String(invoice.client?.name || '').trim();
   const incomeNumber = await buildSyncedIncomeNumber(invoice, session);
 
   const payload = {
@@ -97,13 +97,13 @@ async function syncIncomeFromInvoice(invoice, session = null) {
     sourceInvoice: invoice._id,
     incomeNumber,
     date: invoice.date || new Date(),
-    vendor: vendorRef || vendorName
+    vendor: undefined,
+    client: clientRef || clientName
       ? {
-          ...(vendorRef ? { vendorRef } : {}),
-          ...(vendorName ? { name: vendorName } : {}),
+          ...(clientRef ? { clientRef } : {}),
+          ...(clientName ? { name: clientName } : {}),
         }
       : undefined,
-    client: undefined,
     paymentMethod: invoice.paymentMode || '',
     reverseCharge: !!invoice.reverseCharge,
     items: mapInvoiceItemsToIncomeItems(invoice.items),
