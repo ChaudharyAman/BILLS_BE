@@ -79,24 +79,27 @@ const calculateTaxForRegime = (regime, annualTaxableIncome) => {
   let tax = 0;
 
   if (regime === 'new') {
-    if (income <= 300000) return 0;
-    if (income > 1500000) {
-      tax += (income - 1500000) * 0.30;
-      tax += 150000;
+    if (income <= 400000) return 0;
+    if (income > 2400000) {
+      tax += (income - 2400000) * 0.30;
+      tax += 300000;
+    } else if (income > 2000000) {
+      tax += (income - 2000000) * 0.25;
+      tax += 200000;
+    } else if (income > 1600000) {
+      tax += (income - 1600000) * 0.20;
+      tax += 120000;
     } else if (income > 1200000) {
-      tax += (income - 1200000) * 0.20;
-      tax += 90000;
-    } else if (income > 900000) {
-      tax += (income - 900000) * 0.15;
-      tax += 45000;
-    } else if (income > 600000) {
-      tax += (income - 600000) * 0.10;
-      tax += 15000;
-    } else if (income > 300000) {
-      tax += (income - 300000) * 0.05;
+      tax += (income - 1200000) * 0.15;
+      tax += 60000;
+    } else if (income > 800000) {
+      tax += (income - 800000) * 0.10;
+      tax += 20000;
+    } else if (income > 400000) {
+      tax += (income - 400000) * 0.05;
     }
 
-    if (income <= 700000) {
+    if (income <= 800000) {
       tax = 0;
     }
   } else {
