@@ -149,7 +149,7 @@ const buildPayrollWorkbook = (payrolls) => {
       Number(payroll.variablePay?.joiningBonus) || 0,
       Number(payroll.variablePay?.loyaltyBonus) || 0,
       Number(payroll.variablePay?.incentive) || 0,
-      Number(payroll.variablePay?.otherAllowanceArrear) || 0,
+      sumNamedAmounts(payroll.earnings?.otherEarnings) + (Number(payroll.variablePay?.otherAllowanceArrear) || 0),
       Number(payroll.variablePay?.specialBonus) || 0,
       Number(payroll.totalPayable) || 0,
       Number(payroll.deductions?.pfEmployee) || 0,
@@ -326,13 +326,13 @@ exports.processPayroll = async (req, res) => {
             designation: employee.designation,
             joiningDate: employee.joiningDate,
             monthlyCTC: employee.monthlyCTC,
-            pfEnabled: employee.pfEnabled,
-            esiEnabled: employee.esiEnabled,
-            ptEnabled: employee.ptEnabled,
-            lwfEnabled: employee.lwfEnabled,
-            gratuityEnabled: employee.gratuityEnabled,
-            includePfInCTC: employee.includePfInCTC,
-            includeGratuityInCTC: employee.includeGratuityInCTC,
+            pfEnabled: snapshot.master.pfEnabled !== false,
+            esiEnabled: snapshot.master.esiEnabled !== false,
+            ptEnabled: snapshot.master.ptEnabled !== false,
+            lwfEnabled: snapshot.master.lwfEnabled !== false,
+            gratuityEnabled: snapshot.master.gratuityEnabled !== false,
+            includePfInCTC: snapshot.master.includePfInCTC !== false,
+            includeGratuityInCTC: snapshot.master.includeGratuityInCTC !== false,
             taxRegime: employee.taxRegime,
             declarations: employee.declarations,
           },
@@ -605,7 +605,7 @@ exports.getPayrolls = async (req, res) => {
     const payrolls = await Payroll.find(query)
       .populate({
         path: 'employee',
-        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving',
+        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled basicPercent hraPercent',
         populate: { path: 'department', select: 'name code' },
       })
       .populate('expenseRef', 'expenseNumber date grandTotal')

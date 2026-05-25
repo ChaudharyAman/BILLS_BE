@@ -328,13 +328,55 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
 
 const buildPayrollSnapshot = (employee, configInput, attendance, adjustments = {}) => {
   const config = normalizeConfig(configInput);
-  const master = buildMasterSalaryStructure(employee, config);
+  
+  const mergedSource = {
+    ...employee,
+    pfEnabled: adjustments.pfEnabled !== undefined ? adjustments.pfEnabled : (employee.pfEnabled !== false),
+    esiEnabled: adjustments.esiEnabled !== undefined ? adjustments.esiEnabled : (employee.esiEnabled !== false),
+    ptEnabled: adjustments.ptEnabled !== undefined ? adjustments.ptEnabled : (employee.ptEnabled !== false),
+    lwfEnabled: adjustments.lwfEnabled !== undefined ? adjustments.lwfEnabled : (employee.lwfEnabled !== false),
+    gratuityEnabled: adjustments.gratuityEnabled !== undefined ? adjustments.gratuityEnabled : (employee.gratuityEnabled !== false),
+    includePfInCTC: adjustments.includePfInCTC !== undefined ? adjustments.includePfInCTC : (employee.includePfInCTC !== false),
+    includeGratuityInCTC: adjustments.includeGratuityInCTC !== undefined ? adjustments.includeGratuityInCTC : (employee.includeGratuityInCTC !== false),
+    basicPercent: adjustments.basicPercent !== undefined && adjustments.basicPercent !== null ? adjustments.basicPercent : employee.basicPercent,
+    hraPercent: adjustments.hraPercent !== undefined && adjustments.hraPercent !== null ? adjustments.hraPercent : employee.hraPercent,
+  };
+
+  const master = buildMasterSalaryStructure(mergedSource, config);
   const requestedWorkingDays = Number(attendance?.workingDays);
   const workingDays = Math.max(requestedWorkingDays || config.defaultWorkingDays, 1);
   const rawPaidDays = Number(attendance?.paidDays ?? attendance?.presentDays ?? workingDays);
   const paidDays = roundAmount(clamp(rawPaidDays || workingDays, 0, workingDays));
   const prorate = Math.min(paidDays / workingDays, 1);
   const lop = roundAmount(Math.max(workingDays - paidDays, 0));
+
+  let otherEarnings = [];
+  if (Array.isArray(adjustments.otherEarnings) && adjustments.otherEarnings.length > 0) {
+    otherEarnings = adjustments.otherEarnings.map(item => ({
+      name: item.name,
+      amount: roundAmount(item.amount)
+    }));
+  } else {
+    const profileAllowances = employee.salaryStructure?.otherAllowances || [];
+    otherEarnings = profileAllowances.map(item => ({
+      name: item.name,
+      amount: roundAmount((Number(item.amount) || 0) * prorate)
+    }));
+  }
+
+  let otherDeductions = [];
+  if (Array.isArray(adjustments.otherDeductions) && adjustments.otherDeductions.length > 0) {
+    otherDeductions = adjustments.otherDeductions.map(item => ({
+      name: item.name,
+      amount: roundAmount(item.amount)
+    }));
+  } else {
+    const profileDeductions = employee.deductions?.otherDeductions || [];
+    otherDeductions = profileDeductions.map(item => ({
+      name: item.name,
+      amount: roundAmount(Number(item.amount) || 0)
+    }));
+  }
 
   const earnings = {
     basic: roundAmount(master.basicMaster * prorate),
@@ -347,7 +389,7 @@ const buildPayrollSnapshot = (employee, configInput, attendance, adjustments = {
     overtime: roundAmount(adjustments.overtime),
     conveyance: roundAmount(master.conveyance * prorate),
     medicalAllowance: roundAmount(master.medicalAllowance * prorate),
-    otherEarnings: Array.isArray(adjustments.otherEarnings) ? adjustments.otherEarnings : [],
+    otherEarnings,
   };
   earnings.totalEarnings = roundAmount(
     Object.values(earnings).filter((value) => typeof value === 'number').reduce((sum, value) => sum + value, 0) +
@@ -398,7 +440,7 @@ const buildPayrollSnapshot = (employee, configInput, attendance, adjustments = {
     gratuityDeduction: roundAmount(adjustments.gratuityDeduction),
     loanDeduction: roundAmount(adjustments.loanDeduction),
     advanceDeduction: roundAmount(adjustments.advanceDeduction),
-    otherDeductions: Array.isArray(adjustments.otherDeductions) ? adjustments.otherDeductions : [],
+    otherDeductions,
   };
   deductions.totalDeductions = roundAmount(
     Object.entries(deductions)
