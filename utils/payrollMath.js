@@ -99,7 +99,7 @@ const calculateTaxForRegime = (regime, annualTaxableIncome) => {
       tax += (income - 400000) * 0.05;
     }
 
-    if (income <= 800000) {
+    if (income <= 1200000) {
       tax = 0;
     }
   } else {
@@ -131,7 +131,14 @@ const calculateTaxDetails = (employee, monthlyCTC, config, basicMaster, hraMaste
   // 1. New Regime calculations
   const standardDeductionNew = 75000;
   const netTaxableIncomeNew = Math.max(0, annualGrossEarnings - standardDeductionNew);
-  const annualTaxNewBase = calculateTaxForRegime('new', netTaxableIncomeNew);
+  let annualTaxNewBase = calculateTaxForRegime('new', netTaxableIncomeNew);
+  // Apply Marginal Relief under Section 87A for New Regime (Budget 2025 limit: ₹12 Lakhs)
+  if (netTaxableIncomeNew > 1200000) {
+    const excessIncome = netTaxableIncomeNew - 1200000;
+    if (annualTaxNewBase > excessIncome) {
+      annualTaxNewBase = excessIncome;
+    }
+  }
   const cessNew = roundAmount(annualTaxNewBase * 0.04);
   const annualTaxNew = roundAmount(annualTaxNewBase + cessNew);
   const monthlyTaxNew = roundAmount(annualTaxNew / 12);
@@ -230,8 +237,9 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const conveyance = roundAmount(source.salaryStructure?.conveyance);
   const medicalAllowance = roundAmount(source.salaryStructure?.medicalAllowance);
 
-  // ESI Calculation
-  const esiApplicable = esiEnabled && (basicMaster < config.esiBasicThreshold);
+  // ESI Calculation based on estimated Gross Wages (avoiding circular dependency)
+  const estimatedGross = monthlyCTC - pfEmployer - lwfEmployer - insurance - gratuity;
+  const esiApplicable = esiEnabled && (estimatedGross <= config.esiBasicThreshold);
   const esiEmployer = roundAmount(esiApplicable ? basicMaster * config.esiEmployerRate : 0);
   const esiEmployee = roundAmount(esiApplicable ? basicMaster * config.esiEmployeeRate : 0);
 
