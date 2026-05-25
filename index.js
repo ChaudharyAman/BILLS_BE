@@ -61,6 +61,8 @@ app.use('/api/incomes', require('./routes/incomeRoutes'));
 app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/departments', require('./routes/departmentRoutes'));
 app.use('/api/employees', require('./routes/employeeRoutes'));
+app.use('/api/loans', require('./routes/loanRoutes'));
+app.use('/api/reimbursements', require('./routes/reimbursementRoutes'));
 app.use('/api/payroll', require('./routes/payrollRoutes'));
 app.use('/api/payroll-components', require('./routes/payrollComponentRoutes'));
 app.use('/api/budgets', require('./routes/budgetRoutes'));

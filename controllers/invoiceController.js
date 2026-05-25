@@ -3,6 +3,7 @@ const Client = require('../models/Client');
 const Item = require('../models/Item');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
+const PurchaseOrder = require('../models/PurchaseOrder');
 const mongoose = require('mongoose');
 const escapeRegex = require('../utils/escapeRegex');
 const { buildAutoDocumentNumber } = require('../utils/documentNumber');
@@ -14,6 +15,62 @@ const { parseOptionalDateRange } = require('../utils/dateRange');
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
 const ACTIVE_INVOICE_STATUSES = ['SENT', 'PAID', 'PARTIAL', 'UNPAID'];
+
+function isInvoiceNumberDuplicateError(error) {
+  return (
+    error?.code === 11000 &&
+    (error?.keyPattern?.invoiceNo || String(error?.message || '').includes('invoiceNo'))
+  );
+}
+
+function escapeRegexLiteral(value = '') {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function generateNextUniqueInvoiceNumber({ userId, invoicePrefix }) {
+  const counterId = buildUserCounterId(userId, 'invoiceNo');
+  const normalizedPrefix = String(invoicePrefix || 'INV').trim().replace(/[-/\s]+$/g, '') || 'INV';
+  const pattern = new RegExp(`^${escapeRegexLiteral(normalizedPrefix)}-(\\d+)$`);
+
+  const existingInvoiceNumbers = await Invoice.find({
+    user: userId,
+    invoiceNo: { $regex: `^${escapeRegexLiteral(normalizedPrefix)}-\\d+$` },
+  })
+    .select('invoiceNo -_id')
+    .lean();
+
+  let maxExistingSeq = 0;
+  for (const entry of existingInvoiceNumbers) {
+    const match = pattern.exec(String(entry.invoiceNo || '').trim());
+    if (!match) continue;
+    const seq = Number(match[1]);
+    if (Number.isFinite(seq) && seq > maxExistingSeq) {
+      maxExistingSeq = seq;
+    }
+  }
+
+  await Counter.findOneAndUpdate(
+    { id: counterId },
+    { $max: { seq: maxExistingSeq } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const counter = await Counter.findOneAndUpdate(
+      { id: counterId },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+
+    const candidate = buildAutoDocumentNumber(normalizedPrefix, counter.seq);
+    const exists = await Invoice.exists({ user: userId, invoiceNo: candidate });
+    if (!exists) {
+      return candidate;
+    }
+  }
+
+  throw new Error('Could not reserve a unique invoice number.');
+}
 
 // Helper to calculate Financial Year (April - March)
 function getFinancialYear(date) {
@@ -341,6 +398,7 @@ exports.createInvoice = async (req, res) => {
       tds,
       tcs,
       drCr,
+      purchaseOrderRef,
     } = req.body;
     const resolvedImportSource = importSource || (req.body._fromPdfImport ? PDF_IMPORT_SOURCE : '');
 
@@ -372,12 +430,10 @@ exports.createInvoice = async (req, res) => {
       }
     } else {
       // Generate Invoice Number
-      const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(req.user._id, 'invoiceNo') },
-        { $inc: { seq: 1 } },
-        { returnDocument: 'after', upsert: true }
-      );
-      invoiceNo = buildAutoDocumentNumber(invoicePrefix, counter.seq);
+      invoiceNo = await generateNextUniqueInvoiceNumber({
+        userId: req.user._id,
+        invoicePrefix,
+      });
     }
 
     const client = await resolveClientForInvoice({
@@ -425,6 +481,14 @@ exports.createInvoice = async (req, res) => {
     const finalTcs = Number(tcs) || 0;
     const finalTds = Number(tds) || 0;
 
+    let linkedPo = null;
+    if (purchaseOrderRef && mongoose.Types.ObjectId.isValid(purchaseOrderRef)) {
+      linkedPo = await PurchaseOrder.findOne({ _id: purchaseOrderRef, user: req.user._id });
+      if (!linkedPo) {
+        return res.status(404).json({ message: 'Linked Purchase Order not found' });
+      }
+    }
+
     let finalStatus = status || 'DRAFT';
     let finalAdvance = Number(advancePaid) || 0;
     if (finalStatus === 'PAID') {
@@ -435,45 +499,81 @@ exports.createInvoice = async (req, res) => {
       finalStatus = 'PAID';
     }
 
-    const invoice = new Invoice({
-      user: req.user._id,
-      invoiceNo,
-      invoiceType,
-      date,
-      dueDate,
-      paymentMode,
-      paymentTerms,
-      client: clientSnapshot,
-      items: processedItems,
-      subTotal,
-      taxTotal,
-      totalCGST,
-      totalSGST,
-      totalIGST,
-      shippingCharges: finalShipping,
-      packagingCharges: finalPackaging,
-      customChargeLabel: customChargeLabel || 'Custom Amount',
-      discountTotal: finalDiscountTotal,
-      grandTotal,
-      advancePaid: finalAdvance,
-      balanceDue: finalBalance,
-      status: finalStatus,
-      shippingAddress: resolvedShippingAddress,
-      transport,
-      bankDetails,
-      placeOfSupply: clientState,
-      reverseCharge: !!reverseCharge,
-      fy: fy || getFinancialYear(date),
-      currency: currency || 'INR',
-      tds: finalTds,
-      tcs: finalTcs,
-      drCr: drCr || 'Dr.',
-      notes,
-      terms,
-      exciseDuty: buildExciseDutySnapshot(exciseDuty, totalExcise),
-    });
+    let newInvoice = null;
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const invoice = new Invoice({
+        user: req.user._id,
+        invoiceNo,
+        invoiceType,
+        date,
+        dueDate,
+        paymentMode,
+        paymentTerms,
+        client: clientSnapshot,
+        items: processedItems,
+        subTotal,
+        taxTotal,
+        totalCGST,
+        totalSGST,
+        totalIGST,
+        shippingCharges: finalShipping,
+        packagingCharges: finalPackaging,
+        customChargeLabel: customChargeLabel || 'Custom Amount',
+        discountTotal: finalDiscountTotal,
+        grandTotal,
+        advancePaid: finalAdvance,
+        balanceDue: finalBalance,
+        status: finalStatus,
+        shippingAddress: resolvedShippingAddress,
+        transport,
+        bankDetails,
+        placeOfSupply: clientState,
+        reverseCharge: !!reverseCharge,
+        fy: fy || getFinancialYear(date),
+        currency: currency || 'INR',
+        tds: finalTds,
+        tcs: finalTcs,
+        drCr: drCr || 'Dr.',
+        notes,
+        terms,
+        exciseDuty: buildExciseDutySnapshot(exciseDuty, totalExcise),
+        purchaseOrderRef: linkedPo ? linkedPo._id : undefined,
+      });
 
-    const newInvoice = await invoice.save();
+      try {
+        newInvoice = await invoice.save();
+        break;
+      } catch (error) {
+        if (!isInvoiceNumberDuplicateError(error)) {
+          throw error;
+        }
+        if (!isAuto) {
+          return res.status(400).json({ message: `Invoice number "${invoiceNo}" already exists.` });
+        }
+        invoiceNo = await generateNextUniqueInvoiceNumber({
+          userId: req.user._id,
+          invoicePrefix,
+        });
+      }
+    }
+
+    if (linkedPo) {
+      try {
+        linkedPo.billedAmount = roundToTwo((linkedPo.billedAmount || 0) + grandTotal);
+        if (linkedPo.billedAmount >= linkedPo.grandTotal) {
+          linkedPo.status = 'BILLED';
+        } else {
+          linkedPo.status = 'PARTIAL';
+        }
+        await linkedPo.save();
+      } catch (error) {
+        if (newInvoice) {
+          await Invoice.deleteOne({ _id: newInvoice._id });
+        }
+        throw error;
+      }
+    }
+
     await syncIncomeFromInvoice(newInvoice);
     res.status(201).json(newInvoice);
 
@@ -513,10 +613,16 @@ exports.updateInvoice = async (req, res) => {
       tds,
       tcs,
       drCr,
+      purchaseOrderRef,
     } = req.body;
 
     const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+
+    const oldPoId = invoice.purchaseOrderRef;
+    const oldGrandTotal = invoice.grandTotal || 0;
+    const oldStatus = invoice.status || 'DRAFT';
+    const oldIsActive = ACTIVE_INVOICE_STATUSES.includes(oldStatus);
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(req.user._id);
@@ -659,6 +765,80 @@ exports.updateInvoice = async (req, res) => {
     invoice.exciseDuty = buildExciseDutySnapshot(exciseDuty || invoice.exciseDuty, totalExcise);
     invoice.status = finalStatus;
 
+    const newPoId = purchaseOrderRef;
+    const newIsActive = ACTIVE_INVOICE_STATUSES.includes(finalStatus);
+
+    if (String(oldPoId || '') === String(newPoId || '')) {
+      // Linked PO remains the same
+      if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId)) {
+        const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, user: req.user._id });
+        if (linkedPo) {
+          let updated = false;
+          if (oldIsActive && newIsActive) {
+            // Amount changed
+            if (oldGrandTotal !== grandTotal) {
+              linkedPo.billedAmount = Math.max(0, roundToTwo((linkedPo.billedAmount || 0) - oldGrandTotal + grandTotal));
+              updated = true;
+            }
+          } else if (oldIsActive && !newIsActive) {
+            // Reverted from active to draft/cancelled
+            linkedPo.billedAmount = Math.max(0, roundToTwo((linkedPo.billedAmount || 0) - oldGrandTotal));
+            updated = true;
+          } else if (!oldIsActive && newIsActive) {
+            // Activated from draft/cancelled
+            linkedPo.billedAmount = roundToTwo((linkedPo.billedAmount || 0) + grandTotal);
+            updated = true;
+          }
+
+          if (updated) {
+            if (linkedPo.billedAmount >= linkedPo.grandTotal) {
+              linkedPo.status = 'BILLED';
+            } else if (linkedPo.billedAmount > 0) {
+              linkedPo.status = 'PARTIAL';
+            } else {
+              linkedPo.status = 'RECEIVED';
+            }
+            await linkedPo.save();
+          }
+        }
+      }
+    } else {
+      // Linked PO has changed
+      // 1. Revert Old PO if it was active
+      if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId) && oldIsActive) {
+        const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, user: req.user._id });
+        if (oldPo) {
+          oldPo.billedAmount = Math.max(0, roundToTwo((oldPo.billedAmount || 0) - oldGrandTotal));
+          if (oldPo.billedAmount >= oldPo.grandTotal) {
+            oldPo.status = 'BILLED';
+          } else if (oldPo.billedAmount > 0) {
+            oldPo.status = 'PARTIAL';
+          } else {
+            oldPo.status = 'RECEIVED';
+          }
+          await oldPo.save();
+        }
+      }
+
+      // 2. Apply to New PO if new invoice is active
+      if (newPoId && mongoose.Types.ObjectId.isValid(newPoId) && newIsActive) {
+        const newPo = await PurchaseOrder.findOne({ _id: newPoId, user: req.user._id });
+        if (!newPo) {
+          return res.status(404).json({ message: 'New Purchase Order not found' });
+        }
+        
+        newPo.billedAmount = roundToTwo((newPo.billedAmount || 0) + grandTotal);
+        if (newPo.billedAmount >= newPo.grandTotal) {
+          newPo.status = 'BILLED';
+        } else {
+          newPo.status = 'PARTIAL';
+        }
+        await newPo.save();
+      }
+    }
+
+    invoice.purchaseOrderRef = purchaseOrderRef || undefined;
+
     const updatedInvoice = await invoice.save();
     await syncIncomeFromInvoice(updatedInvoice);
     res.json(updatedInvoice);
@@ -682,6 +862,25 @@ exports.deleteInvoice = async (req, res) => {
        return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
     }
     // -------------------------------------------
+    const oldPoId = invoice.purchaseOrderRef;
+    const oldGrandTotal = invoice.grandTotal;
+    const isOldActive = ACTIVE_INVOICE_STATUSES.includes(invoice.status || 'DRAFT');
+
+    if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId) && isOldActive) {
+      const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, user: req.user._id });
+      if (oldPo) {
+        oldPo.billedAmount = Math.max(0, roundToTwo((oldPo.billedAmount || 0) - oldGrandTotal));
+        if (oldPo.billedAmount >= oldPo.grandTotal) {
+          oldPo.status = 'BILLED';
+        } else if (oldPo.billedAmount > 0) {
+          oldPo.status = 'PARTIAL';
+        } else {
+          oldPo.status = 'RECEIVED';
+        }
+        await oldPo.save();
+      }
+    }
+
     await invoice.deleteOne();
     await removeIncomeForInvoice(invoice._id, invoice.user);
     res.json({ message: 'Invoice deleted successfully' });
@@ -792,13 +991,12 @@ exports.bulkCreateInvoices = async (req, res) => {
       const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
       let invoiceNo = String(invData.invoiceNo || '').trim();
-      if (!invoiceNo || invoiceNo === 'Auto-generated') {
-        const counter = await Counter.findOneAndUpdate(
-          { id: buildUserCounterId(req.user._id, 'invoiceNo') },
-          { $inc: { seq: 1 } },
-          { returnDocument: 'after', upsert: true }
-        );
-        invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
+      const isAuto = !invoiceNo || invoiceNo === 'Auto-generated';
+      if (isAuto) {
+        invoiceNo = await generateNextUniqueInvoiceNumber({
+          userId: req.user._id,
+          invoicePrefix: userSettings?.invoicePrefix || 'INV',
+        });
       } else {
         const existingInvoice = await Invoice.findOne({ user: req.user._id, invoiceNo });
         if (existingInvoice) {
@@ -842,60 +1040,77 @@ exports.bulkCreateInvoices = async (req, res) => {
       const finalTaxBreakdown = importedTaxTotal !== null
         ? deriveImportedTaxBreakdown(finalTaxTotal, invData.invoiceType || 'Tax Invoice', isIntraState)
         : { totalCGST, totalSGST, totalIGST };
-        const invoice = new Invoice({
-          invoiceNo,
-          invoiceType: invData.invoiceType || 'Tax Invoice',
-          date: invData.date || new Date(),
-          dueDate: invData.dueDate || new Date(),
-        paymentMode: invData.paymentMode || '',
-        paymentTerms: invData.paymentTerms || '',
-        shippingAddress: invData.shippingAddress,
-        transport: invData.transport,
-        bankDetails: invData.bankDetails,
-        placeOfSupply: invData.placeOfSupply || clientState,
-        reverseCharge: !!invData.reverseCharge,
-        fy: invData.fy || getFinancialYear(invData.date || new Date()),
-          currency: invData.currency || 'INR',
-          tds: finalTds,
-          tcs: Number(invData.tcs) || 0,
-          drCr: invData.drCr || 'Dr.',
-          customChargeLabel: invData.customChargeLabel || 'Custom Amount',
-          clientRef: client._id,
-          client: {
-             clientRef: client._id,
-             name: client.name,
-             email: client.email,
-           phone: client.phone,
-           address: {
-             line1: client.billingAddress?.line1 || '',
-             line2: client.billingAddress?.line2 || '',
-             city: client.billingAddress?.city || '',
-             state: client.billingAddress?.state || '',
-             zip: client.billingAddress?.zip || '',
-             country: client.billingAddress?.country || 'India',
-           },
-           gstin: client.gstin || '',
-        },
-        items: processedItems,
-        subTotal: finalSubTotal,
-        taxTotal: finalTaxTotal,
-        totalCGST: finalTaxBreakdown.totalCGST,
-        totalSGST: finalTaxBreakdown.totalSGST,
-        totalIGST: finalTaxBreakdown.totalIGST,
-        shippingCharges: finalShipping, packagingCharges: finalPackaging,
-        discountTotal: finalDiscount,
-          grandTotal: finalGrandTotal,
-          advancePaid: tempAdvancePaid,
-          balanceDue: tempBalanceDue,
-          paymentDate: invData.paymentDate || undefined,
-          status: finalStatus,
-          notes: String(invData.notes || '').trim(),
-          terms: invData.terms || '',
-          exciseDuty: buildExciseDutySnapshot(invData.exciseDuty, finalExciseTotal),
-          user: req.user._id
-        });
-      
-      const savedInvoice = await invoice.save();
+        let savedInvoice = null;
+        for (let attempt = 0; attempt < 25; attempt += 1) {
+          const invoice = new Invoice({
+            invoiceNo,
+            invoiceType: invData.invoiceType || 'Tax Invoice',
+            date: invData.date || new Date(),
+            dueDate: invData.dueDate || new Date(),
+            paymentMode: invData.paymentMode || '',
+            paymentTerms: invData.paymentTerms || '',
+            shippingAddress: invData.shippingAddress,
+            transport: invData.transport,
+            bankDetails: invData.bankDetails,
+            placeOfSupply: invData.placeOfSupply || clientState,
+            reverseCharge: !!invData.reverseCharge,
+            fy: invData.fy || getFinancialYear(invData.date || new Date()),
+            currency: invData.currency || 'INR',
+            tds: finalTds,
+            tcs: Number(invData.tcs) || 0,
+            drCr: invData.drCr || 'Dr.',
+            customChargeLabel: invData.customChargeLabel || 'Custom Amount',
+            clientRef: client._id,
+            client: {
+               clientRef: client._id,
+               name: client.name,
+               email: client.email,
+               phone: client.phone,
+               address: {
+                 line1: client.billingAddress?.line1 || '',
+                 line2: client.billingAddress?.line2 || '',
+                 city: client.billingAddress?.city || '',
+                 state: client.billingAddress?.state || '',
+                 zip: client.billingAddress?.zip || '',
+                 country: client.billingAddress?.country || 'India',
+               },
+               gstin: client.gstin || '',
+            },
+            items: processedItems,
+            subTotal: finalSubTotal,
+            taxTotal: finalTaxTotal,
+            totalCGST: finalTaxBreakdown.totalCGST,
+            totalSGST: finalTaxBreakdown.totalSGST,
+            totalIGST: finalTaxBreakdown.totalIGST,
+            shippingCharges: finalShipping, packagingCharges: finalPackaging,
+            discountTotal: finalDiscount,
+            grandTotal: finalGrandTotal,
+            advancePaid: tempAdvancePaid,
+            balanceDue: tempBalanceDue,
+            paymentDate: invData.paymentDate || undefined,
+            status: finalStatus,
+            notes: String(invData.notes || '').trim(),
+            terms: invData.terms || '',
+            exciseDuty: buildExciseDutySnapshot(invData.exciseDuty, finalExciseTotal),
+            user: req.user._id
+          });
+
+          try {
+            savedInvoice = await invoice.save();
+            break;
+          } catch (error) {
+            if (!isInvoiceNumberDuplicateError(error)) {
+              throw error;
+            }
+            if (!isAuto) {
+              throw new Error(`Invoice number "${invoiceNo}" already exists.`);
+            }
+            invoiceNo = await generateNextUniqueInvoiceNumber({
+              userId: req.user._id,
+              invoicePrefix: userSettings?.invoicePrefix || 'INV',
+            });
+          }
+        }
       await syncIncomeFromInvoice(savedInvoice);
       createdInvoices.push(savedInvoice);
     }

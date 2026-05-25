@@ -67,10 +67,11 @@ const PurchaseOrderSchema = new mongoose.Schema({
   grandTotal: { type: Number, default: 0 },
   advancePaid: { type: Number, default: 0 },
   balanceDue: { type: Number, default: 0 }, // Added: controller computes and sets this
+  billedAmount: { type: Number, default: 0 },
 
   status: {
     type: String,
-    enum: ['DRAFT', 'SENT', 'ACCEPTED', 'RECEIVED', 'REJECTED', 'BILLED', 'CANCELLED'],
+    enum: ['DRAFT', 'SENT', 'ACCEPTED', 'RECEIVED', 'REJECTED', 'PARTIAL', 'BILLED', 'CANCELLED'],
     default: 'DRAFT',
   },
 

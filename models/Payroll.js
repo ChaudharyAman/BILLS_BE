@@ -5,84 +5,172 @@ const NamedAmountSchema = new mongoose.Schema({
   amount: { type: Number, default: 0 },
 }, { _id: false });
 
+const sumNamedAmounts = (items = []) => items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+
 const PayrollSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true },
-
   month: { type: Number, required: true, min: 1, max: 12 },
   year: { type: Number, required: true },
   paymentDate: Date,
 
+  workingDays: { type: Number, default: 26 },
+  paidDays: { type: Number, default: 26 },
+  paidLeaves: { type: Number, default: 0 },
+  unpaidLeaves: { type: Number, default: 0 },
+  lop: { type: Number, default: 0 },
+
   earnings: {
     basic: { type: Number, default: 0 },
     hra: { type: Number, default: 0 },
-    conveyance: { type: Number, default: 0 },
-    medicalAllowance: { type: Number, default: 0 },
+    flexiAmount: { type: Number, default: 0 },
+    broadband: { type: Number, default: 0 },
+    petrol: { type: Number, default: 0 },
+    lta: { type: Number, default: 0 },
     specialAllowance: { type: Number, default: 0 },
     overtime: { type: Number, default: 0 },
-    bonus: { type: Number, default: 0 },
-    incentives: { type: Number, default: 0 },
+    conveyance: { type: Number, default: 0 },
+    medicalAllowance: { type: Number, default: 0 },
     otherEarnings: [NamedAmountSchema],
     totalEarnings: { type: Number, required: true },
   },
 
+  employerContributions: {
+    pfEmployer: { type: Number, default: 0 },
+    esiEmployer: { type: Number, default: 0 },
+    gratuity: { type: Number, default: 0 },
+    lwfEmployer: { type: Number, default: 0 },
+    insuranceEmployer: { type: Number, default: 0 },
+    nps: { type: Number, default: 0 },
+    grossTotalSalary: { type: Number, default: 0 },
+  },
+
+  variablePay: {
+    joiningBonus: { type: Number, default: 0 },
+    loyaltyBonus: { type: Number, default: 0 },
+    incentive: { type: Number, default: 0 },
+    specialBonus: { type: Number, default: 0 },
+    otherAllowanceArrear: { type: Number, default: 0 },
+    totalVariablePay: { type: Number, default: 0 },
+  },
+
+  totalPayable: { type: Number, default: 0 },
+
   deductions: {
-    pf: { type: Number, default: 0 },
-    esi: { type: Number, default: 0 },
+    pfEmployee: { type: Number, default: 0 },
+    esiEmployee: { type: Number, default: 0 },
     professionalTax: { type: Number, default: 0 },
     tds: { type: Number, default: 0 },
+    insuranceEmployee: { type: Number, default: 0 },
+    lwfEmployee: { type: Number, default: 0 },
+    gratuityDeduction: { type: Number, default: 0 },
     loanDeduction: { type: Number, default: 0 },
     advanceDeduction: { type: Number, default: 0 },
     otherDeductions: [NamedAmountSchema],
     totalDeductions: { type: Number, required: true },
   },
 
-  workingDays: { type: Number, default: 26 },
-  presentDays: { type: Number, default: 26 },
-  paidLeaves: { type: Number, default: 0 },
-  unpaidLeaves: { type: Number, default: 0 },
-
   netSalary: { type: Number, required: true },
   status: {
     type: String,
-    enum: ['draft', 'processed', 'paid', 'cancelled'],
+    enum: ['draft', 'processed', 'approved', 'paid', 'cancelled'],
     default: 'draft',
     index: true,
   },
-
+  approvalWorkflow: [{
+    status: { type: String, required: true },
+    actor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    remarks: { type: String, default: '' },
+    timestamp: { type: Date, default: Date.now },
+  }],
+  employeeSnapshot: {
+    employeeId: String,
+    firstName: String,
+    lastName: String,
+    email: String,
+    designation: String,
+    joiningDate: Date,
+    monthlyCTC: Number,
+    pfEnabled: Boolean,
+    esiEnabled: Boolean,
+    ptEnabled: Boolean,
+    lwfEnabled: Boolean,
+    gratuityEnabled: Boolean,
+    includePfInCTC: Boolean,
+    includeGratuityInCTC: Boolean,
+    taxRegime: String,
+    declarations: mongoose.Schema.Types.Mixed,
+  },
+  reimbursements: [{
+    name: String,
+    claimed: { type: Number, default: 0 },
+    approved: { type: Number, default: 0 },
+    billUrl: { type: String, default: '' },
+  }],
+  totalReimbursementApproved: { type: Number, default: 0 },
   paymentMethod: String,
   transactionId: String,
   notes: String,
+  remarks: String,
   expenseRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense', default: null },
 }, { timestamps: true });
 
-const sumNamedAmounts = (items = []) => items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-
 PayrollSchema.pre('validate', function() {
   const earnings = this.earnings || {};
+  const employerContributions = this.employerContributions || {};
+  const variablePay = this.variablePay || {};
   const deductions = this.deductions || {};
 
   earnings.totalEarnings =
     (Number(earnings.basic) || 0) +
     (Number(earnings.hra) || 0) +
-    (Number(earnings.conveyance) || 0) +
-    (Number(earnings.medicalAllowance) || 0) +
+    (Number(earnings.flexiAmount) || 0) +
+    (Number(earnings.broadband) || 0) +
+    (Number(earnings.petrol) || 0) +
+    (Number(earnings.lta) || 0) +
     (Number(earnings.specialAllowance) || 0) +
     (Number(earnings.overtime) || 0) +
-    (Number(earnings.bonus) || 0) +
-    (Number(earnings.incentives) || 0) +
+    (Number(earnings.conveyance) || 0) +
+    (Number(earnings.medicalAllowance) || 0) +
     sumNamedAmounts(earnings.otherEarnings);
 
+  employerContributions.grossTotalSalary =
+    earnings.totalEarnings +
+    (Number(employerContributions.pfEmployer) || 0) +
+    (Number(employerContributions.esiEmployer) || 0) +
+    (Number(employerContributions.gratuity) || 0) +
+    (Number(employerContributions.lwfEmployer) || 0) +
+    (Number(employerContributions.insuranceEmployer) || 0) +
+    (Number(employerContributions.nps) || 0);
+
+  variablePay.totalVariablePay =
+    (Number(variablePay.joiningBonus) || 0) +
+    (Number(variablePay.loyaltyBonus) || 0) +
+    (Number(variablePay.incentive) || 0) +
+    (Number(variablePay.specialBonus) || 0) +
+    (Number(variablePay.otherAllowanceArrear) || 0);
+
+  this.totalPayable = employerContributions.grossTotalSalary + variablePay.totalVariablePay;
+
   deductions.totalDeductions =
-    (Number(deductions.pf) || 0) +
-    (Number(deductions.esi) || 0) +
+    (Number(deductions.pfEmployee) || 0) +
+    (Number(deductions.esiEmployee) || 0) +
     (Number(deductions.professionalTax) || 0) +
     (Number(deductions.tds) || 0) +
+    (Number(deductions.insuranceEmployee) || 0) +
+    (Number(deductions.lwfEmployee) || 0) +
+    (Number(deductions.gratuityDeduction) || 0) +
     (Number(deductions.loanDeduction) || 0) +
     (Number(deductions.advanceDeduction) || 0) +
     sumNamedAmounts(deductions.otherDeductions);
 
-  this.netSalary = earnings.totalEarnings - deductions.totalDeductions;
+  this.totalReimbursementApproved = (this.reimbursements || []).reduce((sum, item) => sum + (Number(item.approved) || 0), 0);
+
+  this.netSalary = Math.max(0, (Number(earnings.totalEarnings) || 0) + (Number(variablePay.totalVariablePay) || 0) + (Number(this.totalReimbursementApproved) || 0) - (Number(deductions.totalDeductions) || 0));
+  this.earnings = earnings;
+  this.employerContributions = employerContributions;
+  this.variablePay = variablePay;
+  this.deductions = deductions;
 });
 
 PayrollSchema.index({ user: 1, employee: 1, month: 1, year: 1 }, { unique: true });
