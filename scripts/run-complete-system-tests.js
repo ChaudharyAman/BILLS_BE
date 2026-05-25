@@ -865,6 +865,186 @@ async function expenseAndBillingCases() {
   skip('Real Razorpay checkout success flow', 'Needs live payment sandbox and browser callback');
 }
 
+async function payrollAndEmployeeCases() {
+  await run('Department create, fetch and delete', async () => {
+    const deptName = unique('Engineering');
+    const create = await api('POST', '/api/departments', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: { name: deptName, code: 'ENG' }
+    });
+    state.ids.department = create.data._id;
+    ok(create.data._id, 'Department create failed');
+    return deptName;
+  });
+
+  await run('Employee create, dynamic active list mid-month proration, salary revise', async () => {
+    const employeeId = unique('EMP');
+    const create = await api('POST', '/api/employees', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        employeeId,
+        firstName: 'Aman',
+        lastName: 'Tomar',
+        email: `${employeeId}@test.com`,
+        joiningDate: '2026-05-15', // Mid-month joining
+        monthlyCTC: 10000,
+        department: state.ids.department,
+        pfEnabled: true,
+        esiEnabled: true,
+        ptEnabled: true,
+        lwfEnabled: true,
+        gratuityEnabled: true,
+        includePfInCTC: true,
+        includeGratuityInCTC: true
+      }
+    });
+    state.ids.employee = create.data._id;
+    ok(create.data._id, 'Employee create failed');
+
+    // Dynamic Active List Query Mid-month Join
+    const list = await api('GET', `/api/employees/active?month=5&year=2026`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(list.data.some(x => x._id === state.ids.employee), 'Employee mid-month joining not returned in active list');
+
+    // Revise salary
+    const revise = await api('POST', `/api/employees/${state.ids.employee}/salary-revision`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        newCTC: 12000,
+        effectiveDate: '2026-06-01',
+        reason: 'Performance appraisal'
+      }
+    });
+    ok(revise.data.monthlyCTC === 12000, 'Salary revision new CTC mismatch');
+    return employeeId;
+  });
+
+  await run('Loan create, approve, and payroll EMI amortization', async () => {
+    // Create loan
+    const create = await api('POST', '/api/loans', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        employee: state.ids.employee,
+        principalAmount: 5000,
+        emiAmount: 1000,
+        interestRate: 0,
+        status: 'pending_approval'
+      }
+    });
+    state.ids.loan = create.data._id;
+    ok(create.data.status === 'pending_approval', 'Loan status should default to pending_approval');
+
+    // Approve loan
+    const approve = await api('PUT', `/api/loans/${state.ids.loan}/status`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: { status: 'active' }
+    });
+    ok(approve.data.status === 'active', 'Loan status did not transition to active');
+
+    // Settle / Amortize via payroll processing
+    const calculate = await api('POST', '/api/payroll/calculate-salary', {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        monthlyCTC: 10000,
+        pfEnabled: true,
+        esiEnabled: true,
+        ptEnabled: true,
+        lwfEnabled: true,
+        gratuityEnabled: true,
+        includePfInCTC: true,
+        includeGratuityInCTC: true,
+        basicPercent: 50,
+        hraPercent: 50
+      }
+    });
+    ok(calculate.data.monthlyCTC === 10000, 'Salary calculator preview math mismatch');
+
+    // Process payroll batch
+    const process = await api('POST', '/api/payroll/process', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        month: 5,
+        year: 2026,
+        saveAsDraft: false,
+        employees: [{
+          employeeId: state.ids.employee,
+          workingDays: 26,
+          paidDays: 26,
+          paidLeaves: 0,
+          unpaidLeaves: 0,
+          adjustments: {
+            pfEnabled: true,
+            esiEnabled: true,
+            ptEnabled: true,
+            lwfEnabled: true,
+            gratuityEnabled: true,
+            includePfInCTC: true,
+            includeGratuityInCTC: true,
+            basicPercent: 50,
+            hraPercent: 50,
+            tds: 0
+          }
+        }]
+      }
+    });
+    ok(process.data.success.length === 1, 'Payroll process bulk run failed');
+    const payrollId = process.data.success[0].payrollId;
+
+    // Mark paid to trigger amortization
+    await api('POST', `/api/payroll/${payrollId}/mark-paid`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        paymentDate: '2026-05-31',
+        paymentMethod: 'Bank Transfer'
+      }
+    });
+
+    // Fetch and check loan remaining balance
+    const verify = await api('GET', `/api/loans/${state.ids.loan}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(verify.data.remainingBalance === 4000, `EMI was not amortized. Balance: ${verify.data.remainingBalance}`);
+    ok(verify.data.repaymentLedger.length === 1, 'Repayment ledger log missing');
+    return 'Amortization verified';
+  });
+
+  await run('Reimbursement claim submit, approve, and payroll verification', async () => {
+    // Submit claim
+    const create = await api('POST', '/api/reimbursements', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        employee: state.ids.employee,
+        category: 'broadband',
+        amount: 850,
+        billUrl: 'https://cloudinary.com/receipt.pdf'
+      }
+    });
+    state.ids.claim = create.data._id;
+    ok(create.data.status === 'pending', 'Reimbursement status should default to pending');
+
+    // Approve claim
+    const approve = await api('PUT', `/api/reimbursements/${state.ids.claim}/status`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: { status: 'approved', approverRemarks: 'Approved verified internet receipt' }
+    });
+    ok(approve.data.status === 'approved', 'Reimbursement claim was not approved');
+    return 'Reimbursement verified';
+  });
+}
+
 async function writeReportAndClose(exitCode) {
   try {
     fs.writeFileSync(REPORT_PATH, reportText(), 'utf8');
@@ -904,6 +1084,7 @@ async function main() {
   await invoiceCases();
   await quoteLikeCases();
   await expenseAndBillingCases();
+  await payrollAndEmployeeCases();
 
   await run('Logout endpoint responds', async () => {
     await api('POST', '/api/auth/logout', { expectedStatus: 200 });

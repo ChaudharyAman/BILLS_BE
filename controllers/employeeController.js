@@ -120,14 +120,39 @@ exports.getEmployees = async (req, res) => {
 
 exports.getActiveEmployees = async (req, res) => {
   try {
-    const employees = await Employee.find({
-      user: req.user._id,
-      status: 'active',
-      $or: [
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+    const query = { user: req.user._id };
+
+    if (Number.isInteger(month) && Number.isInteger(year)) {
+      const startOfMonth = new Date(year, month - 1, 1);
+      const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+
+      query.joiningDate = { $lte: endOfMonth };
+      query.$and = [
+        {
+          $or: [
+            { status: 'active' },
+            { dateOfLeaving: { $gte: startOfMonth, $lte: endOfMonth } }
+          ]
+        },
+        {
+          $or: [
+            { dateOfLeaving: null },
+            { dateOfLeaving: { $exists: false } },
+            { dateOfLeaving: { $gte: startOfMonth } }
+          ]
+        }
+      ];
+    } else {
+      query.status = 'active';
+      query.$or = [
         { dateOfLeaving: null },
         { dateOfLeaving: { $exists: false } },
-      ],
-    })
+      ];
+    }
+
+    const employees = await Employee.find(query)
       .populate('department', 'name code')
       .select('employeeId firstName lastName email designation department salaryStructure deductions monthlyCTC flexiAmount broadband petrol lta employerNPS insuranceAmount joiningBonus joiningDate location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled includePfInCTC includeGratuityInCTC basicPercent hraPercent')
       .sort({ firstName: 1, lastName: 1 })
