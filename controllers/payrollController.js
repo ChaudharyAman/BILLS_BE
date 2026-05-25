@@ -4,80 +4,216 @@ const Employee = require('../models/Employee');
 const Expense = require('../models/Expense');
 const Category = require('../models/Category');
 const Settings = require('../models/Settings');
+const PayrollConfig = require('../models/PayrollConfig');
+const Loan = require('../models/Loan');
+const ReimbursementClaim = require('../models/ReimbursementClaim');
+const AuditLog = require('../models/AuditLog');
+const {
+  roundAmount,
+  buildMasterSalaryStructure,
+  buildPayrollSnapshot,
+} = require('../utils/payrollMath');
+const { XLSX, setHeaderStyle, applyNumberFormat, sendWorkbook } = require('../utils/excel');
 
+const monthName = (month) => new Date(0, Number(month) - 1).toLocaleString('en-US', { month: 'long' });
+const buildEmployeeName = (employee) => `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim() || 'Unknown Employee';
+const isValidMonth = (month) => Number.isInteger(month) && month >= 1 && month <= 12;
+const isValidYear = (year) => Number.isInteger(year) && year >= 1970 && year <= 3000;
 const sumNamedAmounts = (items = []) => items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
 
-const buildPayrollSnapshot = (employee, adjustments = {}) => {
-  const salary = employee.salaryStructure || {};
-  const employeeDeductions = employee.deductions || {};
+const getOrCreateConfig = async (userId) => {
+  let config = await PayrollConfig.findOne({ user: userId });
+  if (!config) config = await PayrollConfig.create({ user: userId });
+  return config;
+};
 
-  const earnings = {
-    basic: Number(salary.basic) || 0,
-    hra: Number(salary.hra) || 0,
-    conveyance: Number(salary.conveyance) || 0,
-    medicalAllowance: Number(salary.medicalAllowance) || 0,
-    specialAllowance: Number(salary.specialAllowance) || 0,
-    overtime: Number(adjustments.overtime) || 0,
-    bonus: Number(adjustments.bonus) || 0,
-    incentives: Number(adjustments.incentives) || 0,
-    otherEarnings: adjustments.otherEarnings || [],
-  };
+const getPayrollCategory = async (userId) => Category.findOneAndUpdate(
+  { user: userId, name: 'Payroll', type: 'expense' },
+  {
+    $setOnInsert: {
+      user: userId,
+      name: 'Payroll',
+      type: 'expense',
+      isSystem: true,
+      color: '#2563eb',
+      icon: 'FaUsers',
+    },
+  },
+  { upsert: true, new: true, setDefaultsOnInsert: true }
+);
 
-  earnings.totalEarnings =
-    earnings.basic +
-    earnings.hra +
-    earnings.conveyance +
-    earnings.medicalAllowance +
-    earnings.specialAllowance +
-    earnings.overtime +
-    earnings.bonus +
-    earnings.incentives +
-    sumNamedAmounts(earnings.otherEarnings);
+const shouldExcludeEmployeeFromRun = (employee) => employee.status !== 'active' || Boolean(employee.dateOfLeaving);
 
-  const deductions = {
-    pf: (employeeDeductions.pf !== undefined && employeeDeductions.pf !== null && employeeDeductions.pf !== '')
-      ? Number(employeeDeductions.pf)
-      : earnings.basic * 0.12,
-    esi: Number(employeeDeductions.esi) || 0,
-    professionalTax: Number(employeeDeductions.professionalTax) || 0,
-    tds: Number(employeeDeductions.tds) || 0,
-    loanDeduction: Number(adjustments.loanDeduction) || 0,
-    advanceDeduction: Number(adjustments.advanceDeduction) || 0,
-    otherDeductions: adjustments.otherDeductions || [],
-  };
+const shouldApplyJoiningBonus = (employee, month, year) => {
+  if (!employee?.joiningDate || !Number(employee.joiningBonus)) return false;
+  const joiningDate = new Date(employee.joiningDate);
+  return joiningDate.getMonth() + 1 === month && joiningDate.getFullYear() === year;
+};
 
-  deductions.totalDeductions =
-    deductions.pf +
-    deductions.esi +
-    deductions.professionalTax +
-    deductions.tds +
-    deductions.loanDeduction +
-    deductions.advanceDeduction +
-    sumNamedAmounts(deductions.otherDeductions);
+const buildAttendancePayload = (payload = {}, defaultWorkingDays = 26) => {
+  const workingDays = Math.max(Number(payload.workingDays) || defaultWorkingDays, 1);
+  const paidLeaves = Math.max(Number(payload.paidLeaves) || 0, 0);
+  const unpaidLeaves = Math.max(Number(payload.unpaidLeaves) || 0, 0);
+  const paidDaysInput = payload.paidDays ?? payload.presentDays ?? workingDays - unpaidLeaves;
+  const paidDays = Math.max(Math.min(Number(paidDaysInput) || 0, workingDays), 0);
 
   return {
-    earnings,
-    deductions,
-    netSalary: earnings.totalEarnings - deductions.totalDeductions,
+    workingDays,
+    paidDays,
+    paidLeaves,
+    unpaidLeaves,
   };
 };
 
-const getPayrollCategory = async (userId) => {
-  const payrollCategory = await Category.findOneAndUpdate(
-    { user: userId, name: 'Payroll', type: 'expense' },
-    {
-      $setOnInsert: {
-        user: userId,
-        name: 'Payroll',
-        type: 'expense',
-        isSystem: true,
-        color: '#2563eb',
-        icon: 'FaUsers',
-      },
-    },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
-  return payrollCategory;
+const buildAdjustmentsPayload = (employee, payload = {}, month, year) => {
+  const adjustments = payload.adjustments && typeof payload.adjustments === 'object'
+    ? { ...payload.adjustments }
+    : {};
+
+  if ((adjustments.joiningBonus === undefined || adjustments.joiningBonus === null) && shouldApplyJoiningBonus(employee, month, year)) {
+    adjustments.joiningBonus = Number(employee.joiningBonus) || 0;
+  }
+
+  adjustments.otherEarnings = Array.isArray(adjustments.otherEarnings) ? adjustments.otherEarnings : [];
+  adjustments.otherDeductions = Array.isArray(adjustments.otherDeductions) ? adjustments.otherDeductions : [];
+  return adjustments;
+};
+
+const buildPayrollWorkbook = (payrolls) => {
+  const headerGroups = ['MASTER DATA', 'Monthly Salary', 'Other Payables', 'Deductions'];
+  const columns = [
+    'Sr No', 'Name', 'DOJ', 'DOL', 'Gender', 'Emp No', 'Email', 'Bank A/C', 'IFSC', 'PAN', 'Aadhar', 'Location', 'Designation',
+    'Monthly CTC', 'BASIC(master)', 'HRA(master)', 'Meal+Broadband', 'PF Employer', 'Special Allowance', 'DIFF',
+    'Working Days', 'Paid Days', 'BASIC(paid)', 'HRA(paid)', 'Flexi', 'Broadband', 'Petrol', 'LTA', 'Employer NPS', 'Insurance',
+    'PF(Emp Contrib)', 'Gratuity', 'LWF', 'GROSS TOTAL', 'Joining Bonus', 'Loyalty Bonus', 'Incentive', 'Other Allowance', 'Special Bonus', 'Total Payable',
+    'PF Deduction', 'Insurance(ded)', 'Gratuity(ded)', 'LWF(ded)', 'Other Deduction', 'Income Tax', 'TOTAL DEDUCTION', 'NET TAKE HOME', 'Remarks',
+  ];
+
+  const rows = payrolls.map((payroll, index) => {
+    const employee = payroll.employee || {};
+    const payrollPaidRatio = Number(payroll.workingDays) > 0 ? Number(payroll.paidDays) / Number(payroll.workingDays) : 1;
+    const safeRatio = payrollPaidRatio > 0 ? payrollPaidRatio : 1;
+    const basicMaster = roundAmount((Number(payroll.earnings?.basic) || 0) / safeRatio);
+    const hraMaster = roundAmount((Number(payroll.earnings?.hra) || 0) / safeRatio);
+    const flexiMaster = roundAmount((Number(payroll.earnings?.flexiAmount) || 0) / safeRatio);
+    const broadbandMaster = roundAmount((Number(payroll.earnings?.broadband) || 0) / safeRatio);
+    const specialMaster = roundAmount((Number(payroll.earnings?.specialAllowance) || 0) / safeRatio);
+    const employeeMonthlyCTC = Number(employee.monthlyCTC) || 0;
+    const diff = roundAmount(
+      employeeMonthlyCTC -
+      basicMaster -
+      hraMaster -
+      flexiMaster -
+      broadbandMaster -
+      (Number(payroll.employerContributions?.pfEmployer) || 0) -
+      specialMaster -
+      (Number(payroll.earnings?.petrol) || 0) -
+      (Number(payroll.earnings?.lta) || 0)
+    );
+
+    return [
+      index + 1,
+      buildEmployeeName(employee),
+      employee.joiningDate ? new Date(employee.joiningDate) : '',
+      employee.dateOfLeaving ? new Date(employee.dateOfLeaving) : '',
+      employee.gender || '',
+      employee.employeeId || '',
+      employee.email || '',
+      employee.bankDetails?.accountNumber || '',
+      employee.bankDetails?.ifscCode || '',
+      employee.panNumber || '',
+      employee.aadharNumber || '',
+      employee.location || '',
+      employee.designation || '',
+      employeeMonthlyCTC,
+      basicMaster,
+      hraMaster,
+      flexiMaster + broadbandMaster,
+      Number(payroll.employerContributions?.pfEmployer) || 0,
+      specialMaster,
+      diff,
+      Number(payroll.workingDays) || 0,
+      Number(payroll.paidDays) || 0,
+      Number(payroll.earnings?.basic) || 0,
+      Number(payroll.earnings?.hra) || 0,
+      Number(payroll.earnings?.flexiAmount) || 0,
+      Number(payroll.earnings?.broadband) || 0,
+      Number(payroll.earnings?.petrol) || 0,
+      Number(payroll.earnings?.lta) || 0,
+      Number(payroll.employerContributions?.nps) || 0,
+      Number(payroll.employerContributions?.insuranceEmployer) || 0,
+      Number(payroll.employerContributions?.pfEmployer) || 0,
+      Number(payroll.employerContributions?.gratuity) || 0,
+      Number(payroll.employerContributions?.lwfEmployer) || 0,
+      Number(payroll.employerContributions?.grossTotalSalary) || 0,
+      Number(payroll.variablePay?.joiningBonus) || 0,
+      Number(payroll.variablePay?.loyaltyBonus) || 0,
+      Number(payroll.variablePay?.incentive) || 0,
+      sumNamedAmounts(payroll.earnings?.otherEarnings) + (Number(payroll.variablePay?.otherAllowanceArrear) || 0),
+      Number(payroll.variablePay?.specialBonus) || 0,
+      Number(payroll.totalPayable) || 0,
+      Number(payroll.deductions?.pfEmployee) || 0,
+      Number(payroll.deductions?.insuranceEmployee) || 0,
+      Number(payroll.deductions?.gratuityDeduction) || 0,
+      Number(payroll.deductions?.lwfEmployee) || 0,
+      sumNamedAmounts(payroll.deductions?.otherDeductions),
+      Number(payroll.deductions?.tds) || 0,
+      Number(payroll.deductions?.totalDeductions) || 0,
+      Number(payroll.netSalary) || 0,
+      payroll.remarks || payroll.notes || '',
+    ];
+  });
+
+  const totals = ['TOTAL', '', '', '', '', '', '', '', '', '', '', '', ''];
+  for (let columnIndex = 13; columnIndex < columns.length; columnIndex += 1) {
+    const total = rows.reduce((sum, row) => sum + (Number(row[columnIndex]) || 0), 0);
+    totals[columnIndex] = total;
+  }
+  totals[totals.length - 1] = '';
+
+  const sheet = XLSX.utils.aoa_to_sheet([
+    headerGroups,
+    columns,
+    ...rows,
+    totals,
+  ]);
+
+  sheet['!merges'] = [
+    XLSX.utils.decode_range('A1:M1'),
+    XLSX.utils.decode_range('N1:AH1'),
+    XLSX.utils.decode_range('AI1:AN1'),
+    XLSX.utils.decode_range('AO1:AW1'),
+  ];
+
+  const headerCells = [];
+  for (let i = 0; i < columns.length; i += 1) {
+    headerCells.push(`${XLSX.utils.encode_col(i)}2`);
+  }
+  ['A1', 'N1', 'AI1', 'AO1'].forEach((cell) => {
+    if (sheet[cell]) {
+      sheet[cell].s = {
+        font: { bold: true, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: '1A2E44' } },
+        alignment: { horizontal: 'center', vertical: 'center' },
+      };
+    }
+  });
+  setHeaderStyle(sheet, headerCells);
+
+  const numericCells = [];
+  for (let rowIndex = 3; rowIndex <= rows.length + 3; rowIndex += 1) {
+    for (let colIndex = 13; colIndex < columns.length - 1; colIndex += 1) {
+      numericCells.push(`${XLSX.utils.encode_col(colIndex)}${rowIndex}`);
+    }
+  }
+  applyNumberFormat(sheet, numericCells);
+  sheet['!cols'] = columns.map((column, index) => ({
+    wch: index === 1 ? 22 : index >= 13 ? 14 : 16,
+  }));
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Payroll Sheet');
+  return workbook;
 };
 
 exports.processPayroll = async (req, res) => {
@@ -85,22 +221,25 @@ exports.processPayroll = async (req, res) => {
     const month = Number(req.body.month);
     const year = Number(req.body.year);
     const employeePayloads = Array.isArray(req.body.employees) ? req.body.employees : [];
+    const saveAsDraft = Boolean(req.body.saveAsDraft);
 
-    if (!month || !year || month < 1 || month > 12) {
+    if (!isValidMonth(month) || !isValidYear(year)) {
       return res.status(400).json({ message: 'Valid month and year are required' });
     }
     if (employeePayloads.length === 0) {
       return res.status(400).json({ message: 'Select at least one employee to process payroll' });
     }
 
+    const config = await getOrCreateConfig(req.user._id);
     const success = [];
     const errors = [];
 
     for (const payload of employeePayloads) {
       const employeeId = payload.employeeId || payload.employee;
       let employeeName = 'Unknown Employee';
+
       try {
-        if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+        if (!mongoose.Types.ObjectId.isValid(String(employeeId))) {
           errors.push({ employeeId, error: 'Invalid employee ID format' });
           continue;
         }
@@ -110,42 +249,126 @@ exports.processPayroll = async (req, res) => {
           errors.push({ employeeId, error: 'Employee not found' });
           continue;
         }
-        
-        employeeName = `${employee.firstName} ${employee.lastName}`;
 
-        if (employee.status !== 'active') {
-          errors.push({ employeeId, employeeName, error: 'Employee is inactive' });
+        employeeName = buildEmployeeName(employee);
+        if (shouldExcludeEmployeeFromRun(employee)) {
+          errors.push({ employeeId, employeeName, error: 'Employee is inactive or has a date of leaving set' });
           continue;
         }
 
         const existing = await Payroll.findOne({ user: req.user._id, employee: employeeId, month, year });
         if (existing) {
-          errors.push({ employeeId, employeeName, error: 'Payroll already processed for this period' });
+          errors.push({ employeeId, employeeName, error: 'Payroll already exists for this period' });
           continue;
         }
 
-        const snapshot = buildPayrollSnapshot(employee, payload.adjustments || {});
+        const attendance = buildAttendancePayload(payload, config.defaultWorkingDays);
+        const adjustments = buildAdjustmentsPayload(employee, payload, month, year);
+
+        // Fetch approved claims for this employee in the month & year
+        const startDate = new Date(year, month - 1, 1);
+        const endDate = new Date(year, month, 1);
+        const claims = await ReimbursementClaim.find({
+          employee: employee._id,
+          user: req.user._id,
+          status: 'approved',
+          createdAt: { $gte: startDate, $lt: endDate }
+        }).lean();
+
+        adjustments.reimbursements = claims.map(c => ({
+          name: c.category,
+          claimed: c.amount,
+          approved: c.amount,
+          billUrl: c.billUrl || ''
+        }));
+
+        // Calculate active loans' EMIs if not manually overridden
+        if (adjustments.loanDeduction === undefined || adjustments.loanDeduction === null) {
+          const activeLoans = await Loan.find({
+            employee: employee._id,
+            user: req.user._id,
+            status: 'active',
+            remainingBalance: { $gt: 0 }
+          });
+          adjustments.loanDeduction = activeLoans.reduce((sum, loan) => sum + Math.min(loan.emiAmount, loan.remainingBalance), 0);
+        }
+
+        const snapshot = buildPayrollSnapshot(employee, config, attendance, adjustments);
+        const statusVal = saveAsDraft ? 'draft' : 'processed';
         const payroll = await Payroll.create({
           user: req.user._id,
           employee: employee._id,
           month,
           year,
+          paymentDate: payload.paymentDate || null,
+          workingDays: snapshot.workingDays,
+          paidDays: snapshot.paidDays,
+          paidLeaves: snapshot.paidLeaves,
+          unpaidLeaves: snapshot.unpaidLeaves,
+          lop: snapshot.lop,
           earnings: snapshot.earnings,
+          employerContributions: snapshot.employerContributions,
+          variablePay: snapshot.variablePay,
+          totalPayable: snapshot.totalPayable,
           deductions: snapshot.deductions,
-          workingDays: Number(payload.workingDays) || 26,
-          presentDays: Number(payload.presentDays) || Number(payload.workingDays) || 26,
-          paidLeaves: Number(payload.paidLeaves) || 0,
-          unpaidLeaves: Number(payload.unpaidLeaves) || 0,
           netSalary: snapshot.netSalary,
-          status: 'processed',
+          status: statusVal,
+          approvalWorkflow: [{
+            status: statusVal,
+            actor: req.user._id,
+            remarks: saveAsDraft ? 'Payroll initialized as draft' : 'Payroll calculated and processed'
+          }],
+          employeeSnapshot: {
+            employeeId: employee.employeeId,
+            firstName: employee.firstName,
+            lastName: employee.lastName,
+            email: employee.email,
+            designation: employee.designation,
+            joiningDate: employee.joiningDate,
+            monthlyCTC: employee.monthlyCTC,
+            pfEnabled: snapshot.master.pfEnabled !== false,
+            esiEnabled: snapshot.master.esiEnabled !== false,
+            ptEnabled: snapshot.master.ptEnabled !== false,
+            lwfEnabled: snapshot.master.lwfEnabled !== false,
+            gratuityEnabled: snapshot.master.gratuityEnabled !== false,
+            includePfInCTC: snapshot.master.includePfInCTC !== false,
+            includeGratuityInCTC: snapshot.master.includeGratuityInCTC !== false,
+            taxRegime: employee.taxRegime,
+            declarations: employee.declarations,
+          },
+          paymentMethod: payload.paymentMethod || '',
+          transactionId: payload.transactionId || '',
           notes: payload.notes || '',
+          remarks: payload.remarks || '',
+          reimbursements: snapshot.reimbursements,
+          totalReimbursementApproved: snapshot.totalReimbursementApproved
+        });
+
+        await AuditLog.create({
+          user: req.user._id,
+          actor: req.user._id,
+          action: saveAsDraft ? 'PAYROLL_DRAFT_CREATED' : 'PAYROLL_PROCESSED',
+          targetEmployee: employee._id,
+          targetPayroll: payroll._id,
+          changes: { toStatus: statusVal }
         });
 
         success.push({
           payrollId: payroll._id,
           employeeId: employee._id,
           employeeName,
-          netSalary: payroll.netSalary,
+          status: payroll.status,
+          payroll: {
+            earnings: payroll.earnings,
+            employerContributions: payroll.employerContributions,
+            variablePay: payroll.variablePay,
+            deductions: payroll.deductions,
+            totalPayable: payroll.totalPayable,
+            netSalary: payroll.netSalary,
+            paidDays: payroll.paidDays,
+            workingDays: payroll.workingDays,
+            lop: payroll.lop,
+          },
         });
       } catch (error) {
         console.error(`Error processing payroll for employee ${employeeId}:`, error);
@@ -160,6 +383,198 @@ exports.processPayroll = async (req, res) => {
   }
 };
 
+exports.bulkApprovePayroll = async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.filter((id) => mongoose.Types.ObjectId.isValid(String(id))) : [];
+    const month = req.body.month !== undefined ? Number(req.body.month) : undefined;
+    const year = req.body.year !== undefined ? Number(req.body.year) : undefined;
+    const filter = { user: req.user._id, status: 'processed' };
+
+    if (ids.length) filter._id = { $in: ids };
+    if (month !== undefined) {
+      if (!isValidMonth(month)) return res.status(400).json({ message: 'Valid month is required' });
+      filter.month = month;
+    }
+    if (year !== undefined) {
+      if (!isValidYear(year)) return res.status(400).json({ message: 'Valid year is required' });
+      filter.year = year;
+    }
+    if (!ids.length && (month === undefined || year === undefined)) {
+      return res.status(400).json({ message: 'Provide payroll IDs or month and year to approve payroll' });
+    }
+
+    const payrolls = await Payroll.find(filter);
+    let approvedCount = 0;
+
+    for (const payroll of payrolls) {
+      const oldStatus = payroll.status;
+      payroll.status = 'approved';
+      payroll.approvalWorkflow.push({
+        status: 'approved',
+        actor: req.user._id,
+        remarks: req.body.remarks || 'Bulk approved',
+      });
+      await payroll.save();
+
+      await AuditLog.create({
+        user: req.user._id,
+        actor: req.user._id,
+        action: 'PAYROLL_APPROVED',
+        targetEmployee: payroll.employee,
+        targetPayroll: payroll._id,
+        changes: { from: oldStatus, to: 'approved' },
+      });
+
+      approvedCount += 1;
+    }
+
+    res.json({
+      matched: payrolls.length,
+      modified: approvedCount,
+      message: 'Payroll approved successfully',
+    });
+  } catch (error) {
+    console.error('Error approving payroll in bulk:', error);
+    res.status(500).json({ message: 'Server error approving payroll' });
+  }
+};
+
+exports.getPayrollConfig = async (req, res) => {
+  try {
+    const config = await getOrCreateConfig(req.user._id);
+    res.json(config);
+  } catch (error) {
+    console.error('Error fetching payroll config:', error);
+    res.status(500).json({ message: 'Server error fetching payroll config' });
+  }
+};
+
+exports.updatePayrollConfig = async (req, res) => {
+  try {
+    const allowed = [
+      'basicPercent', 'hraPercent', 'pfRate', 'pfCap', 'pfEmployerRate',
+      'esiEmployeeRate', 'esiEmployerRate', 'esiBasicThreshold', 'lwfEmployer', 'lwfEmployee',
+      'gratuityRate', 'defaultWorkingDays', 'defaultInsurance', 'ltaMaxPercent',
+    ];
+    const update = {};
+    allowed.forEach((key) => {
+      if (req.body[key] !== undefined) update[key] = req.body[key];
+    });
+
+    const config = await PayrollConfig.findOneAndUpdate(
+      { user: req.user._id },
+      { $set: update },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    res.json(config);
+  } catch (error) {
+    console.error('Error updating payroll config:', error);
+    res.status(500).json({ message: 'Server error updating payroll config' });
+  }
+};
+
+exports.calculateSalary = async (req, res) => {
+  try {
+    const config = await getOrCreateConfig(req.user._id);
+    const monthlyCTC = Number(req.body.monthlyCTC) || (Number(req.body.annualCTC) ? Number(req.body.annualCTC) / 12 : 0);
+
+    if (!monthlyCTC || monthlyCTC < 0) {
+      return res.status(400).json({ message: 'Monthly CTC or Annual CTC is required' });
+    }
+
+    const previewSource = {
+      monthlyCTC,
+      basicPercent: req.body.basicPercent !== undefined && req.body.basicPercent !== null ? Number(req.body.basicPercent) : null,
+      hraPercent: req.body.hraPercent !== undefined && req.body.hraPercent !== null ? Number(req.body.hraPercent) : null,
+      flexiAmount: Number(req.body.flexiAmount) || 0,
+      broadband: Number(req.body.broadband) || 0,
+      petrol: Number(req.body.petrol) || 0,
+      lta: Number(req.body.lta) || 0,
+      employerNPS: Number(req.body.employerNPS) || 0,
+      insuranceAmount: req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : config.defaultInsurance,
+      taxRegime: req.body.taxRegime || 'new',
+      pfEnabled: req.body.pfEnabled !== false,
+      esiEnabled: req.body.esiEnabled !== false,
+      ptEnabled: req.body.ptEnabled !== false,
+      lwfEnabled: req.body.lwfEnabled !== false,
+      gratuityEnabled: req.body.gratuityEnabled !== false,
+      includePfInCTC: req.body.includePfInCTC !== false,
+      includeGratuityInCTC: req.body.includeGratuityInCTC !== false,
+      declarations: req.body.declarations || {},
+      deductions: {
+        professionalTax: Number(req.body.professionalTax) || 0,
+        tds: Number(req.body.tds) || 0,
+        otherDeductions: Array.isArray(req.body.otherDeductions) ? req.body.otherDeductions : (Array.isArray(req.body.deductions?.otherDeductions) ? req.body.deductions.otherDeductions : []),
+      },
+      salaryStructure: {
+        conveyance: Number(req.body.conveyance) || 0,
+        medicalAllowance: Number(req.body.medicalAllowance) || 0,
+        otherAllowances: Array.isArray(req.body.otherAllowances) ? req.body.otherAllowances : (Array.isArray(req.body.salaryStructure?.otherAllowances) ? req.body.salaryStructure.otherAllowances : []),
+      },
+    };
+
+    const master = buildMasterSalaryStructure(previewSource, config);
+    const snapshot = buildPayrollSnapshot(
+      previewSource,
+      config,
+      { workingDays: config.defaultWorkingDays, paidDays: config.defaultWorkingDays, paidLeaves: 0, unpaidLeaves: 0 },
+      {
+        joiningBonus: Number(req.body.joiningBonus) || 0,
+        loyaltyBonus: Number(req.body.loyaltyBonus) || 0,
+        incentive: Number(req.body.incentive) || 0,
+        specialBonus: Number(req.body.specialBonus) || 0,
+        otherAllowanceArrear: Number(req.body.otherAllowanceArrear) || 0,
+        tds: Number(req.body.tds) || 0,
+        performanceBonus: Number(req.body.performanceBonus) || 0,
+        retentionBonus: Number(req.body.retentionBonus) || 0,
+        arrear: Number(req.body.arrear) || 0,
+        referralBonus: Number(req.body.referralBonus) || 0,
+      }
+    );
+
+    res.json({
+      monthlyCTC: master.monthlyCTC,
+      annualCTC: roundAmount(master.monthlyCTC * 12),
+      master,
+      payroll: snapshot,
+      annualized: {
+        earnings: Object.fromEntries(Object.entries(snapshot.earnings).map(([key, value]) => [key, typeof value === 'number' ? roundAmount(value * 12) : value])),
+        employerContributions: Object.fromEntries(Object.entries(snapshot.employerContributions).map(([key, value]) => [key, roundAmount((Number(value) || 0) * 12)])),
+        deductions: Object.fromEntries(Object.entries(snapshot.deductions).map(([key, value]) => [key, typeof value === 'number' ? roundAmount(value * 12) : value])),
+        netSalary: roundAmount(snapshot.netSalary * 12),
+      },
+    });
+  } catch (error) {
+    console.error('Error calculating salary:', error);
+    res.status(500).json({ message: 'Server error calculating salary' });
+  }
+};
+
+exports.exportPayrollExcel = async (req, res) => {
+  try {
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+
+    if (!isValidMonth(month) || !isValidYear(year)) {
+      return res.status(400).json({ message: 'Valid month and year are required' });
+    }
+
+    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+      .populate({
+        path: 'employee',
+        select: '+bankDetails.accountNumber +panNumber +aadharNumber firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode',
+      })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const workbook = buildPayrollWorkbook(payrolls);
+    sendWorkbook(res, workbook, `payroll-sheet-${year}-${String(month).padStart(2, '0')}.xlsx`);
+  } catch (error) {
+    console.error('Error exporting payroll workbook:', error);
+    res.status(500).json({ message: 'Server error exporting payroll workbook' });
+  }
+};
+
 exports.getPayrolls = async (req, res) => {
   try {
     const { month, year, status, employeeId } = req.query;
@@ -168,16 +583,29 @@ exports.getPayrolls = async (req, res) => {
     const skip = (page - 1) * limit;
     const query = { user: req.user._id };
 
-    if (month) query.month = Number(month);
-    if (year) query.year = Number(year);
+    if (month !== undefined) {
+      const parsedMonth = Number(month);
+      if (!isValidMonth(parsedMonth)) return res.status(400).json({ message: 'Invalid month' });
+      query.month = parsedMonth;
+    }
+    if (year !== undefined) {
+      const parsedYear = Number(year);
+      if (!isValidYear(parsedYear)) return res.status(400).json({ message: 'Invalid year' });
+      query.year = parsedYear;
+    }
     if (status) query.status = status;
-    if (employeeId) query.employee = employeeId;
+    if (employeeId) {
+      if (!mongoose.Types.ObjectId.isValid(String(employeeId))) {
+        return res.status(400).json({ message: 'Invalid employee ID' });
+      }
+      query.employee = employeeId;
+    }
 
     const total = await Payroll.countDocuments(query);
     const payrolls = await Payroll.find(query)
       .populate({
         path: 'employee',
-        select: 'employeeId firstName lastName designation department',
+        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled basicPercent hraPercent',
         populate: { path: 'department', select: 'name code' },
       })
       .populate('expenseRef', 'expenseNumber date grandTotal')
@@ -195,7 +623,7 @@ exports.getPayrolls = async (req, res) => {
 
 exports.getPayrollById = async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
@@ -216,23 +644,56 @@ exports.getPayrollById = async (req, res) => {
 
 exports.updatePayroll = async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
-    const allowed = ['paymentDate', 'paymentMethod', 'transactionId', 'notes'];
+    const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id });
+    if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
+
+    if (payroll.status === 'paid') {
+      return res.status(400).json({ message: 'Paid payroll is locked and cannot be updated' });
+    }
+    if (payroll.status === 'approved') {
+      const allowedFieldsForApproved = ['paymentMethod', 'transactionId', 'notes', 'remarks', 'status', 'paymentDate'];
+      const fieldsToUpdate = Object.keys(req.body);
+      const isTryingToEditRestrictedFields = fieldsToUpdate.some(f => !allowedFieldsForApproved.includes(f));
+      if (isTryingToEditRestrictedFields) {
+        return res.status(400).json({ message: 'Approved payroll is locked. Please re-open to edit calculations' });
+      }
+    }
+
+    const allowed = ['paymentDate', 'paymentMethod', 'transactionId', 'notes', 'remarks', 'status'];
     const updateData = {};
+    const oldStatus = payroll.status;
+
     allowed.forEach((field) => {
-      if (req.body[field] !== undefined) updateData[field] = req.body[field];
+      if (req.body[field] !== undefined) {
+        payroll[field] = req.body[field];
+        updateData[field] = req.body[field];
+      }
     });
 
-    const payroll = await Payroll.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
-      { $set: updateData },
-      { returnDocument: 'after', runValidators: true }
-    ).populate('employee', 'employeeId firstName lastName designation');
+    if (req.body.status && req.body.status !== oldStatus) {
+      payroll.approvalWorkflow.push({
+        status: req.body.status,
+        actor: req.user._id,
+        remarks: req.body.remarks || `Status transitioned to ${req.body.status}`
+      });
+    }
 
-    if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
+    await payroll.save();
+    await payroll.populate('employee', 'employeeId firstName lastName designation');
+
+    await AuditLog.create({
+      user: req.user._id,
+      actor: req.user._id,
+      action: 'PAYROLL_UPDATED',
+      targetEmployee: payroll.employee?._id || payroll.employee,
+      targetPayroll: payroll._id,
+      changes: updateData
+    });
+
     res.json(payroll);
   } catch (error) {
     console.error('Error updating payroll:', error);
@@ -242,7 +703,7 @@ exports.updatePayroll = async (req, res) => {
 
 exports.markPayrollAsPaid = async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
@@ -252,7 +713,7 @@ exports.markPayrollAsPaid = async (req, res) => {
 
     const payrollCategory = await getPayrollCategory(req.user._id);
     const paymentDate = req.body.paymentDate || new Date();
-    const employeeIdentifier = payroll.employee?.employeeId || payroll.employeeId || 'unknown';
+    const employeeIdentifier = payroll.employee?.employeeId || 'unknown';
     const expenseNumber = `PAY-${payroll.year}-${String(payroll.month).padStart(2, '0')}-${employeeIdentifier}`;
     let expense = null;
     if (payroll.expenseRef) {
@@ -265,11 +726,11 @@ exports.markPayrollAsPaid = async (req, res) => {
         expenseNumber,
         category: payrollCategory._id,
         date: paymentDate,
-        vendor: { name: `${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim() || 'Payroll Vendor' },
+        vendor: { name: buildEmployeeName(payroll.employee) || 'Payroll Vendor' },
         paymentMethod: req.body.paymentMethod || 'Bank Transfer',
         items: [{
-          name: `Salary - ${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim() || 'Payroll Salary',
-          description: `${new Date(0, payroll.month - 1).toLocaleString('en-US', { month: 'long' })} ${payroll.year}`,
+          name: `Salary - ${buildEmployeeName(payroll.employee)}`.trim(),
+          description: `${monthName(payroll.month)} ${payroll.year}`,
           qty: 1,
           rate: payroll.netSalary,
           taxRate: 0,
@@ -289,7 +750,53 @@ exports.markPayrollAsPaid = async (req, res) => {
     payroll.paymentMethod = req.body.paymentMethod || payroll.paymentMethod || 'Bank Transfer';
     payroll.transactionId = req.body.transactionId || payroll.transactionId;
     payroll.expenseRef = expense._id;
+
+    payroll.approvalWorkflow.push({
+      status: 'paid',
+      actor: req.user._id,
+      remarks: req.body.remarks || 'Payroll marked as paid and expense generated'
+    });
+
+    // Repay active loans if loanDeduction > 0
+    if (payroll.deductions?.loanDeduction > 0) {
+      const activeLoans = await Loan.find({
+        employee: payroll.employee._id || payroll.employee,
+        user: req.user._id,
+        status: 'active',
+        remainingBalance: { $gt: 0 }
+      });
+
+      let remainingDeduction = payroll.deductions.loanDeduction;
+      for (const loan of activeLoans) {
+        if (remainingDeduction <= 0) break;
+        const repaymentAmount = Math.min(loan.remainingBalance, loan.emiAmount, remainingDeduction);
+        if (repaymentAmount > 0) {
+          loan.remainingBalance = Math.max(0, roundAmount(loan.remainingBalance - repaymentAmount));
+          if (loan.remainingBalance === 0) {
+            loan.status = 'closed';
+          }
+          loan.repaymentLedger.push({
+            month: payroll.month,
+            year: payroll.year,
+            amountPaid: repaymentAmount,
+            payrollRef: payroll._id
+          });
+          await loan.save();
+          remainingDeduction = roundAmount(remainingDeduction - repaymentAmount);
+        }
+      }
+    }
+
     await payroll.save();
+
+    await AuditLog.create({
+      user: req.user._id,
+      actor: req.user._id,
+      action: 'PAYROLL_PAID',
+      targetEmployee: payroll.employee?._id || payroll.employee,
+      targetPayroll: payroll._id,
+      changes: { status: 'paid', paymentDate, expenseId: expense._id }
+    });
 
     res.json({ payroll, expense });
   } catch (error) {
@@ -303,8 +810,7 @@ exports.markPayrollAsPaid = async (req, res) => {
 
 exports.generatePayslip = async (req, res) => {
   try {
-    console.log(`Generating payslip for ID: ${req.params.id}, User: ${req.user._id}`);
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
@@ -316,7 +822,6 @@ exports.generatePayslip = async (req, res) => {
     const settings = await Settings.findOne({ user: req.user._id }).lean();
 
     if (!payroll) {
-      console.log(`Payroll ${req.params.id} not found for user ${req.user._id}`);
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
@@ -326,19 +831,25 @@ exports.generatePayslip = async (req, res) => {
         period: {
           month: payroll.month,
           year: payroll.year,
-          monthName: new Date(0, payroll.month - 1).toLocaleString('en-US', { month: 'long' }),
+          monthName: monthName(payroll.month),
         },
         earnings: payroll.earnings,
+        employerContributions: payroll.employerContributions,
+        variablePay: payroll.variablePay,
         deductions: payroll.deductions,
+        totalPayable: payroll.totalPayable,
         netSalary: payroll.netSalary,
         workingDays: payroll.workingDays,
-        presentDays: payroll.presentDays,
+        paidDays: payroll.paidDays,
         paidLeaves: payroll.paidLeaves,
         unpaidLeaves: payroll.unpaidLeaves,
+        lop: payroll.lop,
         paymentMethod: payroll.paymentMethod,
         transactionId: payroll.transactionId,
         paymentDate: payroll.paymentDate,
         status: payroll.status,
+        notes: payroll.notes,
+        remarks: payroll.remarks,
         generatedAt: new Date(),
         company: settings ? {
           companyName: settings.companyName,
@@ -358,4 +869,70 @@ exports.generatePayslip = async (req, res) => {
     console.error('Error generating payslip:', error);
     res.status(500).json({ message: 'Server error generating payslip' });
   }
+};
+
+exports.emailPayslip = async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
+      return res.status(404).json({ message: 'Payroll not found' });
+    }
+
+    const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id });
+    if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
+
+    res.json({ message: 'Email feature coming soon' });
+  } catch (error) {
+    console.error('Error stubbing payslip email:', error);
+    res.status(500).json({ message: 'Server error emailing payslip' });
+  }
+};
+
+exports.reopenPayroll = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { remarks } = req.body;
+    if (!mongoose.Types.ObjectId.isValid(String(id))) {
+      return res.status(404).json({ message: 'Payroll not found' });
+    }
+
+    const payroll = await Payroll.findOne({ _id: id, user: req.user._id });
+    if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
+
+    if (payroll.status === 'paid') {
+      return res.status(400).json({ message: 'Paid payroll cannot be re-opened' });
+    }
+    if (payroll.status !== 'approved') {
+      return res.status(400).json({ message: 'Only approved payroll can be re-opened' });
+    }
+
+    const oldStatus = payroll.status;
+    payroll.status = 'processed';
+    payroll.approvalWorkflow.push({
+      status: 'processed',
+      actor: req.user._id,
+      remarks: remarks || 'Payroll re-opened',
+    });
+
+    await payroll.save();
+
+    await AuditLog.create({
+      user: req.user._id,
+      actor: req.user._id,
+      action: 'PAYROLL_REOPENED',
+      targetEmployee: payroll.employee,
+      targetPayroll: payroll._id,
+      changes: { from: oldStatus, to: 'processed', remarks },
+    });
+
+    res.json({ message: 'Payroll re-opened successfully', payroll });
+  } catch (error) {
+    console.error('Error re-opening payroll:', error);
+    res.status(500).json({ message: 'Server error re-opening payroll' });
+  }
+};
+
+
+exports.__private__ = {
+  getOrCreateConfig,
+  buildPayrollWorkbook,
 };

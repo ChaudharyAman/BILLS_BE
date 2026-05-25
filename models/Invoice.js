@@ -180,6 +180,11 @@ const InvoiceSchema = new mongoose.Schema({
     rangeCode: String,
   },
 
+  purchaseOrderRef: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'PurchaseOrder',
+  },
+
 }, { timestamps: true });
 
 InvoiceSchema.index({ user: 1, invoiceNo: 1 }, { unique: true });

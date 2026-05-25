@@ -553,11 +553,13 @@ exports.convertToInvoice = async (req, res) => {
       shippingAddress: resolvedShipping, transport: purchaseOrder.transport,
       placeOfSupply: purchaseOrder.placeOfSupply, reverseCharge: purchaseOrder.reverseCharge,
       notes: purchaseOrder.notes, terms: purchaseOrder.terms, status: 'DRAFT',
+      purchaseOrderRef: purchaseOrder._id,
     });
 
     const savedInvoice = await invoice.save();
     await syncIncomeFromInvoice(savedInvoice);
     purchaseOrder.status = 'BILLED';
+    purchaseOrder.billedAmount = grandTotal;
     purchaseOrder.convertedToInvoice = savedInvoice._id;
     await purchaseOrder.save();
 

@@ -28,6 +28,8 @@ const EmployeeSchema = new mongoose.Schema({
   designation: { type: String, default: '' },
   department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
   joiningDate: { type: Date, required: true },
+  location: { type: String, default: '' },
+  dateOfLeaving: { type: Date, default: null },
   employmentType: {
     type: String,
     enum: ['full-time', 'part-time', 'contract', 'intern'],
@@ -39,6 +41,25 @@ const EmployeeSchema = new mongoose.Schema({
     default: 'active',
     index: true,
   },
+
+  monthlyCTC: { type: Number, default: 0, min: 0 },
+  flexiAmount: { type: Number, default: 0, min: 0 },
+  broadband: { type: Number, default: 0, min: 0 },
+  petrol: { type: Number, default: 0, min: 0 },
+  lta: { type: Number, default: 0, min: 0 },
+  employerNPS: { type: Number, default: 0, min: 0 },
+  insuranceAmount: { type: Number, default: 1000, min: 0 },
+  joiningBonus: { type: Number, default: 0, min: 0 },
+  basicPercent: { type: Number, default: null },
+  hraPercent: { type: Number, default: null },
+
+  pfEnabled: { type: Boolean, default: true },
+  esiEnabled: { type: Boolean, default: true },
+  ptEnabled: { type: Boolean, default: true },
+  lwfEnabled: { type: Boolean, default: true },
+  gratuityEnabled: { type: Boolean, default: true },
+  includePfInCTC: { type: Boolean, default: true },
+  includeGratuityInCTC: { type: Boolean, default: true },
 
   salaryStructure: {
     basic: { type: Number, required: true, default: 0, min: 0 },
@@ -56,6 +77,7 @@ const EmployeeSchema = new mongoose.Schema({
     esi: { type: Number, default: 0, min: 0 },
     professionalTax: { type: Number, default: 0, min: 0 },
     tds: { type: Number, default: 0, min: 0 },
+    otherDeductions: [AllowanceSchema],
   },
 
   bankDetails: {
@@ -70,10 +92,34 @@ const EmployeeSchema = new mongoose.Schema({
   uanNumber: { type: String, default: '', select: false },
   aadharNumber: { type: String, default: '', select: false },
 
+  taxRegime: {
+    type: String,
+    enum: ['old', 'new'],
+    default: 'new',
+  },
+  declarations: {
+    section80C: { type: Number, default: 0, min: 0 },
+    section80D: { type: Number, default: 0, min: 0 },
+    section24b: { type: Number, default: 0, min: 0 },
+    section80CCD1B: { type: Number, default: 0, min: 0 },
+    rentPaidMonthly: { type: Number, default: 0, min: 0 },
+    isMetroCity: { type: Boolean, default: false },
+    otherExemptions: { type: Number, default: 0, min: 0 },
+  },
+
   documents: [{
     docType: String,
     url: String,
     uploadedAt: { type: Date, default: Date.now },
+  }],
+
+  salaryRevisions: [{
+    effectiveDate: { type: Date, required: true },
+    previousCTC: { type: Number },
+    newCTC: { type: Number },
+    reason: { type: String },
+    revisedBy: { type: String },
+    createdAt: { type: Date, default: Date.now },
   }],
 }, { timestamps: true });
 
@@ -81,21 +127,17 @@ EmployeeSchema.index({ user: 1, employeeId: 1 }, { unique: true });
 EmployeeSchema.index({ user: 1, email: 1 });
 
 EmployeeSchema.pre('save', function() {
-  const salary = this.salaryStructure || {};
-  const otherAllowances = Array.isArray(salary.otherAllowances) ? salary.otherAllowances : [];
-  const otherTotal = otherAllowances.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  const gross =
-    (Number(salary.basic) || 0) +
-    (Number(salary.hra) || 0) +
-    (Number(salary.conveyance) || 0) +
-    (Number(salary.medicalAllowance) || 0) +
-    (Number(salary.specialAllowance) || 0) +
-    otherTotal;
+  const { buildMasterSalaryStructure } = require('../utils/payrollMath');
+  const master = buildMasterSalaryStructure(this);
 
-  salary.grossSalary = gross;
-  const employerPF = (Number(salary.basic) || 0) * 0.12;
-  const employerESI = gross <= 21000 ? gross * 0.0325 : 0;
-  salary.ctc = gross + employerPF + employerESI;
+  const salary = this.salaryStructure || {};
+  salary.basic = master.basicMaster;
+  salary.hra = master.hraMaster;
+  salary.conveyance = master.conveyance;
+  salary.medicalAllowance = master.medicalAllowance;
+  salary.specialAllowance = master.specialAllowance;
+  salary.grossSalary = master.grossSalary;
+  salary.ctc = master.grossTotalSalary;
   this.salaryStructure = salary;
 });
 
@@ -105,7 +147,15 @@ const applySalaryStructureUpdate = async function() {
   const set = update.$set || update;
   const hasSalaryUpdate = Boolean(
     set.salaryStructure ||
-    Object.keys(set).some((key) => key.startsWith('salaryStructure.'))
+    Object.keys(set).some((key) => key.startsWith('salaryStructure.')) ||
+    set.monthlyCTC !== undefined ||
+    set.pfEnabled !== undefined ||
+    set.esiEnabled !== undefined ||
+    set.ptEnabled !== undefined ||
+    set.lwfEnabled !== undefined ||
+    set.gratuityEnabled !== undefined ||
+    set.includePfInCTC !== undefined ||
+    set.includeGratuityInCTC !== undefined
   );
   if (!hasSalaryUpdate) return;
 
@@ -120,35 +170,44 @@ const applySalaryStructureUpdate = async function() {
     }
   }
 
-  const needsExisting = ['basic', 'hra', 'conveyance', 'medicalAllowance', 'specialAllowance', 'otherAllowances']
-    .some((field) => mergedSalary[field] === undefined);
-  if (needsExisting) {
-    const docId = this.getQuery()._id;
-    if (mongoose.Types.ObjectId.isValid(String(docId))) {
-      const current = await this.model.findOne({ _id: docId }).select('salaryStructure').lean();
-      if (current?.salaryStructure) {
-        mergedSalary = { ...current.salaryStructure, ...mergedSalary };
-      }
-    }
+  const docId = this.getQuery()._id;
+  let currentDoc = {};
+  if (mongoose.Types.ObjectId.isValid(String(docId))) {
+    currentDoc = await this.model.findOne({ _id: docId }).lean() || {};
   }
 
-  const otherAllowances = Array.isArray(mergedSalary.otherAllowances) ? mergedSalary.otherAllowances : [];
-  const otherTotal = otherAllowances.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  const gross =
-    (Number(mergedSalary.basic) || 0) +
-    (Number(mergedSalary.hra) || 0) +
-    (Number(mergedSalary.conveyance) || 0) +
-    (Number(mergedSalary.medicalAllowance) || 0) +
-    (Number(mergedSalary.specialAllowance) || 0) +
-    otherTotal;
-  const ctc = gross + ((Number(mergedSalary.basic) || 0) * 0.12) + (gross <= 21000 ? gross * 0.0325 : 0);
+  const mergedEmployee = {
+    ...currentDoc,
+    ...set,
+    salaryStructure: {
+      ...(currentDoc.salaryStructure || {}),
+      ...mergedSalary
+    }
+  };
+
+  const { buildMasterSalaryStructure } = require('../utils/payrollMath');
+  const master = buildMasterSalaryStructure(mergedEmployee);
 
   if (set.salaryStructure && typeof set.salaryStructure === 'object') {
-    set.salaryStructure = { ...mergedSalary, grossSalary: gross, ctc };
+    set.salaryStructure = {
+      ...mergedSalary,
+      basic: master.basicMaster,
+      hra: master.hraMaster,
+      conveyance: master.conveyance,
+      medicalAllowance: master.medicalAllowance,
+      specialAllowance: master.specialAllowance,
+      grossSalary: master.grossSalary,
+      ctc: master.grossTotalSalary
+    };
   } else {
     if (!update.$set) update.$set = {};
-    update.$set['salaryStructure.grossSalary'] = gross;
-    update.$set['salaryStructure.ctc'] = ctc;
+    update.$set['salaryStructure.basic'] = master.basicMaster;
+    update.$set['salaryStructure.hra'] = master.hraMaster;
+    update.$set['salaryStructure.conveyance'] = master.conveyance;
+    update.$set['salaryStructure.medicalAllowance'] = master.medicalAllowance;
+    update.$set['salaryStructure.specialAllowance'] = master.specialAllowance;
+    update.$set['salaryStructure.grossSalary'] = master.grossSalary;
+    update.$set['salaryStructure.ctc'] = master.grossTotalSalary;
   }
 
   this.setUpdate(update);
@@ -167,16 +226,8 @@ EmployeeSchema.pre('updateMany', async function() {
 });
 
 const removeEmployeePII = (doc, ret) => {
-  if (!ret) return ret;
-  delete ret.panNumber;
-  delete ret.uanNumber;
-  delete ret.aadharNumber;
-  if (ret.bankDetails) {
-    delete ret.bankDetails.accountNumber;
-  }
   return ret;
 };
-
 EmployeeSchema.set('toJSON', { transform: removeEmployeePII });
 EmployeeSchema.set('toObject', { transform: removeEmployeePII });
 
