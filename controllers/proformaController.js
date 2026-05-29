@@ -695,3 +695,27 @@ exports.bulkCreateProformas = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// ─── UPDATE proforma status ──────────────────────────────────────────────────
+exports.updateProformaStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) {
+      return res.status(400).json({ message: 'Status is required' });
+    }
+
+    const proforma = await Proforma.findOne({ _id: req.params.id, user: req.user._id });
+    if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
+    if (proforma.status === 'CONVERTED' || proforma.convertedToInvoice) {
+      return res.status(400).json({ message: 'Converted proformas cannot be updated.' });
+    }
+
+    proforma.status = status;
+    const saved = await proforma.save();
+    res.json(saved);
+  } catch (error) {
+    console.error('updateProformaStatus error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+

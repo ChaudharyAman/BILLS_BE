@@ -822,3 +822,26 @@ exports.bulkCreateQuotes = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// ─── UPDATE quote status ─────────────────────────────────────────────────────
+exports.updateQuoteStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) {
+      return res.status(400).json({ message: 'Status is required' });
+    }
+
+    const quote = await Quote.findOne({ _id: req.params.id, user: req.user._id });
+    if (!quote) return res.status(404).json({ message: 'Quote not found' });
+    if (quote.status === 'CONVERTED' || quote.convertedToInvoice) {
+      return res.status(400).json({ message: 'Converted quotations cannot be updated.' });
+    }
+
+    quote.status = status;
+    const saved = await quote.save();
+    res.json(saved);
+  } catch (error) {
+    console.error('updateQuoteStatus error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};

@@ -594,6 +594,28 @@ exports.markPurchaseOrderReceived = async (req, res) => {
   }
 };
 
+// ─── UPDATE purchase order status ────────────────────────────────────────────────
+exports.updatePurchaseOrderStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) {
+      return res.status(400).json({ message: 'Status is required' });
+    }
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: req.user._id });
+    if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
+    if (purchaseOrder.status === 'BILLED' || purchaseOrder.convertedToInvoice) {
+      return res.status(400).json({ message: 'Billed purchase orders cannot be updated.' });
+    }
+
+    purchaseOrder.status = status;
+    const saved = await purchaseOrder.save();
+    res.json(saved);
+  } catch (error) {
+    console.error('updatePurchaseOrderStatus error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.bulkCreatePurchaseOrders = async (req, res) => {
   try {
     const purchaseOrders = req.body.purchaseOrders;

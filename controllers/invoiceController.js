@@ -1030,6 +1030,75 @@ exports.deleteInvoice = async (req, res) => {
   }
 };
 
+// ─── UPDATE invoice status ───────────────────────────────────────────────────
+exports.updateInvoiceStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) {
+      return res.status(400).json({ message: 'Status is required' });
+    }
+
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+
+    const oldStatus = invoice.status || 'DRAFT';
+    const oldIsActive = ACTIVE_INVOICE_STATUSES.includes(oldStatus);
+    const grandTotal = invoice.grandTotal || 0;
+    const finalTds = invoice.tds || 0;
+
+    invoice.status = status;
+
+    if (status === 'PAID') {
+      invoice.advancePaid = grandTotal - finalTds;
+      invoice.balanceDue = 0;
+    } else if (status === 'UNPAID' || status === 'SENT') {
+      invoice.advancePaid = 0;
+      invoice.balanceDue = Math.max(0, grandTotal - finalTds);
+    } else if (status === 'DRAFT' || status === 'CANCELLED') {
+      invoice.balanceDue = Math.max(0, grandTotal - (invoice.advancePaid || 0) - finalTds);
+    }
+
+    const newIsActive = ACTIVE_INVOICE_STATUSES.includes(status);
+    const oldPoId = invoice.purchaseOrderRef;
+    if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId)) {
+      const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, user: req.user._id });
+      if (linkedPo) {
+        let updated = false;
+        if (oldIsActive && newIsActive) {
+          // Both active
+        } else if (oldIsActive && !newIsActive) {
+          // Reverted from active to inactive
+          linkedPo.billedAmount = Math.max(0, roundToTwo((linkedPo.billedAmount || 0) - grandTotal));
+          updated = true;
+        } else if (!oldIsActive && newIsActive) {
+          // Activated from inactive to active
+          linkedPo.billedAmount = roundToTwo((linkedPo.billedAmount || 0) + grandTotal);
+          updated = true;
+        }
+
+        if (updated) {
+          if (linkedPo.billedAmount >= linkedPo.grandTotal) {
+            linkedPo.status = 'BILLED';
+          } else if (linkedPo.billedAmount > 0) {
+            linkedPo.status = 'PARTIAL';
+          } else {
+            linkedPo.status = 'RECEIVED';
+          }
+          await linkedPo.save();
+        }
+      }
+    }
+
+    const updatedInvoice = await invoice.save();
+    await syncIncomeFromInvoice(updatedInvoice);
+    res.json(updatedInvoice);
+  } catch (error) {
+    console.error('updateInvoiceStatus error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+
 // ─── BULK create invoices ───────────────────────────────────────────────────
 exports.bulkCreateInvoices = async (req, res) => {
   try {
