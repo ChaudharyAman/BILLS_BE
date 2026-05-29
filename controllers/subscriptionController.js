@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const SubscriptionOrder = require('../models/SubscriptionOrder');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 
@@ -31,18 +32,6 @@ const PLAN_PRICES = {
 };
 
 const getAmountForPlan = (plan, billingCycle) => PLAN_PRICES[plan]?.[billingCycle] || 0;
-
-const getPlanFromAmount = (amount) => {
-  for (const [plan, cycles] of Object.entries(PLAN_PRICES)) {
-    for (const [billingCycle, price] of Object.entries(cycles)) {
-      if (price === amount) {
-        return { plan, billingCycle };
-      }
-    }
-  }
-
-  return null;
-};
 
 const addMonthsClamped = (date, monthsToAdd) => {
   const base = new Date(date);
@@ -93,6 +82,17 @@ exports.createOrder = async (req, res) => {
       return res.status(500).json({ message: 'Error creating Razorpay order' });
     }
 
+    await SubscriptionOrder.create({
+      user: req.user._id,
+      razorpayOrderId: order.id,
+      plan,
+      billingCycle,
+      amount: order.amount,
+      currency: order.currency,
+      status: 'created',
+      rawOrder: order,
+    });
+
     res.status(200).json(order);
   } catch (error) {
     console.error('Create Order Error:', error);
@@ -111,6 +111,10 @@ exports.verifyPayment = async (req, res) => {
       razorpay_signature,
     } = req.body;
 
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ message: 'Payment verification details are required' });
+    }
+
     const sign = razorpay_order_id + '|' + razorpay_payment_id;
     const { keySecret } = getRazorpayConfig();
     const expectedSign = crypto
@@ -122,16 +126,53 @@ exports.verifyPayment = async (req, res) => {
       return res.status(400).json({ message: 'Invalid signature sent!' });
     }
 
+    const pendingOrder = await SubscriptionOrder.findOne({
+      user: req.user._id,
+      razorpayOrderId: razorpay_order_id,
+    });
+
+    if (!pendingOrder) {
+      return res.status(400).json({ message: 'Subscription order was not created by this user.' });
+    }
+
+    if (pendingOrder.status !== 'created') {
+      return res.status(400).json({ message: 'Subscription order has already been processed.' });
+    }
+
+    const existingOrderPayment = await SubscriptionOrder.findOne({
+      razorpayPaymentId: razorpay_payment_id,
+    }).lean();
+    const existingUserPayment = await User.exists({
+      'paymentHistory.razorpayPaymentId': razorpay_payment_id,
+    });
+
+    if (existingOrderPayment || existingUserPayment) {
+      return res.status(400).json({ message: 'This payment has already been used.' });
+    }
+
     const razorpay = createRazorpayClient();
     const order = await razorpay.orders.fetch(razorpay_order_id);
-    const resolvedPlan = getPlanFromAmount(order?.amount);
+    const payment = await razorpay.payments.fetch(razorpay_payment_id);
 
-    if (!resolvedPlan) {
-      return res.status(400).json({ message: 'Unable to match this payment to a valid subscription plan.' });
+    if (
+      order?.id !== pendingOrder.razorpayOrderId ||
+      order?.amount !== pendingOrder.amount ||
+      order?.currency !== pendingOrder.currency
+    ) {
+      return res.status(400).json({ message: 'Subscription order details do not match.' });
+    }
+
+    if (
+      payment?.order_id !== pendingOrder.razorpayOrderId ||
+      payment?.amount !== pendingOrder.amount ||
+      payment?.currency !== pendingOrder.currency ||
+      !['captured', 'authorized'].includes(payment?.status)
+    ) {
+      return res.status(400).json({ message: 'Payment details do not match the subscription order.' });
     }
 
     const startDate = new Date();
-    const endDate = resolvedPlan.billingCycle === 'monthly'
+    const endDate = pendingOrder.billingCycle === 'monthly'
       ? addMonthsClamped(startDate, 1)
       : addYearsClamped(startDate, 1);
 
@@ -142,24 +183,40 @@ exports.verifyPayment = async (req, res) => {
     }
 
     user.subscription = {
-      plan: resolvedPlan.plan,
+      plan: pendingOrder.plan,
       status: 'active',
       razorpayOrderId: razorpay_order_id,
       razorpayPaymentId: razorpay_payment_id,
       razorpaySignature: razorpay_signature,
       startDate,
       endDate,
-      billingCycle: resolvedPlan.billingCycle,
+      billingCycle: pendingOrder.billingCycle,
     };
 
     user.paymentHistory.push({
-      amount: (order?.amount || 0) / 100,
-      plan: resolvedPlan.plan,
-      billingCycle: resolvedPlan.billingCycle,
+      amount: pendingOrder.amount / 100,
+      plan: pendingOrder.plan,
+      billingCycle: pendingOrder.billingCycle,
       razorpayOrderId: razorpay_order_id,
       razorpayPaymentId: razorpay_payment_id,
       endDate,
     });
+
+    const updatedOrder = await SubscriptionOrder.findOneAndUpdate(
+      { _id: pendingOrder._id, status: 'created' },
+      {
+        status: 'paid',
+        razorpayPaymentId: razorpay_payment_id,
+        rawOrder: order,
+        rawPayment: payment,
+        paidAt: startDate,
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!updatedOrder) {
+      return res.status(400).json({ message: 'Subscription order has already been processed.' });
+    }
 
     await user.save();
 

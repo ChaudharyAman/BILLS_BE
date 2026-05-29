@@ -10,9 +10,49 @@ const { buildAutoDocumentNumber, buildCustomDocumentNumber } = require('../utils
 const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
+const { parseImportedDate } = require('../utils/dateRange');
 
 function processItems(items, invoiceType, isIntraState) {
   return processDocumentItems(items, { invoiceType, isIntraState, includeExcise: true });
+}
+
+function isProformaNumberDuplicateError(error) {
+  return (
+    error?.code === 11000 &&
+    (error?.keyPattern?.proformaNo || String(error?.message || '').includes('proformaNo'))
+  );
+}
+
+async function generateNextUniqueProformaNumber({ userId, proformaPrefix }) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const counter = await Counter.findOneAndUpdate(
+      { id: buildUserCounterId(userId, 'proformaNo') },
+      { $inc: { seq: 1 } },
+      { returnDocument: 'after', upsert: true }
+    );
+    const candidate = buildAutoDocumentNumber(proformaPrefix || 'PRF', counter.seq);
+    const exists = await Proforma.exists({ user: userId, proformaNo: candidate });
+    if (!exists) return candidate;
+  }
+
+  throw new Error('Could not reserve a unique proforma number.');
+}
+
+function roundToTwo(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function formatDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 10);
+}
+
+function isSameImportedProforma(existingProforma, importedDate, importedGrandTotal) {
+  return (
+    formatDateKey(existingProforma?.date) === formatDateKey(importedDate) &&
+    roundToTwo(existingProforma?.grandTotal) === roundToTwo(importedGrandTotal)
+  );
 }
 
 exports.getProformas = async (req, res) => {
@@ -388,8 +428,8 @@ exports.convertToInvoice = async (req, res) => {
       totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: proforma.customChargeLabel, discountTotal: finalDiscount,
-      exciseDuty: { ...(proforma.exciseDuty || {}), totalExcise },
-      grandTotal, balanceDue: grandTotal,
+      exciseDuty: { totalExcise },
+      totalAmount: grandTotal, grandTotal, balanceDue: grandTotal,
       shippingAddress: resolvedShipping, transport: proforma.transport,
       placeOfSupply: proforma.placeOfSupply, reverseCharge: proforma.reverseCharge,
       notes: proforma.notes, terms: proforma.terms, status: 'DRAFT',
@@ -460,11 +500,24 @@ exports.bulkCreateProformas = async (req, res) => {
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
     const createdProformas = [];
-    for (const pData of proformas) {
-      let client = await Client.findOne({ name: pData.clientName, user: req.user._id });
+    const importedProformas = [];
+    const skippedProformas = [];
+    const renumberedProformas = [];
+    const failedProformas = [];
+    for (const [index, pData] of proformas.entries()) {
+      const importRowId = pData?._importRowId || String(index);
+      const rowProformaNo = String(pData?.proformaNo || '').trim();
+      const rowClientName = String(pData?.clientName || '').trim();
+
+      try {
+      if (!rowClientName) {
+        throw new Error('Client name is required for each imported proforma.');
+      }
+
+      let client = await Client.findOne({ name: rowClientName, user: req.user._id });
       if (!client) {
          client = new Client({
-            name: pData.clientName || 'Unknown Client',
+            name: rowClientName || 'Unknown Client',
             email: pData.clientEmail || '',
             phone: pData.clientPhone || '',
             billingAddress: { state: pData.clientState || '' },
@@ -476,26 +529,67 @@ exports.bulkCreateProformas = async (req, res) => {
       const clientState = pData.placeOfSupply || client.billingAddress?.state || '';
       const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
-      const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(req.user._id, 'proformaNo') },
-        { $inc: { seq: 1 } },
-        { returnDocument: 'after', upsert: true }
-      );
-      const proformaNo = buildAutoDocumentNumber(userSettings?.proformaPrefix || 'PRF', counter.seq);
+      let proformaNo = rowProformaNo;
+      const originalProformaNo = proformaNo;
+      if (!proformaNo || proformaNo === 'Auto-generated') {
+        proformaNo = await generateNextUniqueProformaNumber({
+          userId: req.user._id,
+          proformaPrefix: userSettings?.proformaPrefix || 'PRF',
+        });
+      }
+
+      let invoiceType = pData.invoiceType || 'Tax Invoice';
+      if (!['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'].includes(invoiceType)) {
+        invoiceType = 'Tax Invoice';
+      }
 
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-        processItems(pData.items || [], pData.invoiceType || 'Tax Invoice', isIntraState);
+        processItems(pData.items || [], invoiceType, isIntraState);
 
       const finalShipping = Number(pData.shippingCharges) || 0;
       const finalPackaging = Number(pData.packagingCharges) || 0;
       const finalDiscount = Number(pData.discountTotal) || 0;
       const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+      const finalDate = parseImportedDate(pData.date);
 
-      const proforma = new Proforma({
+      if (originalProformaNo) {
+        const existingProforma = await Proforma.findOne({ user: req.user._id, proformaNo: originalProformaNo });
+        if (existingProforma && isSameImportedProforma(existingProforma, finalDate, grandTotal)) {
+          skippedProformas.push({
+            importRowId,
+            proformaNo: originalProformaNo,
+            clientName: rowClientName,
+            date: finalDate,
+            grandTotal,
+            reason: 'same proforma number, date, and amount already exist',
+          });
+          continue;
+        }
+
+        if (existingProforma) {
+          proformaNo = await generateNextUniqueProformaNumber({
+            userId: req.user._id,
+            proformaPrefix: userSettings?.proformaPrefix || 'PRF',
+          });
+          renumberedProformas.push({
+            importRowId,
+            originalProformaNo,
+            proformaNo,
+            clientName: rowClientName,
+            date: finalDate,
+            grandTotal,
+            reason: 'same proforma number exists with different date or amount',
+          });
+        }
+      }
+
+      let savedProforma = null;
+      for (let attempt = 0; attempt < 25; attempt += 1) {
+        const proforma = new Proforma({
         proformaNo,
-        invoiceType: pData.invoiceType || 'Tax Invoice',
-        date: pData.date || new Date(),
-        validUntil: pData.validUntil || new Date(),
+        invoiceType,
+        date: finalDate,
+        validUntil: parseImportedDate(pData.validUntil),
         paymentMode: pData.paymentMode || 'Cash',
         paymentTerms: pData.paymentTerms || '',
         shippingAddress: pData.shippingAddress,
@@ -528,12 +622,75 @@ exports.bulkCreateProformas = async (req, res) => {
         status: 'DRAFT',
         user: req.user._id
       });
-      
-      const savedProforma = await proforma.save();
+
+        try {
+          savedProforma = await proforma.save();
+          break;
+        } catch (error) {
+          if (!isProformaNumberDuplicateError(error)) {
+            throw error;
+          }
+
+          proformaNo = await generateNextUniqueProformaNumber({
+            userId: req.user._id,
+            proformaPrefix: userSettings?.proformaPrefix || 'PRF',
+          });
+          renumberedProformas.push({
+            importRowId,
+            originalProformaNo: originalProformaNo || rowProformaNo,
+            proformaNo,
+            clientName: rowClientName,
+            date: finalDate,
+            grandTotal,
+            reason: 'proforma number was already used during import',
+          });
+        }
+      }
+
+      if (!savedProforma) {
+        throw new Error('Could not generate a unique proforma number during import.');
+      }
+
       createdProformas.push(savedProforma);
+      importedProformas.push({
+        importRowId,
+        proformaNo: savedProforma.proformaNo,
+        originalProformaNo: originalProformaNo || savedProforma.proformaNo,
+        clientName: savedProforma.client?.name || rowClientName,
+        date: savedProforma.date,
+        grandTotal: savedProforma.grandTotal,
+        status: savedProforma.status,
+        renumbered: !!originalProformaNo && savedProforma.proformaNo !== originalProformaNo,
+      });
+      } catch (rowError) {
+        failedProformas.push({
+          importRowId,
+          row: index + 1,
+          proformaNo: rowProformaNo,
+          clientName: rowClientName,
+          reason: rowError.message || 'Failed to import proforma row',
+        });
+      }
     }
 
-    res.status(201).json({ message: `Successfully imported ${createdProformas.length} proformas.`, count: createdProformas.length });
+    const messageParts = [`Successfully imported ${createdProformas.length} proformas.`];
+    if (skippedProformas.length) messageParts.push(`${skippedProformas.length} duplicate proformas skipped.`);
+    if (renumberedProformas.length) messageParts.push(`${renumberedProformas.length} proformas renumbered.`);
+    if (failedProformas.length) messageParts.push(`${failedProformas.length} proformas failed.`);
+
+    res.status(201).json({
+      message: messageParts.join(' '),
+      count: createdProformas.length,
+      imported: createdProformas.length,
+      updated: 0,
+      skipped: skippedProformas.length,
+      renumbered: renumberedProformas.length,
+      failed: failedProformas.length,
+      importedProformas,
+      skippedProformas,
+      renumberedProformas,
+      failedProformas,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

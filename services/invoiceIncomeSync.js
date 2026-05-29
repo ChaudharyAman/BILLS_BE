@@ -5,6 +5,10 @@ function mapInvoiceStatusToIncomeStatus(invoice) {
     return 'PAID';
   }
 
+  if (invoice.status === 'PARTIAL' || (invoice.status === 'SENT' && Number(invoice.advancePaid) > 0)) {
+    return 'PARTIAL';
+  }
+
   if (invoice.status === 'CANCELLED') {
     return 'CANCELLED';
   }
@@ -82,9 +86,24 @@ async function syncIncomeFromInvoice(invoice, session = null) {
     return null;
   }
 
-  if (String(invoice.status || '').toUpperCase() === 'DRAFT') {
+  const isFullyPaid = invoice.status === 'PAID' || Number(invoice.balanceDue) <= 0;
+  const isPartial = invoice.status === 'PARTIAL' || (invoice.status === 'SENT' && Number(invoice.advancePaid) > 0);
+
+  if (!isFullyPaid && !isPartial) {
     await removeIncomeForInvoice(invoice._id, invoice.user, session);
     return null;
+  }
+
+  // Calculate ratio of payment received
+  let ratio = 1;
+  if (!isFullyPaid && isPartial) {
+    const total = Number(invoice.grandTotal) || 0;
+    const paid = Number(invoice.advancePaid) || 0;
+    if (total > 0) {
+      ratio = paid / total;
+    } else {
+      ratio = 0;
+    }
   }
 
   const clientRef = invoice.client?.clientRef || null;
@@ -107,9 +126,12 @@ async function syncIncomeFromInvoice(invoice, session = null) {
     paymentMethod: invoice.paymentMode || '',
     reverseCharge: !!invoice.reverseCharge,
     items: mapInvoiceItemsToIncomeItems(invoice.items),
-    subTotal: Number(invoice.subTotal) || 0,
-    taxTotal: Number(invoice.taxTotal) || 0,
-    grandTotal: Number(invoice.grandTotal) || 0,
+    subTotal: Math.round((Number(invoice.subTotal) || 0) * ratio * 100) / 100,
+    taxTotal: Math.round((Number(invoice.taxTotal) || 0) * ratio * 100) / 100,
+    totalCGST: Math.round((Number(invoice.totalCGST) || 0) * ratio * 100) / 100,
+    totalSGST: Math.round((Number(invoice.totalSGST) || 0) * ratio * 100) / 100,
+    totalIGST: Math.round((Number(invoice.totalIGST) || 0) * ratio * 100) / 100,
+    grandTotal: Math.round((Number(invoice.grandTotal) || 0) * ratio * 100) / 100,
     terms: invoice.terms || '',
     privateNotes: invoice.notes || '',
     status: mapInvoiceStatusToIncomeStatus(invoice),

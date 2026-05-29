@@ -15,7 +15,7 @@ const InvoiceItemSchema = new mongoose.Schema({
   qty: { type: Number, required: true, min: 0 },
   unit: String,
   rate: { type: Number, required: true, min: 0 },
-  discount: { type: Number, default: 0 }, // Value amount, not percent
+  discount: { type: Number, default: 0 }, // Percentage, not value
   
   // Tax details per item
   taxRate: { type: Number, default: 0 }, // %

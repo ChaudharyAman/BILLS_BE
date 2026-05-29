@@ -14,6 +14,7 @@ const Proforma = require('../models/Proforma');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const Expense = require('../models/Expense');
 const Settings = require('../models/Settings');
+const SubscriptionOrder = require('../models/SubscriptionOrder');
 
 const EXTERNAL_BASE_URL = process.env.SYSTEM_TEST_BASE_URL || '';
 const PORT = Number(process.env.SYSTEM_TEST_PORT || 5051);
@@ -64,7 +65,7 @@ function unique(label) {
 
 async function api(method, pathname, options = {}) {
   const headers = { ...(options.headers || {}) };
-  if (options.token) headers.Authorization = `Bearer ${options.token}`;
+  if (options.token) headers.Cookie = options.token;
 
   let body;
   if (options.formData) {
@@ -86,6 +87,17 @@ async function api(method, pathname, options = {}) {
   }
 
   return { response, data };
+}
+
+function cookieHeaderFromResponse(response) {
+  const setCookie = response.headers.get('set-cookie');
+  if (!setCookie) return '';
+
+  return setCookie
+    .split(/,(?=[^;,]+=)/)
+    .map((cookie) => cookie.split(';')[0].trim())
+    .filter(Boolean)
+    .join('; ');
 }
 
 async function waitForServer(timeoutMs = 30000) {
@@ -134,6 +146,7 @@ async function cleanup() {
     PurchaseOrder.deleteMany({ user: { $in: ids } }),
     Expense.deleteMany({ user: { $in: ids } }),
     Settings.deleteMany({ user: { $in: ids } }),
+    SubscriptionOrder.deleteMany({ user: { $in: ids } }),
     User.deleteMany({ _id: { $in: ids } }),
   ]);
 }
@@ -142,23 +155,25 @@ async function register(label) {
   const username = unique(label);
   const password = 'Pass@123456';
   const email = `${username}@example.com`;
-  const { data } = await api('POST', '/api/auth/register', {
+  const { response, data } = await api('POST', '/api/auth/register', {
     expectedStatus: 201,
     body: { username, email, password },
   });
 
   state.users[label] = { username, password, email, id: data.user._id };
-  state.tokens[label] = data.token;
+  ok(data.token === undefined, 'Auth response should not expose JWT token');
+  state.tokens[label] = cookieHeaderFromResponse(response);
   return data.user;
 }
 
 async function login(label) {
   const user = state.users[label];
-  const { data } = await api('POST', '/api/auth/login', {
+  const { response, data } = await api('POST', '/api/auth/login', {
     expectedStatus: 200,
     body: { username: user.username, password: user.password },
   });
-  state.tokens[label] = data.token;
+  ok(data.token === undefined, 'Auth response should not expose JWT token');
+  state.tokens[label] = cookieHeaderFromResponse(response);
   return data.user;
 }
 
@@ -525,6 +540,55 @@ async function invoiceCases() {
     });
     ok(data.count >= 2, 'Invoice bulk create count too low');
     return `${data.count} created`;
+  });
+
+  await run('Invoice bulk import skips exact duplicates and renumbers conflicts', async () => {
+    const invoiceNo = unique('duplicate-import');
+    const clientName = unique('duplicate-import-client');
+    await api('POST', '/api/invoices', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        invoiceNo,
+        clientRef: state.ids.client,
+        invoiceType: 'Tax Invoice',
+        date: '2026-04-20',
+        placeOfSupply: 'Delhi',
+        items: [{ name: unique('duplicate-import-item'), qty: 1, unit: 'pcs', rate: 100, taxRate: 0 }],
+        status: 'SENT',
+      },
+    });
+
+    const { data } = await api('POST', '/api/invoices/bulk', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        invoices: [
+          {
+            invoiceNo,
+            clientName,
+            date: '2026-04-20',
+            placeOfSupply: 'Delhi',
+            importedGrandTotal: 100,
+            items: [{ name: unique('duplicate-import-same'), qty: 1, rate: 100, taxRate: 0 }],
+          },
+          {
+            invoiceNo,
+            clientName: unique('duplicate-import-client-2'),
+            date: '2026-04-20',
+            placeOfSupply: 'Delhi',
+            importedGrandTotal: 125,
+            items: [{ name: unique('duplicate-import-different'), qty: 1, rate: 125, taxRate: 0 }],
+          },
+        ],
+      },
+    });
+
+    ok(data.count === 1, `Expected 1 imported invoice, got ${data.count}`);
+    ok(data.skipped === 1, `Expected 1 skipped duplicate, got ${data.skipped}`);
+    ok(data.renumbered === 1, `Expected 1 renumbered invoice, got ${data.renumbered}`);
+    ok(/^INV-\d+$/.test(data.renumberedInvoices?.[0]?.invoiceNo || ''), 'Renumbered invoice did not use INV prefix');
+    return `${data.count} created, ${data.skipped} skipped, ${data.renumbered} renumbered`;
   });
 
   await run('PDF invoice import auto-creates missing client and item', async () => {

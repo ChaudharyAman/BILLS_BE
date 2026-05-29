@@ -8,6 +8,7 @@ const { buildAutoDocumentNumber, buildCustomDocumentNumber } = require('../utils
 const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
+const { parseImportedDate } = require('../utils/dateRange');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
@@ -548,8 +549,8 @@ exports.convertToInvoice = async (req, res) => {
       totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: purchaseOrder.customChargeLabel, discountTotal: finalDiscount,
-      exciseDuty: { ...(purchaseOrder.exciseDuty || {}), totalExcise },
-      grandTotal, balanceDue: grandTotal,
+      exciseDuty: { totalExcise },
+      totalAmount: grandTotal, grandTotal, balanceDue: grandTotal,
       shippingAddress: resolvedShipping, transport: purchaseOrder.transport,
       placeOfSupply: purchaseOrder.placeOfSupply, reverseCharge: purchaseOrder.reverseCharge,
       notes: purchaseOrder.notes, terms: purchaseOrder.terms, status: 'DRAFT',
@@ -648,8 +649,12 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
       );
       const poNumber = buildAutoDocumentNumber(userSettings?.purchaseOrderPrefix || 'PO', counter.seq);
 
+      const VALID_INVOICE_TYPES = ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'];
+      const rawType = String(qData.invoiceType || '').trim();
+      const invoiceType = VALID_INVOICE_TYPES.includes(rawType) ? rawType : 'Tax Invoice';
+
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-        processItems(qData.items || [], qData.invoiceType || 'Tax Invoice', isIntraState);
+        processItems(qData.items || [], invoiceType, isIntraState);
 
       const finalShipping = Number(qData.shippingCharges) || 0;
       const finalPackaging = Number(qData.packagingCharges) || 0;
@@ -658,9 +663,9 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
 
       const purchaseOrder = new PurchaseOrder({
         poNumber,
-        invoiceType: qData.invoiceType || 'Tax Invoice',
-        date: qData.date || new Date(),
-        validUntil: qData.validUntil || new Date(),
+        invoiceType,
+        date: parseImportedDate(qData.date),
+        validUntil: qData.validUntil ? parseImportedDate(qData.validUntil) : undefined,
         paymentMode: qData.paymentMode || 'Cash',
         paymentTerms: qData.paymentTerms || '',
         shippingAddress: qData.shippingAddress,

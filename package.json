@@ -9,7 +9,8 @@
     "dev": "nodemon index.js",
     "test:system": "node scripts/run-complete-system-tests.js",
     "promote:admin": "node scripts/promote-admin.js",
-    "migrate:categories": "node scripts/migrate-add-categories.js"
+    "migrate:categories": "node scripts/migrate-add-categories.js",
+    "cleanup:incomes": "node scripts/cleanup-unpaid-incomes.js"
   },
   "keywords": [],
   "author": "",

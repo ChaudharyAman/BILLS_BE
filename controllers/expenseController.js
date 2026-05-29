@@ -401,6 +401,9 @@ exports.createExpense = async (req, res) => {
     res.status(201).json(budgetWarning ? { data: expense, budgetWarning } : expense);
   } catch (error) {
     console.error('Error creating expense', error);
+    if (error.message === 'Amount paid cannot exceed payable amount') {
+      return res.status(422).json({ message: error.message });
+    }
     res.status(error.statusCode || 500).json({ message: error.message || 'Server Error creating expense' });
   }
 };
@@ -582,6 +585,9 @@ exports.updateExpense = async (req, res) => {
     res.json(expense);
   } catch (error) {
     console.error('Error updating expense', error);
+    if (error.message === 'Amount paid cannot exceed payable amount') {
+      return res.status(422).json({ message: error.message });
+    }
     res.status(error.statusCode || 500).json({ message: error.message || 'Server Error updating expense' });
   }
 };
