@@ -63,10 +63,12 @@ const sanitizeItems = (items = []) =>
     itemRef: item.itemRef && String(item.itemRef).trim() ? item.itemRef : undefined,
   }));
 
-const resolvePaymentState = (grandTotal, amountPaid, requestedStatus, reverseCharge = false, taxTotal = 0) => {
+const resolvePaymentState = (grandTotal, amountPaid, requestedStatus, reverseCharge = false, taxTotal = 0, tdsAmount = 0) => {
   const total = Number(grandTotal) || 0;
   const tax = Number(taxTotal) || 0;
-  const payableAmount = reverseCharge ? Math.max(total - tax, 0) : total;
+  const tds = Number(tdsAmount) || 0;
+  const basePayable = reverseCharge ? Math.max(total - tax, 0) : total;
+  const payableAmount = Math.max(basePayable - tds, 0);
 
   if (requestedStatus === 'CANCELLED' || requestedStatus === 'DRAFT') {
     return {
@@ -369,9 +371,16 @@ exports.createExpense = async (req, res) => {
       return res.status(400).json({ message: 'Expense number already exists' });
     }
 
-    const payableAmount = reverseCharge ? Math.max(grandTotal - taxTotal, 0) : grandTotal;
+    const tds_applicable = !!req.body.tds_applicable;
+    const tds_section = req.body.tds_section || '';
+    const tds_rate = Number(req.body.tds_rate) || 0;
+    const tds_amount = tds_applicable ? (Number(req.body.tds_amount) || 0) : 0;
+    const tds_nature = req.body.tds_nature || 'deductor';
+
+    const basePayable = reverseCharge ? Math.max(grandTotal - taxTotal, 0) : grandTotal;
+    const payableAmount = Math.max(basePayable - tds_amount, 0);
     const budgetWarning = await checkBudgetWarning(categoryData.category, req.user._id, payableAmount);
-    const paymentState = resolvePaymentState(grandTotal, amountPaid, status, !!reverseCharge, taxTotal);
+    const paymentState = resolvePaymentState(grandTotal, amountPaid, status, !!reverseCharge, taxTotal, tds_amount);
 
     const expense = await Expense.create({
       user: req.user._id,
@@ -393,7 +402,13 @@ exports.createExpense = async (req, res) => {
       dueDate,
       terms,
       privateNotes,
-      status: paymentState.status
+      status: paymentState.status,
+      tds_applicable,
+      tds_section,
+      tds_rate,
+      tds_amount,
+      tds_nature,
+      net_vendor_payment: payableAmount
     });
 
     if (expense.category) await updateBudgetSpent(expense.category, req.user._id);
@@ -523,13 +538,25 @@ exports.updateExpense = async (req, res) => {
     const finalGrandTotal = grandTotal !== undefined ? grandTotal : expense.grandTotal;
     const finalTaxTotal = taxTotal !== undefined ? taxTotal : expense.taxTotal;
     const finalReverseCharge = reverseCharge !== undefined ? !!reverseCharge : !!expense.reverseCharge;
-    const paymentState = grandTotal !== undefined || amountPaid !== undefined || status !== undefined || reverseCharge !== undefined || taxTotal !== undefined
+
+    const finalTdsApplicable = req.body.tds_applicable !== undefined ? !!req.body.tds_applicable : expense.tds_applicable;
+    const finalTdsSection = req.body.tds_section !== undefined ? req.body.tds_section : expense.tds_section;
+    const finalTdsRate = req.body.tds_rate !== undefined ? Number(req.body.tds_rate) : expense.tds_rate;
+    const finalTdsAmount = finalTdsApplicable 
+      ? (req.body.tds_amount !== undefined ? Number(req.body.tds_amount) : expense.tds_amount) 
+      : 0;
+    const finalTdsNature = req.body.tds_nature !== undefined ? req.body.tds_nature : expense.tds_nature;
+    const finalBasePayable = finalReverseCharge ? Math.max(finalGrandTotal - finalTaxTotal, 0) : finalGrandTotal;
+    const finalNetVendorPayment = Math.max(finalBasePayable - finalTdsAmount, 0);
+
+    const paymentState = grandTotal !== undefined || amountPaid !== undefined || status !== undefined || reverseCharge !== undefined || taxTotal !== undefined || req.body.tds_applicable !== undefined || req.body.tds_amount !== undefined
       ? resolvePaymentState(
           finalGrandTotal,
           amountPaid !== undefined ? amountPaid : expense.amountPaid,
           status !== undefined ? status : expense.status,
           finalReverseCharge,
-          finalTaxTotal
+          finalTaxTotal,
+          finalTdsAmount
         )
       : {};
 
@@ -553,7 +580,13 @@ exports.updateExpense = async (req, res) => {
       dueDate,
       terms,
       privateNotes,
-      status: paymentState.status
+      status: paymentState.status,
+      tds_applicable: finalTdsApplicable,
+      tds_section: finalTdsSection,
+      tds_rate: finalTdsRate,
+      tds_amount: finalTdsAmount,
+      tds_nature: finalTdsNature,
+      net_vendor_payment: finalNetVendorPayment
     };
 
     if (category !== undefined || subCategory !== undefined) {

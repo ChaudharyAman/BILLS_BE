@@ -15,6 +15,13 @@ const { parseOptionalDateRange, parseImportedDate } = require('../utils/dateRang
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
 const ACTIVE_INVOICE_STATUSES = ['SENT', 'PAID', 'PARTIAL', 'UNPAID'];
+const TDS_SECTION_LABELS = {
+  '194C': 'Contractor',
+  '194J': 'Professional/Technical Fees',
+  '194I': 'Rent',
+  '194A': 'Interest',
+  'Manual': 'Manual Custom Rate'
+};
 
 function isInvoiceNumberDuplicateError(error) {
   return (
@@ -458,6 +465,9 @@ exports.createInvoice = async (req, res) => {
       fy,
       currency,
       tds,
+      tdsApplicable,
+      tdsSection,
+      tdsRate,
       tcs,
       drCr,
       purchaseOrderRef,
@@ -541,7 +551,25 @@ exports.createInvoice = async (req, res) => {
     const finalDiscountTotal = Number(discountTotal) || 0;
     const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
-    const finalTds = Number(tds) || 0;
+    
+    // TDS calculations
+    const activeTdsApplicable = req.body.tds_applicable !== undefined ? !!req.body.tds_applicable : !!tdsApplicable;
+    const activeTdsSection = req.body.tds_section || tdsSection || '';
+    const activeTdsRate = req.body.tds_rate !== undefined ? Number(req.body.tds_rate) : (tdsRate !== undefined ? Number(tdsRate) : 0);
+    const activeTdsSectionLabel = req.body.tds_section_label || TDS_SECTION_LABELS[activeTdsSection] || '';
+    const activeTdsBaseAmount = subTotal;
+    const activeTdsAmount = activeTdsApplicable ? roundToTwo((activeTdsBaseAmount * activeTdsRate) / 100) : 0;
+    const activeNetPayable = roundToTwo(subTotal + (reverseCharge ? 0 : taxTotal) - activeTdsAmount);
+
+    const finalTds = activeTdsApplicable ? activeTdsAmount : (Number(tds) || 0);
+
+    const activeClientWillDeductTds = req.body.client_will_deduct_tds !== undefined 
+      ? !!req.body.client_will_deduct_tds 
+      : activeTdsApplicable;
+    const activeTdsReceivableAmount = activeClientWillDeductTds 
+      ? roundToTwo((subTotal * activeTdsRate) / 100) 
+      : 0;
+    const activeExpectedReceipt = roundToTwo(grandTotal - activeTdsReceivableAmount);
 
     let linkedPo = null;
     if (purchaseOrderRef && mongoose.Types.ObjectId.isValid(purchaseOrderRef)) {
@@ -596,6 +624,19 @@ exports.createInvoice = async (req, res) => {
         fy: fy || getFinancialYear(date),
         currency: currency || 'INR',
         tds: finalTds,
+        tdsApplicable: activeTdsApplicable,
+        tdsSection: activeTdsSection,
+        tdsRate: activeTdsRate,
+        tds_applicable: activeTdsApplicable,
+        tds_section: activeTdsSection,
+        tds_section_label: activeTdsSectionLabel,
+        tds_rate: activeTdsRate,
+        tds_base_amount: activeTdsBaseAmount,
+        tds_amount: activeTdsAmount,
+        net_payable: activeNetPayable,
+        client_will_deduct_tds: activeClientWillDeductTds,
+        tds_receivable_amount: activeTdsReceivableAmount,
+        expected_receipt: activeExpectedReceipt,
         tcs: finalTcs,
         drCr: drCr || 'Dr.',
         notes,
@@ -675,6 +716,9 @@ exports.updateInvoice = async (req, res) => {
       fy,
       currency,
       tds,
+      tdsApplicable,
+      tdsSection,
+      tdsRate,
       tcs,
       drCr,
       purchaseOrderRef,
@@ -776,7 +820,25 @@ exports.updateInvoice = async (req, res) => {
     const finalDiscountTotal = Number(discountTotal) || 0;
     const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
-    const finalTds = Number(tds) || 0;
+
+    // TDS calculations
+    const activeTdsApplicable = req.body.tds_applicable !== undefined ? !!req.body.tds_applicable : !!tdsApplicable;
+    const activeTdsSection = req.body.tds_section || tdsSection || '';
+    const activeTdsRate = req.body.tds_rate !== undefined ? Number(req.body.tds_rate) : (tdsRate !== undefined ? Number(tdsRate) : 0);
+    const activeTdsSectionLabel = req.body.tds_section_label || TDS_SECTION_LABELS[activeTdsSection] || '';
+    const activeTdsBaseAmount = subTotal;
+    const activeTdsAmount = activeTdsApplicable ? roundToTwo((activeTdsBaseAmount * activeTdsRate) / 100) : 0;
+    const activeNetPayable = roundToTwo(subTotal + (reverseCharge ? 0 : taxTotal) - activeTdsAmount);
+
+    const finalTds = activeTdsApplicable ? activeTdsAmount : (Number(tds) || 0);
+
+    const activeClientWillDeductTds = req.body.client_will_deduct_tds !== undefined 
+      ? !!req.body.client_will_deduct_tds 
+      : activeTdsApplicable;
+    const activeTdsReceivableAmount = activeClientWillDeductTds 
+      ? roundToTwo((subTotal * activeTdsRate) / 100) 
+      : 0;
+    const activeExpectedReceipt = roundToTwo(grandTotal - activeTdsReceivableAmount);
 
     let finalStatus = status || invoice.status || 'DRAFT';
     let finalAdvance = Number(advancePaid) || 0;
@@ -824,6 +886,19 @@ exports.updateInvoice = async (req, res) => {
     invoice.fy = fy || getFinancialYear(date);
     invoice.currency = currency || 'INR';
     invoice.tds = finalTds;
+    invoice.tdsApplicable = activeTdsApplicable;
+    invoice.tdsSection = activeTdsSection;
+    invoice.tdsRate = activeTdsRate;
+    invoice.tds_applicable = activeTdsApplicable;
+    invoice.tds_section = activeTdsSection;
+    invoice.tds_section_label = activeTdsSectionLabel;
+    invoice.tds_rate = activeTdsRate;
+    invoice.tds_base_amount = activeTdsBaseAmount;
+    invoice.tds_amount = activeTdsAmount;
+    invoice.net_payable = activeNetPayable;
+    invoice.client_will_deduct_tds = activeClientWillDeductTds;
+    invoice.tds_receivable_amount = activeTdsReceivableAmount;
+    invoice.expected_receipt = activeExpectedReceipt;
     invoice.tcs = finalTcs;
     invoice.drCr = drCr || 'Dr.';
     invoice.notes = notes;

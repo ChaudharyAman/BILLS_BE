@@ -66,6 +66,12 @@ const ExpenseSchema = new mongoose.Schema({
     enum: ['DRAFT', 'PAID', 'PARTIAL', 'UNPAID', 'CANCELLED'],
     default: 'DRAFT',
   },
+  tds_applicable: { type: Boolean, default: false },
+  tds_section: { type: String, default: "" },
+  tds_rate: { type: Number, default: 0 },
+  tds_amount: { type: Number, default: 0 },
+  tds_nature: { type: String, default: "deductor" },
+  net_vendor_payment: { type: Number, default: 0 },
 
 }, { timestamps: true });
 
@@ -74,13 +80,16 @@ ExpenseSchema.pre('save', async function() {
   const grandTotal = Number(this.grandTotal) || 0;
   const amountPaid = Math.round((Number(this.amountPaid) || 0) * 100) / 100;
   const taxTotal = Number(this.taxTotal) || 0;
-  const payableAmount = Math.round((this.reverseCharge ? Math.max(grandTotal - taxTotal, 0) : grandTotal) * 100) / 100;
+  const tdsAmount = this.tds_applicable ? (Number(this.tds_amount) || 0) : 0;
+  const basePayable = this.reverseCharge ? Math.max(grandTotal - taxTotal, 0) : grandTotal;
+  const payableAmount = Math.round(Math.max(basePayable - tdsAmount, 0) * 100) / 100;
   
   if (amountPaid > payableAmount) {
     throw new Error('Amount paid cannot exceed payable amount');
   }
   this.amountPaid = amountPaid;
   this.balanceDue = Math.round(Math.max(payableAmount - amountPaid, 0) * 100) / 100;
+  this.net_vendor_payment = Math.round(Math.max(basePayable - tdsAmount, 0) * 100) / 100;
 });
 
 ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true });
