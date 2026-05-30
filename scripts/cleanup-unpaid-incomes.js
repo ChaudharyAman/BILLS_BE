@@ -9,8 +9,9 @@ const Income = require('../models/Income');
 const Invoice = require('../models/Invoice');
 
 async function cleanupUnpaidIncomes() {
-  const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/mybill';
-  console.log(`Connecting to MongoDB at: ${mongoUri}`);
+  // Allow passing custom MONGO_URI via command line: node cleanup-unpaid-incomes.js "mongodb://..."
+  const mongoUri = process.argv[2] || process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/mybill';
+  console.log(`Connecting to MongoDB at: ${mongoUri.replace(/\/\/([^:]+):([^@]+)@/, '//***:***@')}`);
   
   await mongoose.connect(mongoUri);
   console.log('Connected to MongoDB successfully.');
@@ -37,9 +38,12 @@ async function cleanupUnpaidIncomes() {
       continue;
     }
 
+    // Keep only PAID and PARTIAL — matches syncIncomeFromInvoice logic
     const isFullyPaid = invoice.status === 'PAID' || Number(invoice.balanceDue) <= 0;
-    if (!isFullyPaid) {
-      console.log(`[REMOVING] Synced income ${income.incomeNumber} from Invoice ${invoice.invoiceNo} (status: ${invoice.status}, balanceDue: ${invoice.balanceDue}) because it is not fully paid.`);
+    const isPartial = invoice.status === 'PARTIAL' || (invoice.status === 'SENT' && Number(invoice.advancePaid) > 0);
+
+    if (!isFullyPaid && !isPartial) {
+      console.log(`[REMOVING] Synced income ${income.incomeNumber} from Invoice ${invoice.invoiceNo} (status: ${invoice.status}, balanceDue: ${invoice.balanceDue}) — not PAID or PARTIAL.`);
       await income.deleteOne();
       deletedCount++;
     }

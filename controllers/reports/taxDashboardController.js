@@ -22,18 +22,22 @@ const parseDateRange = (query) => {
 
 const sum = (items, field) => items.reduce((total, item) => total + (Number(item[field]) || 0), 0);
 
-const aggregateTotals = async (Model, userId, startDate, endDate, fields) => {
+const aggregateTotals = async (Model, userId, startDate, endDate, fields, allowedStatuses = null) => {
   const project = fields.reduce((acc, field) => {
     acc[field] = { $sum: `$${field}` };
     return acc;
   }, {});
+
+  const statusFilter = allowedStatuses
+    ? { $in: allowedStatuses }
+    : { $nin: ['DRAFT', 'CANCELLED'] };
 
   const [result] = await Model.aggregate([
     {
       $match: {
         user: userId,
         date: { $gte: startDate, $lte: endDate },
-        status: { $nin: ['DRAFT', 'CANCELLED'] },
+        status: statusFilter,
       },
     },
     { $group: { _id: null, ...project } },
@@ -74,7 +78,7 @@ const getExpenseCategories = async (userId, startDate, endDate) => Expense.aggre
 const getRecentIncome = async (userId, startDate, endDate) => Income.find({
   user: userId,
   date: { $gte: startDate, $lte: endDate },
-  status: { $nin: ['DRAFT', 'CANCELLED'] },
+  status: { $in: ['PAID', 'PARTIAL'] },
 })
   .sort({ date: -1, createdAt: -1 })
   .limit(4)
@@ -100,12 +104,12 @@ const getTrend = async (userId, endDate) => {
   const start = new Date(end.getFullYear(), end.getMonth() - 5, 1);
   const endOfRange = new Date(end.getFullYear(), end.getMonth() + 1, 0, 23, 59, 59, 999);
 
-  const makePipeline = () => [
+  const makePipeline = (statusFilter) => [
     {
       $match: {
         user: userId,
         date: { $gte: start, $lte: endOfRange },
-        status: { $nin: ['DRAFT', 'CANCELLED'] },
+        status: statusFilter,
       },
     },
     {
@@ -117,8 +121,8 @@ const getTrend = async (userId, endDate) => {
   ];
 
   const [incomeRows, expenseRows] = await Promise.all([
-    Income.aggregate(makePipeline()),
-    Expense.aggregate(makePipeline()),
+    Income.aggregate(makePipeline({ $in: ['PAID', 'PARTIAL'] })),
+    Expense.aggregate(makePipeline({ $nin: ['DRAFT', 'CANCELLED'] })),
   ]);
 
   const incomeMap = new Map(incomeRows.map((item) => [`${item._id.year}-${item._id.month}`, item.total]));
@@ -294,7 +298,7 @@ const getPreviousPeriodTotals = async (userId, startDate, endDate) => {
   const prevStart = new Date(prevEnd.getTime() - durationMs);
   prevEnd.setHours(23, 59, 59, 999);
   const [prevIncome, prevExpense] = await Promise.all([
-    aggregateTotals(Income, userId, prevStart, prevEnd, ['grandTotal']),
+    aggregateTotals(Income, userId, prevStart, prevEnd, ['grandTotal'], ['PAID', 'PARTIAL']),
     aggregateTotals(Expense, userId, prevStart, prevEnd, ['grandTotal']),
   ]);
   return {
@@ -342,7 +346,7 @@ exports.getTaxDashboard = async (req, res) => {
       draftCounts,
       previousPeriod,
     ] = await Promise.all([
-      aggregateTotals(Income, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal']),
+      aggregateTotals(Income, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal'], ['PAID', 'PARTIAL']),
       aggregateTotals(Expense, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal']),
       aggregateTotals(Invoice, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal', 'totalCGST', 'totalSGST', 'totalIGST', 'tds', 'tds_amount', 'tcs']),
       getExpenseCategories(userId, startDate, endDate),
