@@ -161,7 +161,53 @@ async function removeIncomeForInvoice(invoiceId, userId, session = null) {
   await deleteQuery;
 }
 
+/**
+ * Startup cleanup: remove synced income records where the source invoice
+ * is not PAID or PARTIAL (e.g. UNPAID, DRAFT, CANCELLED, or orphaned).
+ */
+async function cleanupStaleIncomes() {
+  const Invoice = require('../models/Invoice');
+
+  const syncedIncomes = await Income.find({ sourceType: 'invoice' })
+    .select('_id incomeNumber sourceInvoice')
+    .lean();
+
+  if (syncedIncomes.length === 0) return;
+
+  let removedCount = 0;
+
+  for (const income of syncedIncomes) {
+    let shouldRemove = false;
+
+    if (!income.sourceInvoice) {
+      shouldRemove = true;
+    } else {
+      const invoice = await Invoice.findById(income.sourceInvoice)
+        .select('status balanceDue advancePaid')
+        .lean();
+
+      if (!invoice) {
+        shouldRemove = true;
+      } else {
+        const isFullyPaid = invoice.status === 'PAID' || Number(invoice.balanceDue) <= 0;
+        const isPartial = invoice.status === 'PARTIAL' || (invoice.status === 'SENT' && Number(invoice.advancePaid) > 0);
+        shouldRemove = !isFullyPaid && !isPartial;
+      }
+    }
+
+    if (shouldRemove) {
+      await Income.deleteOne({ _id: income._id });
+      removedCount++;
+    }
+  }
+
+  if (removedCount > 0) {
+    console.log(`[Income Cleanup] Removed ${removedCount} stale synced income records.`);
+  }
+}
+
 module.exports = {
   syncIncomeFromInvoice,
   removeIncomeForInvoice,
+  cleanupStaleIncomes,
 };
