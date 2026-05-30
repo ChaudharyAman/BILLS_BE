@@ -15,22 +15,26 @@ const sum = (items, field) => items.reduce((total, item) => total + (Number(item
 function getMonthRange(query) {
   if (query.month || query.year) {
     const now = new Date();
-    const year = Number(query.year) || now.getFullYear();
-    const month = Math.min(12, Math.max(1, Number(query.month) || now.getMonth() + 1));
+    const year = Number(query.year) || now.getUTCFullYear();
+    const month = Math.min(12, Math.max(1, Number(query.month) || now.getUTCMonth() + 1));
     return {
-      startDate: new Date(year, month - 1, 1),
-      endDate: new Date(year, month, 0, 23, 59, 59, 999),
+      startDate: new Date(Date.UTC(year, month - 1, 1)),
+      endDate: new Date(Date.UTC(year, month, 0, 23, 59, 59, 999)),
     };
   }
 
   const now = new Date();
-  const startDate = query.startDate ? new Date(query.startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
-  const endDate = query.endDate ? new Date(query.endDate) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  const startDate = query.startDate
+    ? new Date(query.startDate)
+    : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const endDate = query.endDate
+    ? new Date(query.endDate)
+    : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
 
   if (query.startDate && Number.isNaN(startDate.getTime())) throw new Error('Invalid startDate');
   if (query.endDate && Number.isNaN(endDate.getTime())) throw new Error('Invalid endDate');
 
-  endDate.setHours(23, 59, 59, 999);
+  endDate.setUTCHours(23, 59, 59, 999);
   return { startDate, endDate };
 }
 
@@ -41,16 +45,16 @@ function previousPeriodRange(startDate, endDate) {
   // For single-month views (~28-31 days), compare against the prior month
   if (durationDays <= 31) {
     return {
-      startDate: new Date(startDate.getFullYear(), startDate.getMonth() - 1, 1),
-      endDate: new Date(startDate.getFullYear(), startDate.getMonth(), 0, 23, 59, 59, 999),
+      startDate: new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() - 1, 1)),
+      endDate: new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), 0, 23, 59, 59, 999)),
     };
   }
 
   // For multi-month ranges, shift the entire range backwards by its own duration
   const prevEnd = new Date(startDate.getTime() - 1);
-  prevEnd.setHours(23, 59, 59, 999);
+  prevEnd.setUTCHours(23, 59, 59, 999);
   const prevStart = new Date(prevEnd.getTime() - durationMs);
-  prevStart.setHours(0, 0, 0, 0);
+  prevStart.setUTCHours(0, 0, 0, 0);
   return { startDate: prevStart, endDate: prevEnd };
 }
 
@@ -158,8 +162,8 @@ async function getSlabTotals(Model, userId, startDate, endDate, allowedStatuses 
 }
 
 async function getTrend6Months(userId, endDate) {
-  const start = new Date(endDate.getFullYear(), endDate.getMonth() - 5, 1);
-  const end = new Date(endDate.getFullYear(), endDate.getMonth() + 1, 0, 23, 59, 59, 999);
+  const start = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - 5, 1));
+  const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 0, 23, 59, 59, 999));
   
   const invoicePipeline = [
     { $match: { user: userId, date: { $gte: start, $lte: end }, status: { $in: ACTIVE_INVOICE_STATUSES } } },
@@ -194,12 +198,12 @@ async function getTrend6Months(userId, endDate) {
   const expenseMap = new Map(expenseRows.map((row) => [`${row._id.year}-${row._id.month}`, row]));
 
   return Array.from({ length: 6 }, (_, index) => {
-    const date = new Date(start.getFullYear(), start.getMonth() + index, 1);
-    const key = `${date.getFullYear()}-${date.getMonth() + 1}`;
+    const date = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + index, 1));
+    const key = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}`;
     const output = invoiceMap.get(key);
     const input = expenseMap.get(key);
     return {
-      month: MONTHS[date.getMonth()],
+      month: MONTHS[date.getUTCMonth()],
       output: roundTwo(output?.tax || 0),
       input: roundTwo(input?.tax || 0),
       revenue: roundTwo(output?.total || 0),
@@ -458,13 +462,13 @@ exports.getTaxDashboard = async (req, res) => {
     const itcUtilisation = outputLiability ? roundTwo((inputCredit / outputLiability) * 100) : 0;
     const tdsDeducted = roundTwo(invoiceTdsDeducted);
     const tdsPayable = roundTwo(payrollTdsPayable + expenseTdsPayable);
-    const netTaxPayable = Math.max(roundTwo(netPayable + tdsPayable - tdsDeducted), 0);
+    const netTaxPayable = roundTwo(netPayable + tdsPayable);
     
-    const gstDueDate = new Date(endDate.getFullYear(), endDate.getMonth() + 1, 20);
-    const tdsDueDate = new Date(endDate.getFullYear(), endDate.getMonth() + 1, 7);
+    const gstDueDate = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 20));
+    const tdsDueDate = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 7));
 
     res.json({
-      period: { startDate, endDate, month: MONTHS[startDate.getMonth()], year: startDate.getFullYear() },
+      period: { startDate, endDate, month: MONTHS[startDate.getUTCMonth()], year: startDate.getUTCFullYear() },
       summary: {
         outputLiability,
         inputCredit,
