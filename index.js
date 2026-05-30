@@ -81,10 +81,15 @@ app.get('/', (req, res) => {
   res.send('API is working fine.');
 });
 
+const { cleanupStaleIncomes } = require('./services/invoiceIncomeSync');
+
 async function startServer(port = process.env.PORT || 5000) {
   await connectDB();
   await bootstrapAdmin();
   startScheduler();
+
+  // Auto-cleanup stale UNPAID income records synced from invoices (non-blocking)
+  cleanupStaleIncomes().catch((err) => console.error('Startup income cleanup failed:', err.message));
 
   return new Promise((resolve, reject) => {
     const server = app.listen(port, () => {
