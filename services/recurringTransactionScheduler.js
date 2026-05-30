@@ -119,30 +119,32 @@ const processDueRecurringTransactions = async (asOf = new Date()) => {
   });
 
   const results = [];
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      for (const rt of due) {
-        try {
-          await createTransactionDocument(rt, today, session);
-          rt.lastProcessedDate = today;
-          const next = computeNextProcessDate(rt, today);
-          if (rt.endDate && next > startOfDay(rt.endDate)) {
-            rt.isActive = false;
-            rt.nextProcessDate = null;
-          } else {
-            rt.nextProcessDate = next;
-          }
-          await rt.save({ session });
-          results.push({ id: rt._id, status: 'processed' });
-        } catch (error) {
-          results.push({ id: rt._id, status: 'error', error: error.message });
-          throw error;
+
+  // Process each recurring transaction independently so one failure
+  // does not abort the entire batch for all other users.
+  for (const rt of due) {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await createTransactionDocument(rt, today, session);
+        rt.lastProcessedDate = today;
+        const next = computeNextProcessDate(rt, today);
+        if (rt.endDate && next > startOfDay(rt.endDate)) {
+          rt.isActive = false;
+          rt.nextProcessDate = null;
+        } else {
+          rt.nextProcessDate = next;
         }
-      }
-    });
-  } finally {
-    session.endSession();
+        await rt.save({ session });
+      });
+      results.push({ id: rt._id, status: 'processed' });
+    } catch (error) {
+      console.error(`Recurring transaction ${rt._id} failed:`, error.message);
+      results.push({ id: rt._id, status: 'error', error: error.message });
+      // Do NOT re-throw — continue processing the remaining transactions
+    } finally {
+      session.endSession();
+    }
   }
 
   return results;

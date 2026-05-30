@@ -5,13 +5,8 @@ const { syncExpiredSubscription } = require('../utils/subscriptionLifecycle');
 const protect = async (req, res, next) => {
   let token;
 
-  // 1. Check cookies
   if (req.cookies && req.cookies.token) {
     token = req.cookies.token;
-  } 
-  // 2. Check Authorization header (Safari fix for cross-site)
-  else if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    token = req.headers.authorization.split(' ')[1];
   }
 
   if (!token) {
@@ -27,7 +22,9 @@ const protect = async (req, res, next) => {
     }
 
     // Keep plan state consistent: expired Pro users are auto-downgraded to free.
-    await syncExpiredSubscription(req.user);
+    if (req.user.subscription?.plan !== 'free') {
+      await syncExpiredSubscription(req.user);
+    }
 
     next();
   } catch (error) {

@@ -17,15 +17,14 @@ const generateToken = (user) => {
   });
 };
 
-const buildAuthResponse = (user, token) => ({
+const buildAuthResponse = (user) => ({
   user: {
     _id: user._id,
     username: user.username,
     email: user.email,
     role: user.role,
     subscription: user.subscription
-  },
-  token,
+  }
 });
 
 // Safari/Chrome Cookie Helper
@@ -75,7 +74,7 @@ exports.register = async (req, res) => {
       const token = generateToken(user);
       res.cookie('token', token, getCookieOptions(req));
 
-      res.status(201).json(buildAuthResponse(user, token));
+      res.status(201).json(buildAuthResponse(user));
     } else {
       res.status(400).json({ message: 'Invalid user data' });
     }
@@ -119,7 +118,7 @@ exports.login = async (req, res) => {
       const token = generateToken(user);
       res.cookie('token', token, getCookieOptions(req));
 
-      res.json(buildAuthResponse(user, token));
+      res.json(buildAuthResponse(user));
     } else {
       res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -132,7 +131,7 @@ exports.login = async (req, res) => {
 exports.me = async (req, res) => {
   const token = generateToken(req.user);
   res.cookie('token', token, getCookieOptions(req));
-  res.json(buildAuthResponse(req.user, token));
+  res.json(buildAuthResponse(req.user));
 };
 
 // @desc    Update logged-in user's profile (username, email, phone, password)

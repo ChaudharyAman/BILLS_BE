@@ -8,6 +8,7 @@ const { buildAutoDocumentNumber, buildCustomDocumentNumber } = require('../utils
 const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
+const { parseImportedDate } = require('../utils/dateRange');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
@@ -24,18 +25,14 @@ function isQuoteNumberDuplicateError(error) {
   );
 }
 
-function escapeRegexLiteral(value = '') {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 async function generateNextUniqueQuoteNumber({ userId, quotePrefix }) {
   const counterId = buildUserCounterId(userId, 'quoteNo');
   const normalizedPrefix = String(quotePrefix || 'QT').trim().replace(/[-/\s]+$/g, '') || 'QT';
-  const pattern = new RegExp(`^${escapeRegexLiteral(normalizedPrefix)}-(\\d+)$`);
+  const pattern = new RegExp(`^${escapeRegex(normalizedPrefix)}-(\\d+)$`);
 
   const existingQuoteNumbers = await Quote.find({
     user: userId,
-    quoteNo: { $regex: `^${escapeRegexLiteral(normalizedPrefix)}-\\d+$` },
+    quoteNo: { $regex: `^${escapeRegex(normalizedPrefix)}-\\d+$` },
   })
     .select('quoteNo -_id')
     .lean();
@@ -73,6 +70,23 @@ async function generateNextUniqueQuoteNumber({ userId, quotePrefix }) {
   throw new Error('Could not reserve a unique quote number.');
 }
 
+function roundToTwo(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function formatDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 10);
+}
+
+function isSameImportedQuote(existingQuote, importedDate, importedGrandTotal) {
+  return (
+    formatDateKey(existingQuote?.date) === formatDateKey(importedDate) &&
+    roundToTwo(existingQuote?.grandTotal) === roundToTwo(importedGrandTotal)
+  );
+}
+
 // ─── GET all quotes ───────────────────────────────────────────────────────────
 exports.getQuotes = async (req, res) => {
   try {
@@ -82,6 +96,12 @@ exports.getQuotes = async (req, res) => {
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 10;
     const search = req.query.search || '';
+    const status = req.query.status || '';
+    const startDate = req.query.startDate || '';
+    const endDate = req.query.endDate || '';
+    const dateType = req.query.dateType || 'date'; // 'date' or 'validUntil'
+    const sortBy = req.query.sortBy || 'createdAt';
+    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
     const skip = (page - 1) * limit;
 
     let query = { user: req.user._id };
@@ -100,11 +120,48 @@ exports.getQuotes = async (req, res) => {
       ];
     }
 
+    // Status Filter
+    if (status) {
+      query.status = status;
+    }
+
+    // Date Range Filter
+    if (startDate || endDate) {
+      const dateField = dateType === 'validUntil' ? 'validUntil' : 'date';
+      query[dateField] = {};
+      if (startDate) {
+        const start = new Date(startDate);
+        if (!isNaN(start.getTime())) {
+          query[dateField].$gte = start;
+        }
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          query[dateField].$lte = end;
+        }
+      }
+    }
+
     const total = await Quote.countDocuments(query);
+
+    // Sorting structure
+    let sortObj = {};
+    if (sortBy === 'clientName') {
+      sortObj['client.name'] = sortOrder;
+    } else {
+      sortObj[sortBy] = sortOrder;
+    }
+    // Stabilize sorting
+    if (sortBy !== 'createdAt') {
+      sortObj['createdAt'] = -1;
+    }
+
     const quotesQuery = Quote.find(query)
       .select('-items -notes -terms -shippingAddress')
       .lean()
-      .sort({ createdAt: -1 });
+      .sort(sortObj);
 
     if (!exportAll) {
       quotesQuery.skip(skip).limit(limit);
@@ -157,7 +214,9 @@ exports.createQuote = async (req, res) => {
       try {
         const ProformaModel = require('../models/Proforma');
         proformaCount = await ProformaModel.countDocuments({ user: req.user._id, createdAt: { $gte: startOfMonth } });
-      } catch(e) {}
+      } catch(e) {
+        console.warn('Failed to count proformas for plan check:', e.message);
+      }
       if (quoteCount + proformaCount >= 15) {
         return res.status(403).json({ message: 'Free plan limit reached. You can only create 15 Quotes & Proformas per month.' });
       }
@@ -489,8 +548,8 @@ exports.convertToInvoice = async (req, res) => {
       totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: quote.customChargeLabel, discountTotal: finalDiscount,
-      exciseDuty: { ...(quote.exciseDuty || {}), totalExcise },
-      grandTotal, balanceDue: grandTotal,
+      exciseDuty: { totalExcise },
+      totalAmount: grandTotal, grandTotal, balanceDue: grandTotal,
       shippingAddress: resolvedShipping, transport: quote.transport,
       placeOfSupply: quote.placeOfSupply, reverseCharge: quote.reverseCharge,
       notes: quote.notes, terms: quote.terms, status: 'DRAFT',
@@ -548,7 +607,9 @@ exports.bulkCreateQuotes = async (req, res) => {
       try {
         const ProformaModel = require('../models/Proforma');
         proformaCount = await ProformaModel.countDocuments({ user: req.user._id, createdAt: { $gte: startOfMonth } });
-      } catch(e) {}
+      } catch(e) {
+        console.warn('Failed to count proformas for plan check:', e.message);
+      }
       
       const combined = quoteCount + proformaCount;
       if (combined + quotes.length > 15) {
@@ -562,11 +623,24 @@ exports.bulkCreateQuotes = async (req, res) => {
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
     const createdQuotes = [];
-    for (const qData of quotes) {
-      let client = await Client.findOne({ name: qData.clientName, user: req.user._id });
+    const importedQuotes = [];
+    const skippedQuotes = [];
+    const renumberedQuotes = [];
+    const failedQuotes = [];
+    for (const [index, qData] of quotes.entries()) {
+      const importRowId = qData?._importRowId || String(index);
+      const rowQuoteNo = String(qData?.quoteNo || '').trim();
+      const rowClientName = String(qData?.clientName || '').trim();
+
+      try {
+      if (!rowClientName) {
+        throw new Error('Client name is required for each imported quote.');
+      }
+
+      let client = await Client.findOne({ name: rowClientName, user: req.user._id });
       if (!client) {
          client = new Client({
-            name: qData.clientName || 'Unknown Client',
+            name: rowClientName || 'Unknown Client',
             email: qData.clientEmail || '',
             phone: qData.clientPhone || '',
             billingAddress: { state: qData.clientState || '' },
@@ -578,27 +652,71 @@ exports.bulkCreateQuotes = async (req, res) => {
       const clientState = qData.placeOfSupply || client.billingAddress?.state || '';
       const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
-      const quoteNo = await generateNextUniqueQuoteNumber({
-        userId: req.user._id,
-        quotePrefix: userSettings?.quotePrefix || 'QT',
-      });
+      let currentQuoteNo = rowQuoteNo;
+      const originalQuoteNo = currentQuoteNo;
+      if (!currentQuoteNo || currentQuoteNo === 'Auto-generated') {
+        currentQuoteNo = await generateNextUniqueQuoteNumber({
+          userId: req.user._id,
+          quotePrefix: userSettings?.quotePrefix || 'QT',
+        });
+      }
+
+      let invoiceType = qData.invoiceType || 'Tax Invoice';
+      if (!['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'].includes(invoiceType)) {
+        invoiceType = 'Tax Invoice';
+      }
 
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-        processItems(qData.items || [], qData.invoiceType || 'Tax Invoice', isIntraState);
+        processItems(qData.items || [], invoiceType, isIntraState);
 
       const finalShipping = Number(qData.shippingCharges) || 0;
       const finalPackaging = Number(qData.packagingCharges) || 0;
       const finalDiscount = Number(qData.discountTotal) || 0;
       const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+      const finalDate = parseImportedDate(qData.date);
+
+      if (originalQuoteNo) {
+        const existingQuote = await Quote.findOne({ user: req.user._id, quoteNo: originalQuoteNo });
+        if (existingQuote && isSameImportedQuote(existingQuote, finalDate, grandTotal)) {
+          skippedQuotes.push({
+            importRowId,
+            quoteNo: originalQuoteNo,
+            clientName: rowClientName,
+            date: finalDate,
+            grandTotal,
+            reason: 'same quote number, date, and amount already exist',
+          });
+          continue;
+        }
+
+        if (existingQuote) {
+          currentQuoteNo = await generateNextUniqueQuoteNumber({
+            userId: req.user._id,
+            quotePrefix: userSettings?.quotePrefix || 'QT',
+          });
+          renumberedQuotes.push({
+            importRowId,
+            originalQuoteNo,
+            quoteNo: currentQuoteNo,
+            clientName: rowClientName,
+            date: finalDate,
+            grandTotal,
+            reason: 'same quote number exists with different date or amount',
+          });
+        }
+      }
+
+      const VALID_QUOTE_STATUSES = ['DRAFT', 'SENT', 'ACCEPTED', 'REJECTED', 'CONVERTED'];
+      const rawImportStatus = String(qData.status || '').trim().toUpperCase();
+      const importedStatus = VALID_QUOTE_STATUSES.includes(rawImportStatus) ? rawImportStatus : 'DRAFT';
 
       let savedQuote = null;
-      let currentQuoteNo = quoteNo;
       for (let attempt = 0; attempt < 25; attempt += 1) {
         const quote = new Quote({
           quoteNo: currentQuoteNo,
-          invoiceType: qData.invoiceType || 'Tax Invoice',
-          date: qData.date || new Date(),
-          validUntil: qData.validUntil || new Date(),
+          invoiceType,
+          date: finalDate,
+          validUntil: qData.validUntil ? parseImportedDate(qData.validUntil) : undefined,
           paymentMode: qData.paymentMode || 'Cash',
           paymentTerms: qData.paymentTerms || '',
           shippingAddress: qData.shippingAddress,
@@ -608,7 +726,6 @@ exports.bulkCreateQuotes = async (req, res) => {
           customChargeLabel: qData.customChargeLabel || 'Custom Amount',
           notes: qData.notes || '',
           terms: qData.terms || '',
-          clientRef: client._id,
           client: {
              clientRef: client._id,
              name: client.name,
@@ -628,7 +745,8 @@ exports.bulkCreateQuotes = async (req, res) => {
           subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
           shippingCharges: finalShipping, packagingCharges: finalPackaging,
           discountTotal: finalDiscount, grandTotal,
-          status: 'DRAFT',
+          bankDetails: userSettings?.bankDetails || {},
+          status: importedStatus,
           user: req.user._id
         });
 
@@ -644,6 +762,15 @@ exports.bulkCreateQuotes = async (req, res) => {
             userId: req.user._id,
             quotePrefix: userSettings?.quotePrefix || 'QT',
           });
+          renumberedQuotes.push({
+            importRowId,
+            originalQuoteNo: originalQuoteNo || rowQuoteNo,
+            quoteNo: currentQuoteNo,
+            clientName: rowClientName,
+            date: finalDate,
+            grandTotal,
+            reason: 'quote number was already used during import',
+          });
         }
       }
 
@@ -652,10 +779,69 @@ exports.bulkCreateQuotes = async (req, res) => {
       }
 
       createdQuotes.push(savedQuote);
+      importedQuotes.push({
+        importRowId,
+        quoteNo: savedQuote.quoteNo,
+        originalQuoteNo: originalQuoteNo || savedQuote.quoteNo,
+        clientName: savedQuote.client?.name || rowClientName,
+        date: savedQuote.date,
+        grandTotal: savedQuote.grandTotal,
+        status: savedQuote.status,
+        renumbered: !!originalQuoteNo && savedQuote.quoteNo !== originalQuoteNo,
+      });
+      } catch (rowError) {
+        failedQuotes.push({
+          importRowId,
+          row: index + 1,
+          quoteNo: rowQuoteNo,
+          clientName: rowClientName,
+          reason: rowError.message || 'Failed to import quote row',
+        });
+      }
     }
 
-    res.status(201).json({ message: `Successfully imported ${createdQuotes.length} quotes.`, count: createdQuotes.length });
+    const messageParts = [`Successfully imported ${createdQuotes.length} quotes.`];
+    if (skippedQuotes.length) messageParts.push(`${skippedQuotes.length} duplicate quotes skipped.`);
+    if (renumberedQuotes.length) messageParts.push(`${renumberedQuotes.length} quotes renumbered.`);
+    if (failedQuotes.length) messageParts.push(`${failedQuotes.length} quotes failed.`);
+
+    res.status(201).json({
+      message: messageParts.join(' '),
+      count: createdQuotes.length,
+      imported: createdQuotes.length,
+      updated: 0,
+      skipped: skippedQuotes.length,
+      renumbered: renumberedQuotes.length,
+      failed: failedQuotes.length,
+      importedQuotes,
+      skippedQuotes,
+      renumberedQuotes,
+      failedQuotes,
+    });
   } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ─── UPDATE quote status ─────────────────────────────────────────────────────
+exports.updateQuoteStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) {
+      return res.status(400).json({ message: 'Status is required' });
+    }
+
+    const quote = await Quote.findOne({ _id: req.params.id, user: req.user._id });
+    if (!quote) return res.status(404).json({ message: 'Quote not found' });
+    if (quote.status === 'CONVERTED' || quote.convertedToInvoice) {
+      return res.status(400).json({ message: 'Converted quotations cannot be updated.' });
+    }
+
+    quote.status = status;
+    const saved = await quote.save();
+    res.json(saved);
+  } catch (error) {
+    console.error('updateQuoteStatus error:', error);
     res.status(500).json({ message: error.message });
   }
 };

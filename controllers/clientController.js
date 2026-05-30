@@ -79,7 +79,8 @@ exports.createClient = async (req, res) => {
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
       contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
       useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
-      facebook, lst, cst, dlNo, openingBalance
+      facebook, lst, cst, dlNo, openingBalance,
+      tds_applicable, default_tds_section, default_tds_rate
     } = req.body;
 
     const client = new Client({
@@ -88,6 +89,7 @@ exports.createClient = async (req, res) => {
       contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
       useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
       facebook, lst, cst, dlNo, openingBalance,
+      tds_applicable, default_tds_section, default_tds_rate,
       user: req.user._id
     });
 
@@ -170,7 +172,8 @@ exports.updateClient = async (req, res) => {
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
       contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
       useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
-      facebook, lst, cst, dlNo, openingBalance
+      facebook, lst, cst, dlNo, openingBalance,
+      tds_applicable, default_tds_section, default_tds_rate
     } = req.body;
 
     const updateData = {
@@ -178,7 +181,8 @@ exports.updateClient = async (req, res) => {
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
       contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
       useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
-      facebook, lst, cst, dlNo, openingBalance
+      facebook, lst, cst, dlNo, openingBalance,
+      tds_applicable, default_tds_section, default_tds_rate
     };
 
     // Remove undefined fields so they don't overwrite existing data with nulls if not provided in the request

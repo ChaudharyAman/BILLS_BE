@@ -15,7 +15,7 @@ const InvoiceItemSchema = new mongoose.Schema({
   qty: { type: Number, required: true, min: 0 },
   unit: String,
   rate: { type: Number, required: true, min: 0 },
-  discount: { type: Number, default: 0 }, // Value amount, not percent
+  discount: { type: Number, default: 0 }, // Percentage, not value
   
   // Tax details per item
   taxRate: { type: Number, default: 0 }, // %
@@ -153,6 +153,19 @@ const InvoiceSchema = new mongoose.Schema({
   
   // Tax Deducted/Collected at Source
   tds: { type: Number, default: 0 },
+  tdsApplicable: { type: Boolean, default: false },
+  tdsSection: { type: String, default: '' },
+  tdsRate: { type: Number, default: 0 },
+  tds_applicable: { type: Boolean, default: false },
+  tds_section: { type: String, default: '' },
+  tds_section_label: { type: String, default: '' },
+  tds_rate: { type: Number, default: 0 },
+  tds_base_amount: { type: Number, default: 0 },
+  tds_amount: { type: Number, default: 0 },
+  net_payable: { type: Number, default: 0 },
+  client_will_deduct_tds: { type: Boolean, default: false },
+  tds_receivable_amount: { type: Number, default: 0 },
+  expected_receipt: { type: Number, default: 0 },
   tcs: { type: Number, default: 0 },
   
   // Debit / Credit indicator

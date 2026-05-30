@@ -303,6 +303,22 @@ const getPreviousPeriodTotals = async (userId, startDate, endDate) => {
   };
 };
 
+/* ── Expense TDS Payable (user deducted from vendor payments) ────── */
+const getExpenseTdsPayable = async (userId, startDate, endDate) => {
+  const [result] = await Expense.aggregate([
+    {
+      $match: {
+        user: userId,
+        date: { $gte: startDate, $lte: endDate },
+        status: { $nin: ['DRAFT', 'CANCELLED'] },
+        tds_applicable: true,
+      },
+    },
+    { $group: { _id: null, total: { $sum: '$tds_amount' } } },
+  ]);
+  return result?.total || 0;
+};
+
 exports.getTaxDashboard = async (req, res) => {
   try {
     const { startDate, endDate } = parseDateRange(req.query);
@@ -316,7 +332,8 @@ exports.getTaxDashboard = async (req, res) => {
       recentIncome,
       recentExpenses,
       trend,
-      tdsPayable,
+      payrollTdsPayable,
+      expenseTdsPayable,
       receivables,
       payables,
       overdueInvoices,
@@ -327,12 +344,13 @@ exports.getTaxDashboard = async (req, res) => {
     ] = await Promise.all([
       aggregateTotals(Income, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal']),
       aggregateTotals(Expense, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal']),
-      aggregateTotals(Invoice, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal', 'totalCGST', 'totalSGST', 'totalIGST', 'tds', 'tcs']),
+      aggregateTotals(Invoice, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal', 'totalCGST', 'totalSGST', 'totalIGST', 'tds', 'tds_amount', 'tcs']),
       getExpenseCategories(userId, startDate, endDate),
       getRecentIncome(userId, startDate, endDate),
       getRecentExpenses(userId, startDate, endDate),
       getTrend(userId, endDate),
       getPayrollTdsPayable(userId, startDate, endDate),
+      getExpenseTdsPayable(userId, startDate, endDate),
       getReceivables(userId),
       getPayables(userId),
       getOverdueInvoices(userId),
@@ -345,7 +363,10 @@ exports.getTaxDashboard = async (req, res) => {
     const gstLiability = Number(invoiceTotals.taxTotal) || 0;
     const gstCredit = Number(expenseTotals.taxTotal) || 0;
     const netGstPayable = Math.max(gstLiability - gstCredit, 0);
-    const tdsDeducted = Number(invoiceTotals.tds) || 0;
+    // Sum both legacy 'tds' and new 'tds_amount' fields (only one is populated per invoice)
+    const tdsDeducted = (Number(invoiceTotals.tds) || 0) + (Number(invoiceTotals.tds_amount) || 0);
+    // TDS Payable = payroll TDS + expense TDS (where user deducts from vendor)
+    const tdsPayable = payrollTdsPayable + expenseTdsPayable;
     const netTaxPayable = Math.max(netGstPayable + tdsPayable - tdsDeducted, 0);
 
     res.json({

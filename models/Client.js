@@ -24,6 +24,9 @@ const ClientSchema = new mongoose.Schema({
   tan: { type: String, trim: true, uppercase: true },
   tin: { type: String, trim: true },
   vat: { type: String, trim: true },
+  tds_applicable: { type: Boolean, default: false },
+  default_tds_section: { type: String, default: '' },
+  default_tds_rate: { type: Number, default: 0 },
   website: { type: String, trim: true },
   currency: { type: String, default: 'INR' },
   
@@ -80,5 +83,7 @@ const ClientSchema = new mongoose.Schema({
   pendingPayment: { type: Number, default: 0 },
 
 }, { timestamps: true });
+
+ClientSchema.index({ user: 1, name: 1 }, { unique: true });
 
 module.exports = mongoose.model('Client', ClientSchema);

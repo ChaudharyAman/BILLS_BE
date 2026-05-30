@@ -62,6 +62,9 @@ const IncomeSchema = new mongoose.Schema({
   // Calcs
   subTotal: { type: Number, default: 0 },
   taxTotal: { type: Number, default: 0 },
+  totalCGST: { type: Number, default: 0 },
+  totalSGST: { type: Number, default: 0 },
+  totalIGST: { type: Number, default: 0 },
   grandTotal: { type: Number, default: 0 },
 
   // Notes
@@ -70,7 +73,7 @@ const IncomeSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['DRAFT', 'PAID', 'UNPAID', 'CANCELLED'],
+    enum: ['DRAFT', 'PAID', 'PARTIAL', 'UNPAID', 'CANCELLED'],
     default: 'DRAFT',
   },
 

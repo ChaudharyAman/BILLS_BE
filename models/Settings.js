@@ -14,9 +14,11 @@ const SettingsSchema = new mongoose.Schema({
   },
   address: {
     line1: String,
+    line2: String,
     city: String,
     state: String,
     zip: String,
+    country: String,
   },
   gstin: String,
   pan: String,

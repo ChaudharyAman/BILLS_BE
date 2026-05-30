@@ -15,6 +15,7 @@ router.get('/:id', protect, invoiceController.getInvoiceById);
 router.post('/', protect, invoiceController.createInvoice);
 router.post('/bulk', protect, invoiceController.bulkCreateInvoices);
 router.put('/:id', protect, invoiceController.updateInvoice);
+router.put('/:id/status', protect, invoiceController.updateInvoiceStatus);
 router.delete('/:id', protect, invoiceController.deleteInvoice);
 
 module.exports = router;

@@ -8,6 +8,7 @@ const { buildAutoDocumentNumber, buildCustomDocumentNumber } = require('../utils
 const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
+const { parseImportedDate } = require('../utils/dateRange');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
@@ -548,8 +549,8 @@ exports.convertToInvoice = async (req, res) => {
       totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
       customChargeLabel: purchaseOrder.customChargeLabel, discountTotal: finalDiscount,
-      exciseDuty: { ...(purchaseOrder.exciseDuty || {}), totalExcise },
-      grandTotal, balanceDue: grandTotal,
+      exciseDuty: { totalExcise },
+      totalAmount: grandTotal, grandTotal, balanceDue: grandTotal,
       shippingAddress: resolvedShipping, transport: purchaseOrder.transport,
       placeOfSupply: purchaseOrder.placeOfSupply, reverseCharge: purchaseOrder.reverseCharge,
       notes: purchaseOrder.notes, terms: purchaseOrder.terms, status: 'DRAFT',
@@ -590,6 +591,28 @@ exports.markPurchaseOrderReceived = async (req, res) => {
     res.json(saved);
   } catch (e) {
     res.status(500).json({ message: e.message });
+  }
+};
+
+// ─── UPDATE purchase order status ────────────────────────────────────────────────
+exports.updatePurchaseOrderStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) {
+      return res.status(400).json({ message: 'Status is required' });
+    }
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: req.user._id });
+    if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
+    if (purchaseOrder.status === 'BILLED' || purchaseOrder.convertedToInvoice) {
+      return res.status(400).json({ message: 'Billed purchase orders cannot be updated.' });
+    }
+
+    purchaseOrder.status = status;
+    const saved = await purchaseOrder.save();
+    res.json(saved);
+  } catch (error) {
+    console.error('updatePurchaseOrderStatus error:', error);
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -648,8 +671,12 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
       );
       const poNumber = buildAutoDocumentNumber(userSettings?.purchaseOrderPrefix || 'PO', counter.seq);
 
+      const VALID_INVOICE_TYPES = ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'];
+      const rawType = String(qData.invoiceType || '').trim();
+      const invoiceType = VALID_INVOICE_TYPES.includes(rawType) ? rawType : 'Tax Invoice';
+
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-        processItems(qData.items || [], qData.invoiceType || 'Tax Invoice', isIntraState);
+        processItems(qData.items || [], invoiceType, isIntraState);
 
       const finalShipping = Number(qData.shippingCharges) || 0;
       const finalPackaging = Number(qData.packagingCharges) || 0;
@@ -658,9 +685,9 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
 
       const purchaseOrder = new PurchaseOrder({
         poNumber,
-        invoiceType: qData.invoiceType || 'Tax Invoice',
-        date: qData.date || new Date(),
-        validUntil: qData.validUntil || new Date(),
+        invoiceType,
+        date: parseImportedDate(qData.date),
+        validUntil: qData.validUntil ? parseImportedDate(qData.validUntil) : undefined,
         paymentMode: qData.paymentMode || 'Cash',
         paymentTerms: qData.paymentTerms || '',
         shippingAddress: qData.shippingAddress,

@@ -10,11 +10,18 @@ const { buildAutoDocumentNumber } = require('../utils/documentNumber');
 const { syncIncomeFromInvoice, removeIncomeForInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
-const { parseOptionalDateRange } = require('../utils/dateRange');
+const { parseOptionalDateRange, parseImportedDate } = require('../utils/dateRange');
 
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
 const ACTIVE_INVOICE_STATUSES = ['SENT', 'PAID', 'PARTIAL', 'UNPAID'];
+const TDS_SECTION_LABELS = {
+  '194C': 'Contractor',
+  '194J': 'Professional/Technical Fees',
+  '194I': 'Rent',
+  '194A': 'Interest',
+  'Manual': 'Manual Custom Rate'
+};
 
 function isInvoiceNumberDuplicateError(error) {
   return (
@@ -70,6 +77,19 @@ async function generateNextUniqueInvoiceNumber({ userId, invoicePrefix }) {
   }
 
   throw new Error('Could not reserve a unique invoice number.');
+}
+
+function formatDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 10);
+}
+
+function isSameImportedInvoice(existingInvoice, importedDate, importedGrandTotal) {
+  return (
+    formatDateKey(existingInvoice?.date) === formatDateKey(importedDate) &&
+    roundToTwo(existingInvoice?.grandTotal) === roundToTwo(importedGrandTotal)
+  );
 }
 
 // Helper to calculate Financial Year (April - March)
@@ -304,6 +324,13 @@ exports.getInvoices = async (req, res) => {
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 10;
     const search = req.query.search || '';
+    const status = req.query.status || '';
+    const invoiceType = req.query.invoiceType || '';
+    const startDate = req.query.startDate || '';
+    const endDate = req.query.endDate || '';
+    const dateType = req.query.dateType || 'date'; // 'date' or 'dueDate'
+    const sortBy = req.query.sortBy || 'createdAt';
+    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
     const skip = (page - 1) * limit;
 
     let query = { user: req.user._id };
@@ -326,12 +353,54 @@ exports.getInvoices = async (req, res) => {
       ];
     }
 
+    // Status Filter
+    if (status) {
+      query.status = status;
+    }
+
+    // Invoice Type Filter
+    if (invoiceType) {
+      query.invoiceType = invoiceType;
+    }
+
+    // Date Range Filter
+    if (startDate || endDate) {
+      const dateField = dateType === 'dueDate' ? 'dueDate' : 'date';
+      query[dateField] = {};
+      if (startDate) {
+        const start = new Date(startDate);
+        if (!isNaN(start.getTime())) {
+          query[dateField].$gte = start;
+        }
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          query[dateField].$lte = end;
+        }
+      }
+    }
+
     const total = await Invoice.countDocuments(query);
+
+    // Sorting structure
+    let sortObj = {};
+    if (sortBy === 'clientName') {
+      sortObj['client.name'] = sortOrder;
+    } else {
+      sortObj[sortBy] = sortOrder;
+    }
+    // Stabilize sorting
+    if (sortBy !== 'createdAt') {
+      sortObj['createdAt'] = -1;
+    }
+
     const invoicesQuery = Invoice.find(query)
       .populate('user', 'username')
       .select('-items -terms -shippingAddress')
       .lean()
-      .sort({ createdAt: -1 });
+      .sort(sortObj);
 
     if (!exportAll) {
       invoicesQuery.skip(skip).limit(limit);
@@ -396,6 +465,9 @@ exports.createInvoice = async (req, res) => {
       fy,
       currency,
       tds,
+      tdsApplicable,
+      tdsSection,
+      tdsRate,
       tcs,
       drCr,
       purchaseOrderRef,
@@ -479,7 +551,25 @@ exports.createInvoice = async (req, res) => {
     const finalDiscountTotal = Number(discountTotal) || 0;
     const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
-    const finalTds = Number(tds) || 0;
+    
+    // TDS calculations
+    const activeTdsApplicable = req.body.tds_applicable !== undefined ? !!req.body.tds_applicable : !!tdsApplicable;
+    const activeTdsSection = req.body.tds_section || tdsSection || '';
+    const activeTdsRate = req.body.tds_rate !== undefined ? Number(req.body.tds_rate) : (tdsRate !== undefined ? Number(tdsRate) : 0);
+    const activeTdsSectionLabel = req.body.tds_section_label || TDS_SECTION_LABELS[activeTdsSection] || '';
+    const activeTdsBaseAmount = subTotal;
+    const activeTdsAmount = activeTdsApplicable ? roundToTwo((activeTdsBaseAmount * activeTdsRate) / 100) : 0;
+    const activeNetPayable = roundToTwo(subTotal + (reverseCharge ? 0 : taxTotal) - activeTdsAmount);
+
+    const finalTds = activeTdsApplicable ? activeTdsAmount : (Number(tds) || 0);
+
+    const activeClientWillDeductTds = req.body.client_will_deduct_tds !== undefined 
+      ? !!req.body.client_will_deduct_tds 
+      : activeTdsApplicable;
+    const activeTdsReceivableAmount = activeClientWillDeductTds 
+      ? roundToTwo((subTotal * activeTdsRate) / 100) 
+      : 0;
+    const activeExpectedReceipt = roundToTwo(grandTotal - activeTdsReceivableAmount);
 
     let linkedPo = null;
     if (purchaseOrderRef && mongoose.Types.ObjectId.isValid(purchaseOrderRef)) {
@@ -497,6 +587,8 @@ exports.createInvoice = async (req, res) => {
     let finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
     if (finalBalance === 0 && finalStatus !== 'DRAFT' && finalStatus !== 'CANCELLED') {
       finalStatus = 'PAID';
+    } else if (finalBalance > 0 && finalAdvance > 0 && finalStatus !== 'CANCELLED') {
+      finalStatus = 'PARTIAL';
     }
 
     let newInvoice = null;
@@ -532,6 +624,19 @@ exports.createInvoice = async (req, res) => {
         fy: fy || getFinancialYear(date),
         currency: currency || 'INR',
         tds: finalTds,
+        tdsApplicable: activeTdsApplicable,
+        tdsSection: activeTdsSection,
+        tdsRate: activeTdsRate,
+        tds_applicable: activeTdsApplicable,
+        tds_section: activeTdsSection,
+        tds_section_label: activeTdsSectionLabel,
+        tds_rate: activeTdsRate,
+        tds_base_amount: activeTdsBaseAmount,
+        tds_amount: activeTdsAmount,
+        net_payable: activeNetPayable,
+        client_will_deduct_tds: activeClientWillDeductTds,
+        tds_receivable_amount: activeTdsReceivableAmount,
+        expected_receipt: activeExpectedReceipt,
         tcs: finalTcs,
         drCr: drCr || 'Dr.',
         notes,
@@ -611,6 +716,9 @@ exports.updateInvoice = async (req, res) => {
       fy,
       currency,
       tds,
+      tdsApplicable,
+      tdsSection,
+      tdsRate,
       tcs,
       drCr,
       purchaseOrderRef,
@@ -712,7 +820,25 @@ exports.updateInvoice = async (req, res) => {
     const finalDiscountTotal = Number(discountTotal) || 0;
     const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
-    const finalTds = Number(tds) || 0;
+
+    // TDS calculations
+    const activeTdsApplicable = req.body.tds_applicable !== undefined ? !!req.body.tds_applicable : !!tdsApplicable;
+    const activeTdsSection = req.body.tds_section || tdsSection || '';
+    const activeTdsRate = req.body.tds_rate !== undefined ? Number(req.body.tds_rate) : (tdsRate !== undefined ? Number(tdsRate) : 0);
+    const activeTdsSectionLabel = req.body.tds_section_label || TDS_SECTION_LABELS[activeTdsSection] || '';
+    const activeTdsBaseAmount = subTotal;
+    const activeTdsAmount = activeTdsApplicable ? roundToTwo((activeTdsBaseAmount * activeTdsRate) / 100) : 0;
+    const activeNetPayable = roundToTwo(subTotal + (reverseCharge ? 0 : taxTotal) - activeTdsAmount);
+
+    const finalTds = activeTdsApplicable ? activeTdsAmount : (Number(tds) || 0);
+
+    const activeClientWillDeductTds = req.body.client_will_deduct_tds !== undefined 
+      ? !!req.body.client_will_deduct_tds 
+      : activeTdsApplicable;
+    const activeTdsReceivableAmount = activeClientWillDeductTds 
+      ? roundToTwo((subTotal * activeTdsRate) / 100) 
+      : 0;
+    const activeExpectedReceipt = roundToTwo(grandTotal - activeTdsReceivableAmount);
 
     let finalStatus = status || invoice.status || 'DRAFT';
     let finalAdvance = Number(advancePaid) || 0;
@@ -722,6 +848,8 @@ exports.updateInvoice = async (req, res) => {
     let finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
     if (finalBalance === 0 && finalStatus !== 'DRAFT' && finalStatus !== 'CANCELLED') {
       finalStatus = 'PAID';
+    } else if (finalBalance > 0 && finalAdvance > 0 && finalStatus !== 'CANCELLED') {
+      finalStatus = 'PARTIAL';
     }
 
     // Apply updates
@@ -758,6 +886,19 @@ exports.updateInvoice = async (req, res) => {
     invoice.fy = fy || getFinancialYear(date);
     invoice.currency = currency || 'INR';
     invoice.tds = finalTds;
+    invoice.tdsApplicable = activeTdsApplicable;
+    invoice.tdsSection = activeTdsSection;
+    invoice.tdsRate = activeTdsRate;
+    invoice.tds_applicable = activeTdsApplicable;
+    invoice.tds_section = activeTdsSection;
+    invoice.tds_section_label = activeTdsSectionLabel;
+    invoice.tds_rate = activeTdsRate;
+    invoice.tds_base_amount = activeTdsBaseAmount;
+    invoice.tds_amount = activeTdsAmount;
+    invoice.net_payable = activeNetPayable;
+    invoice.client_will_deduct_tds = activeClientWillDeductTds;
+    invoice.tds_receivable_amount = activeTdsReceivableAmount;
+    invoice.expected_receipt = activeExpectedReceipt;
     invoice.tcs = finalTcs;
     invoice.drCr = drCr || 'Dr.';
     invoice.notes = notes;
@@ -889,6 +1030,75 @@ exports.deleteInvoice = async (req, res) => {
   }
 };
 
+// ─── UPDATE invoice status ───────────────────────────────────────────────────
+exports.updateInvoiceStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) {
+      return res.status(400).json({ message: 'Status is required' });
+    }
+
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+
+    const oldStatus = invoice.status || 'DRAFT';
+    const oldIsActive = ACTIVE_INVOICE_STATUSES.includes(oldStatus);
+    const grandTotal = invoice.grandTotal || 0;
+    const finalTds = invoice.tds || 0;
+
+    invoice.status = status;
+
+    if (status === 'PAID') {
+      invoice.advancePaid = grandTotal - finalTds;
+      invoice.balanceDue = 0;
+    } else if (status === 'UNPAID' || status === 'SENT') {
+      invoice.advancePaid = 0;
+      invoice.balanceDue = Math.max(0, grandTotal - finalTds);
+    } else if (status === 'DRAFT' || status === 'CANCELLED') {
+      invoice.balanceDue = Math.max(0, grandTotal - (invoice.advancePaid || 0) - finalTds);
+    }
+
+    const newIsActive = ACTIVE_INVOICE_STATUSES.includes(status);
+    const oldPoId = invoice.purchaseOrderRef;
+    if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId)) {
+      const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, user: req.user._id });
+      if (linkedPo) {
+        let updated = false;
+        if (oldIsActive && newIsActive) {
+          // Both active
+        } else if (oldIsActive && !newIsActive) {
+          // Reverted from active to inactive
+          linkedPo.billedAmount = Math.max(0, roundToTwo((linkedPo.billedAmount || 0) - grandTotal));
+          updated = true;
+        } else if (!oldIsActive && newIsActive) {
+          // Activated from inactive to active
+          linkedPo.billedAmount = roundToTwo((linkedPo.billedAmount || 0) + grandTotal);
+          updated = true;
+        }
+
+        if (updated) {
+          if (linkedPo.billedAmount >= linkedPo.grandTotal) {
+            linkedPo.status = 'BILLED';
+          } else if (linkedPo.billedAmount > 0) {
+            linkedPo.status = 'PARTIAL';
+          } else {
+            linkedPo.status = 'RECEIVED';
+          }
+          await linkedPo.save();
+        }
+      }
+    }
+
+    const updatedInvoice = await invoice.save();
+    await syncIncomeFromInvoice(updatedInvoice);
+    res.json(updatedInvoice);
+  } catch (error) {
+    console.error('updateInvoiceStatus error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+
 // ─── BULK create invoices ───────────────────────────────────────────────────
 exports.bulkCreateInvoices = async (req, res) => {
   try {
@@ -918,8 +1128,17 @@ exports.bulkCreateInvoices = async (req, res) => {
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
     const createdInvoices = [];
-    for (const invData of invoices) {
-      const clientName = String(invData.clientName || '').trim();
+    const skippedInvoices = [];
+    const renumberedInvoices = [];
+    const importedInvoices = [];
+    const failedInvoices = [];
+    for (const [index, invData] of invoices.entries()) {
+      let rowInvoiceNo = String(invData?.invoiceNo || '').trim();
+      let rowClientName = String(invData?.clientName || '').trim();
+      const importRowId = invData?._importRowId || String(index);
+
+      try {
+      const clientName = rowClientName;
       if (!clientName) {
         throw new Error('Client name is required for each imported invoice.');
       }
@@ -990,22 +1209,23 @@ exports.bulkCreateInvoices = async (req, res) => {
       const clientState = invData.placeOfSupply || client.billingAddress?.state || '';
       const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
 
-      let invoiceNo = String(invData.invoiceNo || '').trim();
+      let invoiceNo = rowInvoiceNo;
+      const originalInvoiceNo = invoiceNo;
       const isAuto = !invoiceNo || invoiceNo === 'Auto-generated';
       if (isAuto) {
         invoiceNo = await generateNextUniqueInvoiceNumber({
           userId: req.user._id,
           invoicePrefix: userSettings?.invoicePrefix || 'INV',
         });
-      } else {
-        const existingInvoice = await Invoice.findOne({ user: req.user._id, invoiceNo });
-        if (existingInvoice) {
-          throw new Error(`Invoice number "${invoiceNo}" already exists.`);
-        }
+      }
+
+      let invoiceType = invData.invoiceType || 'Tax Invoice';
+      if (!['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'].includes(invoiceType)) {
+        invoiceType = 'Tax Invoice';
       }
 
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } =
-        processItems(invData.items || [], invData.invoiceType || 'Tax Invoice', isIntraState);
+        processItems(invData.items || [], invoiceType, isIntraState);
 
       const finalShipping = Number(invData.shippingCharges) || 0;
       const finalPackaging = Number(invData.packagingCharges) || 0;
@@ -1023,6 +1243,38 @@ exports.bulkCreateInvoices = async (req, res) => {
       const finalTaxTotal = importedTaxTotal !== null ? importedTaxTotal : taxTotal;
       const finalExciseTotal = totalExcise;
       const finalGrandTotal = importedGrandTotal !== null ? importedGrandTotal : roundToTwo(computedGrandTotal);
+      const finalDate = parseImportedDate(invData.date);
+
+      if (!isAuto) {
+        const existingInvoice = await Invoice.findOne({ user: req.user._id, invoiceNo });
+        if (existingInvoice && isSameImportedInvoice(existingInvoice, finalDate, finalGrandTotal)) {
+          skippedInvoices.push({
+            importRowId,
+            invoiceNo,
+            clientName,
+            date: finalDate,
+            grandTotal: finalGrandTotal,
+            reason: 'same invoice number, date, and amount already exist',
+          });
+          continue;
+        }
+
+        if (existingInvoice) {
+          invoiceNo = await generateNextUniqueInvoiceNumber({
+            userId: req.user._id,
+            invoicePrefix: 'INV',
+          });
+          renumberedInvoices.push({
+            importRowId,
+            originalInvoiceNo,
+            invoiceNo,
+            clientName,
+            date: finalDate,
+            grandTotal: finalGrandTotal,
+            reason: 'same invoice number exists with different date or amount',
+          });
+        }
+      }
       
       let tempAdvancePaid = importedAdvancePaid !== null ? importedAdvancePaid : 0;
       let tempBalanceDue = importedBalanceDue !== null
@@ -1035,18 +1287,20 @@ exports.bulkCreateInvoices = async (req, res) => {
         tempBalanceDue = 0;
       } else if (tempBalanceDue === 0 && finalStatus !== 'DRAFT' && finalStatus !== 'CANCELLED') {
         finalStatus = 'PAID';
+      } else if (tempBalanceDue > 0 && tempAdvancePaid > 0 && finalStatus !== 'CANCELLED') {
+        finalStatus = 'PARTIAL';
       }
 
       const finalTaxBreakdown = importedTaxTotal !== null
-        ? deriveImportedTaxBreakdown(finalTaxTotal, invData.invoiceType || 'Tax Invoice', isIntraState)
+        ? deriveImportedTaxBreakdown(finalTaxTotal, invoiceType, isIntraState)
         : { totalCGST, totalSGST, totalIGST };
         let savedInvoice = null;
         for (let attempt = 0; attempt < 25; attempt += 1) {
           const invoice = new Invoice({
             invoiceNo,
-            invoiceType: invData.invoiceType || 'Tax Invoice',
-            date: invData.date || new Date(),
-            dueDate: invData.dueDate || new Date(),
+            invoiceType,
+            date: finalDate,
+            dueDate: parseImportedDate(invData.dueDate),
             paymentMode: invData.paymentMode || '',
             paymentTerms: invData.paymentTerms || '',
             shippingAddress: invData.shippingAddress,
@@ -1054,7 +1308,7 @@ exports.bulkCreateInvoices = async (req, res) => {
             bankDetails: invData.bankDetails,
             placeOfSupply: invData.placeOfSupply || clientState,
             reverseCharge: !!invData.reverseCharge,
-            fy: invData.fy || getFinancialYear(invData.date || new Date()),
+            fy: invData.fy || getFinancialYear(parseImportedDate(invData.date)),
             currency: invData.currency || 'INR',
             tds: finalTds,
             tcs: Number(invData.tcs) || 0,
@@ -1087,7 +1341,7 @@ exports.bulkCreateInvoices = async (req, res) => {
             grandTotal: finalGrandTotal,
             advancePaid: tempAdvancePaid,
             balanceDue: tempBalanceDue,
-            paymentDate: invData.paymentDate || undefined,
+            paymentDate: invData.paymentDate ? parseImportedDate(invData.paymentDate) : undefined,
             status: finalStatus,
             notes: String(invData.notes || '').trim(),
             terms: invData.terms || '',
@@ -1102,20 +1356,63 @@ exports.bulkCreateInvoices = async (req, res) => {
             if (!isInvoiceNumberDuplicateError(error)) {
               throw error;
             }
-            if (!isAuto) {
-              throw new Error(`Invoice number "${invoiceNo}" already exists.`);
-            }
+            const previousInvoiceNo = invoiceNo;
             invoiceNo = await generateNextUniqueInvoiceNumber({
               userId: req.user._id,
-              invoicePrefix: userSettings?.invoicePrefix || 'INV',
+              invoicePrefix: 'INV',
+            });
+            renumberedInvoices.push({
+              importRowId,
+              originalInvoiceNo: originalInvoiceNo || previousInvoiceNo,
+              invoiceNo,
+              clientName,
+              date: finalDate,
+              grandTotal: finalGrandTotal,
+              reason: 'invoice number was already used during import',
             });
           }
         }
       await syncIncomeFromInvoice(savedInvoice);
       createdInvoices.push(savedInvoice);
+      importedInvoices.push({
+        importRowId,
+        invoiceNo: savedInvoice.invoiceNo,
+        originalInvoiceNo: originalInvoiceNo || savedInvoice.invoiceNo,
+        clientName: savedInvoice.client?.name || clientName,
+        date: savedInvoice.date,
+        grandTotal: savedInvoice.grandTotal,
+        status: savedInvoice.status,
+        renumbered: savedInvoice.invoiceNo !== originalInvoiceNo && !!originalInvoiceNo,
+      });
+      } catch (rowError) {
+        failedInvoices.push({
+          importRowId,
+          row: index + 1,
+          invoiceNo: rowInvoiceNo,
+          clientName: rowClientName,
+          reason: rowError.message || 'Failed to import invoice row',
+        });
+      }
     }
 
-    res.status(201).json({ message: `Successfully imported ${createdInvoices.length} invoices.`, count: createdInvoices.length });
+    const messageParts = [`Successfully imported ${createdInvoices.length} invoices.`];
+    if (skippedInvoices.length) messageParts.push(`${skippedInvoices.length} duplicate invoices skipped.`);
+    if (renumberedInvoices.length) messageParts.push(`${renumberedInvoices.length} invoices renumbered with INV prefix.`);
+    if (failedInvoices.length) messageParts.push(`${failedInvoices.length} invoices failed.`);
+
+    res.status(201).json({
+      message: messageParts.join(' '),
+      count: createdInvoices.length,
+      imported: createdInvoices.length,
+      updated: 0,
+      skipped: skippedInvoices.length,
+      renumbered: renumberedInvoices.length,
+      failed: failedInvoices.length,
+      importedInvoices,
+      skippedInvoices,
+      renumberedInvoices,
+      failedInvoices,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
