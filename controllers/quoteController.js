@@ -684,20 +684,31 @@ exports.bulkCreateQuotes = async (req, res) => {
       const finalDate = parseImportedDate(qData.date);
 
       if (originalQuoteNo) {
-        const existingQuote = await Quote.findOne({ user: req.user._id, quoteNo: originalQuoteNo });
-        if (existingQuote && isSameImportedQuote(existingQuote, finalDate, finalGrandTotal)) {
+        const existingQuote = await Quote.findOne({
+          user: req.user._id,
+          quoteNo: originalQuoteNo,
+          'client.name': { $regex: new RegExp(`^${escapeRegex(rowClientName)}$`, 'i') },
+          grandTotal: finalGrandTotal,
+          date: {
+            $gte: new Date(new Date(finalDate).setHours(0, 0, 0, 0)),
+            $lte: new Date(new Date(finalDate).setHours(23, 59, 59, 999))
+          }
+        });
+
+        if (existingQuote) {
           skippedQuotes.push({
             importRowId,
             quoteNo: originalQuoteNo,
             clientName: rowClientName,
             date: finalDate,
             grandTotal: finalGrandTotal,
-            reason: 'same quote number, date, and amount already exist',
+            reason: 'this already exists',
           });
           continue;
         }
 
-        if (existingQuote) {
+        const existingQuoteNoOnly = await Quote.findOne({ user: req.user._id, quoteNo: originalQuoteNo });
+        if (existingQuoteNoOnly) {
           currentQuoteNo = await generateNextUniqueQuoteNumber({
             userId: req.user._id,
             quotePrefix: userSettings?.quotePrefix || 'QT',
