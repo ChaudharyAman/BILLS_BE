@@ -87,14 +87,31 @@ async function getInvoiceSplit(userId, startDate, endDate) {
   return split;
 }
 
-async function getSlabTotals(Model, userId, startDate, endDate) {
+async function getSlabTotals(Model, userId, startDate, endDate, allowedStatuses = ACTIVE_EXPENSE_STATUSES) {
+  const isExpense = Model.modelName === 'Expense';
+
+  const sumExpression = isExpense
+    ? {
+        $cond: {
+          if: { $gt: [{ $ifNull: ['$items.taxAmount', 0] }, 0] },
+          then: '$items.taxAmount',
+          else: {
+            $multiply: [
+              { $ifNull: ['$items.amount', 0] },
+              { $divide: [{ $ifNull: ['$items.taxRate', 0] }, 100] }
+            ]
+          }
+        }
+      }
+    : '$items.taxAmount';
+
   const rows = await Model.aggregate([
-    { $match: { user: userId, date: { $gte: startDate, $lte: endDate }, status: ACTIVE_EXPENSE_STATUSES } },
+    { $match: { user: userId, date: { $gte: startDate, $lte: endDate }, status: allowedStatuses } },
     { $unwind: { path: '$items', preserveNullAndEmptyArrays: false } },
     {
       $group: {
         _id: { $toDouble: { $ifNull: ['$items.taxRate', 0] } },
-        amount: { $sum: { $ifNull: ['$items.taxAmount', 0] } },
+        amount: { $sum: sumExpression },
       },
     },
     { $sort: { _id: 1 } },
@@ -303,8 +320,8 @@ exports.getTaxDashboard = async (req, res) => {
       aggregateTotals(Invoice, userId, previous.startDate, previous.endDate, ['taxTotal'], { $in: ACTIVE_INVOICE_STATUSES }),
       aggregateTotals(Expense, userId, previous.startDate, previous.endDate, ['taxTotal']),
       getInvoiceSplit(userId, startDate, endDate),
-      getSlabTotals(Invoice, userId, startDate, endDate),
-      getSlabTotals(Expense, userId, startDate, endDate),
+      getSlabTotals(Invoice, userId, startDate, endDate, { $in: ACTIVE_INVOICE_STATUSES }),
+      getSlabTotals(Expense, userId, startDate, endDate, ACTIVE_EXPENSE_STATUSES),
       getTrend6Months(userId, endDate),
       getExpenseGstCredits(userId, startDate, endDate),
       getExpenseCategories(userId, startDate, endDate),

@@ -12,6 +12,8 @@
     "migrate:categories": "node scripts/migrate-add-categories.js",
     "migrate:client-types": "node scripts/migrateClientTypes.js",
     "migrate:invoice-types": "node scripts/migrateInvoiceTypes.js",
+    "migrate:expense-types": "node scripts/migrateExpenseTypes.js",
+    "migrate:all": "node scripts/migrateClientTypes.js && node scripts/migrateInvoiceTypes.js && node scripts/migrateExpenseTypes.js",
     "cleanup:incomes": "node scripts/cleanup-unpaid-incomes.js"
   },
   "keywords": [],
