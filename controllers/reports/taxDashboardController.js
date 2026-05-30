@@ -70,7 +70,21 @@ function classifyInvoice(row = {}) {
 }
 
 async function aggregateTotals(Model, userId, startDate, endDate, fields, allowedStatuses = ACTIVE_EXPENSE_STATUSES) {
-  const project = fields.reduce((acc, field) => ({ ...acc, [field]: { $sum: `$${field}` } }), {});
+  const isExpense = Model.modelName === 'Expense';
+  const project = fields.reduce((acc, field) => {
+    let sumExpression = `$${field}`;
+    if (isExpense && field === 'taxTotal') {
+      sumExpression = {
+        $cond: {
+          if: { $eq: ['$reverseCharge', true] },
+          then: 0,
+          else: `$${field}`
+        }
+      };
+    }
+    return { ...acc, [field]: { $sum: sumExpression } };
+  }, {});
+
   const [result] = await Model.aggregate([
     { $match: { user: userId, date: { $gte: startDate, $lte: endDate }, status: allowedStatuses } },
     { $group: { _id: null, ...project } },
@@ -106,13 +120,19 @@ async function getSlabTotals(Model, userId, startDate, endDate, allowedStatuses 
   const sumExpression = isExpense
     ? {
         $cond: {
-          if: { $gt: [{ $ifNull: ['$items.taxAmount', 0] }, 0] },
-          then: '$items.taxAmount',
+          if: { $eq: ['$reverseCharge', true] },
+          then: 0,
           else: {
-            $multiply: [
-              { $ifNull: ['$items.amount', 0] },
-              { $divide: [{ $ifNull: ['$items.taxRate', 0] }, 100] }
-            ]
+            $cond: {
+              if: { $gt: [{ $ifNull: ['$items.taxAmount', 0] }, 0] },
+              then: '$items.taxAmount',
+              else: {
+                $multiply: [
+                  { $ifNull: ['$items.amount', 0] },
+                  { $divide: [{ $ifNull: ['$items.taxRate', 0] }, 100] }
+                ]
+              }
+            }
           }
         }
       }
@@ -140,14 +160,35 @@ async function getSlabTotals(Model, userId, startDate, endDate, allowedStatuses 
 async function getTrend6Months(userId, endDate) {
   const start = new Date(endDate.getFullYear(), endDate.getMonth() - 5, 1);
   const end = new Date(endDate.getFullYear(), endDate.getMonth() + 1, 0, 23, 59, 59, 999);
-  const pipeline = (statusFilter) => [
-    { $match: { user: userId, date: { $gte: start, $lte: end }, status: statusFilter } },
+  
+  const invoicePipeline = [
+    { $match: { user: userId, date: { $gte: start, $lte: end }, status: { $in: ACTIVE_INVOICE_STATUSES } } },
     { $group: { _id: { year: { $year: '$date' }, month: { $month: '$date' } }, tax: { $sum: '$taxTotal' }, total: { $sum: '$grandTotal' }, count: { $sum: 1 } } },
   ];
 
+  const expensePipeline = [
+    { $match: { user: userId, date: { $gte: start, $lte: end }, status: ACTIVE_EXPENSE_STATUSES } },
+    {
+      $group: {
+        _id: { year: { $year: '$date' }, month: { $month: '$date' } },
+        tax: {
+          $sum: {
+            $cond: {
+              if: { $eq: ['$reverseCharge', true] },
+              then: 0,
+              else: '$taxTotal'
+            }
+          }
+        },
+        total: { $sum: '$grandTotal' },
+        count: { $sum: 1 }
+      }
+    },
+  ];
+
   const [invoiceRows, expenseRows] = await Promise.all([
-    Invoice.aggregate(pipeline({ $in: ACTIVE_INVOICE_STATUSES })),
-    Expense.aggregate(pipeline(ACTIVE_EXPENSE_STATUSES)),
+    Invoice.aggregate(invoicePipeline),
+    Expense.aggregate(expensePipeline),
   ]);
   const invoiceMap = new Map(invoiceRows.map((row) => [`${row._id.year}-${row._id.month}`, row]));
   const expenseMap = new Map(expenseRows.map((row) => [`${row._id.year}-${row._id.month}`, row]));
@@ -182,7 +223,7 @@ async function getExpenseGstCredits(userId, startDate, endDate) {
     user: userId,
     date: { $gte: startDate, $lte: endDate },
     status: ACTIVE_EXPENSE_STATUSES,
-  }).select('vendor items.taxRate items.taxAmount items.amount').lean();
+  }).select('vendor items.taxRate items.taxAmount items.amount reverseCharge').lean();
 
   // 3. Collect unique vendor refs to batch-lookup their GSTINs
   const vendorRefIds = [...new Set(
@@ -203,6 +244,8 @@ async function getExpenseGstCredits(userId, startDate, endDate) {
   let sgst = 0;
 
   for (const expense of expenses) {
+    if (expense.reverseCharge === true) continue;
+
     const vendorGstin = expense.vendor?.vendorRef
       ? (vendorGstinMap.get(String(expense.vendor.vendorRef)) || '')
       : '';
@@ -254,7 +297,7 @@ async function getPayrollTdsPayable(userId, startDate, endDate) {
     { $match: { user: userId, status: { $nin: ['cancelled', 'draft'] }, paymentDate: { $gte: startDate, $lte: endDate } } },
     { $group: { _id: null, total: { $sum: '$deductions.tds' } } },
   ]);
-  return result?.total || 0;
+  return roundTwo(result?.total || 0);
 }
 
 async function getReceivables(userId) {
@@ -262,7 +305,7 @@ async function getReceivables(userId) {
     { $match: { user: userId, status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] } } },
     { $group: { _id: null, total: { $sum: '$balanceDue' } } },
   ]);
-  return result?.total || 0;
+  return roundTwo(result?.total || 0);
 }
 
 async function getPayables(userId) {
@@ -270,7 +313,7 @@ async function getPayables(userId) {
     { $match: { user: userId, status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] } } },
     { $group: { _id: null, total: { $sum: '$balanceDue' } } },
   ]);
-  return result?.total || 0;
+  return roundTwo(result?.total || 0);
 }
 
 async function getOverdueInvoices(userId) {
@@ -290,23 +333,32 @@ async function getOverdueInvoices(userId) {
     else if (invoice.daysOverdue <= 90) aging.d61_90 += amount;
     else aging.d90plus += amount;
   });
+
+  total = roundTwo(total);
+  ['d0_30', 'd31_60', 'd61_90', 'd90plus'].forEach((key) => {
+    aging[key] = roundTwo(aging[key]);
+  });
+
   return { total, count: invoices.length, aging };
 }
 
-const getTopClients = (userId, startDate, endDate) => Invoice.aggregate([
-  { $match: { user: userId, date: { $gte: startDate, $lte: endDate }, status: { $in: ACTIVE_INVOICE_STATUSES } } },
-  { $group: { _id: { $ifNull: ['$client.name', 'Unknown'] }, total: { $sum: '$grandTotal' } } },
-  { $sort: { total: -1 } },
-  { $limit: 5 },
-  { $project: { _id: 0, name: '$_id', total: 1 } },
-]);
+async function getTopClients(userId, startDate, endDate) {
+  const rows = await Invoice.aggregate([
+    { $match: { user: userId, date: { $gte: startDate, $lte: endDate }, status: { $in: ACTIVE_INVOICE_STATUSES } } },
+    { $group: { _id: { $ifNull: ['$client.name', 'Unknown'] }, total: { $sum: '$grandTotal' } } },
+    { $sort: { total: -1 } },
+    { $limit: 5 },
+    { $project: { _id: 0, name: '$_id', total: 1 } },
+  ]);
+  return rows.map((row) => ({ ...row, total: roundTwo(row.total) }));
+}
 
 async function getPendingPO(userId) {
   const [result] = await PurchaseOrder.aggregate([
     { $match: { user: userId, status: { $nin: ['DRAFT', 'RECEIVED', 'BILLED', 'CANCELLED'] } } },
     { $group: { _id: null, total: { $sum: '$grandTotal' }, count: { $sum: 1 } } },
   ]);
-  return { total: result?.total || 0, count: result?.count || 0 };
+  return { total: roundTwo(result?.total || 0), count: result?.count || 0 };
 }
 
 async function getDraftCounts(userId) {
@@ -319,10 +371,22 @@ async function getDraftCounts(userId) {
 
 async function getExpenseTdsPayable(userId, startDate, endDate) {
   const [result] = await Expense.aggregate([
-    { $match: { user: userId, date: { $gte: startDate, $lte: endDate }, status: ACTIVE_EXPENSE_STATUSES, tds_applicable: true } },
-    { $group: { _id: null, total: { $sum: '$tds_amount' } } },
+    {
+      $match: {
+        user: userId,
+        date: { $gte: startDate, $lte: endDate },
+        status: ACTIVE_EXPENSE_STATUSES,
+        $or: [{ tds_applicable: true }, { tdsApplicable: true }],
+      },
+    },
+    {
+      $project: {
+        tdsValue: { $max: [{ $ifNull: ['$tds_amount', 0] }, { $ifNull: ['$tdsAmount', 0] }] },
+      },
+    },
+    { $group: { _id: null, total: { $sum: '$tdsValue' } } },
   ]);
-  return result?.total || 0;
+  return roundTwo(result?.total || 0);
 }
 
 async function getInvoiceTdsDeducted(userId, startDate, endDate) {
@@ -335,7 +399,7 @@ async function getInvoiceTdsDeducted(userId, startDate, endDate) {
     },
     { $group: { _id: null, total: { $sum: '$tdsValue' } } },
   ]);
-  return result?.total || 0;
+  return roundTwo(result?.total || 0);
 }
 
 exports.getTaxDashboard = async (req, res) => {
@@ -369,8 +433,8 @@ exports.getTaxDashboard = async (req, res) => {
       aggregateTotals(Income, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal'], { $in: ['PAID', 'PARTIAL'] }),
       aggregateTotals(Expense, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal']),
       aggregateTotals(Invoice, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal', 'totalCGST', 'totalSGST', 'totalIGST', 'tds', 'tds_amount', 'tdsAmount', 'tcs'], { $in: ACTIVE_INVOICE_STATUSES }),
-      aggregateTotals(Invoice, userId, previous.startDate, previous.endDate, ['taxTotal'], { $in: ACTIVE_INVOICE_STATUSES }),
-      aggregateTotals(Expense, userId, previous.startDate, previous.endDate, ['taxTotal']),
+      aggregateTotals(Invoice, userId, previous.startDate, previous.endDate, ['taxTotal', 'grandTotal'], { $in: ACTIVE_INVOICE_STATUSES }),
+      aggregateTotals(Expense, userId, previous.startDate, previous.endDate, ['taxTotal', 'grandTotal']),
       getInvoiceSplit(userId, startDate, endDate),
       getSlabTotals(Invoice, userId, startDate, endDate, { $in: ACTIVE_INVOICE_STATUSES }),
       getSlabTotals(Expense, userId, startDate, endDate, ACTIVE_EXPENSE_STATUSES),
@@ -395,7 +459,9 @@ exports.getTaxDashboard = async (req, res) => {
     const tdsDeducted = roundTwo(invoiceTdsDeducted);
     const tdsPayable = roundTwo(payrollTdsPayable + expenseTdsPayable);
     const netTaxPayable = Math.max(roundTwo(netPayable + tdsPayable - tdsDeducted), 0);
-    const dueDate = new Date(endDate.getFullYear(), endDate.getMonth() + 1, 20);
+    
+    const gstDueDate = new Date(endDate.getFullYear(), endDate.getMonth() + 1, 20);
+    const tdsDueDate = new Date(endDate.getFullYear(), endDate.getMonth() + 1, 7);
 
     res.json({
       period: { startDate, endDate, month: MONTHS[startDate.getMonth()], year: startDate.getFullYear() },
@@ -405,7 +471,9 @@ exports.getTaxDashboard = async (req, res) => {
         netPayable,
         momOutput: pctChange(outputLiability, previousInvoiceTotals.taxTotal),
         momInput: pctChange(inputCredit, previousExpenseTotals.taxTotal),
-        dueDate,
+        dueDate: gstDueDate,
+        gstDueDate,
+        tdsDueDate,
         totalInvoices: invoiceSplit.total,
         totalRevenue: roundTwo(incomeTotals.grandTotal || invoiceTotals.grandTotal),
         totalExpenses: roundTwo(expenseTotals.grandTotal),
@@ -455,8 +523,8 @@ exports.getTaxDashboard = async (req, res) => {
       pendingPO,
       draftCounts,
       previousPeriod: {
-        revenue: 0,
-        expenses: 0,
+        revenue: roundTwo(previousInvoiceTotals.grandTotal),
+        expenses: roundTwo(previousExpenseTotals.grandTotal),
         outputLiability: roundTwo(previousInvoiceTotals.taxTotal),
         inputCredit: roundTwo(previousExpenseTotals.taxTotal),
       },
