@@ -10,6 +10,8 @@
     "test:system": "node scripts/run-complete-system-tests.js",
     "promote:admin": "node scripts/promote-admin.js",
     "migrate:categories": "node scripts/migrate-add-categories.js",
+    "migrate:client-types": "node scripts/migrateClientTypes.js",
+    "migrate:invoice-types": "node scripts/migrateInvoiceTypes.js",
     "cleanup:incomes": "node scripts/cleanup-unpaid-incomes.js"
   },
   "keywords": [],
