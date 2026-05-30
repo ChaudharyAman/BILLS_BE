@@ -34,11 +34,24 @@ function getMonthRange(query) {
   return { startDate, endDate };
 }
 
-function previousMonthRange(startDate) {
-  return {
-    startDate: new Date(startDate.getFullYear(), startDate.getMonth() - 1, 1),
-    endDate: new Date(startDate.getFullYear(), startDate.getMonth(), 0, 23, 59, 59, 999),
-  };
+function previousPeriodRange(startDate, endDate) {
+  const durationMs = endDate.getTime() - startDate.getTime();
+  const durationDays = Math.round(durationMs / (1000 * 60 * 60 * 24));
+
+  // For single-month views (~28-31 days), compare against the prior month
+  if (durationDays <= 31) {
+    return {
+      startDate: new Date(startDate.getFullYear(), startDate.getMonth() - 1, 1),
+      endDate: new Date(startDate.getFullYear(), startDate.getMonth(), 0, 23, 59, 59, 999),
+    };
+  }
+
+  // For multi-month ranges, shift the entire range backwards by its own duration
+  const prevEnd = new Date(startDate.getTime() - 1);
+  prevEnd.setHours(23, 59, 59, 999);
+  const prevStart = new Date(prevEnd.getTime() - durationMs);
+  prevStart.setHours(0, 0, 0, 0);
+  return { startDate: prevStart, endDate: prevEnd };
 }
 
 function pctChange(current, previous) {
@@ -156,19 +169,70 @@ async function getTrend6Months(userId, endDate) {
 }
 
 async function getExpenseGstCredits(userId, startDate, endDate) {
-  const [result] = await Expense.aggregate([
-    { $match: { user: userId, date: { $gte: startDate, $lte: endDate }, status: ACTIVE_EXPENSE_STATUSES } },
-    { $unwind: { path: '$items', preserveNullAndEmptyArrays: false } },
-    {
-      $group: {
-        _id: null,
-        igst: { $sum: { $ifNull: ['$items.igst', 0] } },
-        cgst: { $sum: { $ifNull: ['$items.cgst', 0] } },
-        sgst: { $sum: { $ifNull: ['$items.sgst', 0] } },
-      },
-    },
-  ]);
-  return { igst: roundTwo(result?.igst || 0), cgstSgst: roundTwo((result?.cgst || 0) + (result?.sgst || 0)) };
+  const Settings = require('../../models/Settings');
+  const Client = require('../../models/Client');
+
+  // 1. Get user's business state code from their GSTIN in Settings
+  const settings = await Settings.findOne({ user: userId }).select('gstin').lean();
+  const userGstin = String(settings?.gstin || '').trim().toUpperCase();
+  const userStateCode = /^[0-9]{2}/.test(userGstin) ? userGstin.substring(0, 2) : '';
+
+  // 2. Fetch all active expenses with their vendor refs and item tax data
+  const expenses = await Expense.find({
+    user: userId,
+    date: { $gte: startDate, $lte: endDate },
+    status: ACTIVE_EXPENSE_STATUSES,
+  }).select('vendor items.taxRate items.taxAmount items.amount').lean();
+
+  // 3. Collect unique vendor refs to batch-lookup their GSTINs
+  const vendorRefIds = [...new Set(
+    expenses
+      .map(e => e.vendor?.vendorRef)
+      .filter(Boolean)
+      .map(String)
+  )];
+
+  const vendorDocs = vendorRefIds.length
+    ? await Client.find({ _id: { $in: vendorRefIds } }).select('gstin').lean()
+    : [];
+  const vendorGstinMap = new Map(vendorDocs.map(v => [String(v._id), String(v.gstin || '').trim().toUpperCase()]));
+
+  // 4. Iterate expenses and split each item's tax into IGST or CGST+SGST
+  let igst = 0;
+  let cgst = 0;
+  let sgst = 0;
+
+  for (const expense of expenses) {
+    const vendorGstin = expense.vendor?.vendorRef
+      ? (vendorGstinMap.get(String(expense.vendor.vendorRef)) || '')
+      : '';
+    const vendorStateCode = /^[0-9]{2}/.test(vendorGstin) ? vendorGstin.substring(0, 2) : '';
+
+    // Determine inter-state vs intra-state
+    // If both state codes are known and different → IGST (inter-state)
+    // Otherwise → CGST+SGST (intra-state, or default when state unknown)
+    const isInterState = userStateCode && vendorStateCode && userStateCode !== vendorStateCode;
+
+    const items = Array.isArray(expense.items) ? expense.items : [];
+    for (const item of items) {
+      const taxAmt = Number(item.taxAmount) || 0;
+      // If taxAmount is 0, try to compute from amount * taxRate
+      const effectiveTax = taxAmt > 0
+        ? taxAmt
+        : roundTwo((Number(item.amount) || 0) * ((Number(item.taxRate) || 0) / 100));
+
+      if (effectiveTax <= 0) continue;
+
+      if (isInterState) {
+        igst += effectiveTax;
+      } else {
+        cgst += effectiveTax / 2;
+        sgst += effectiveTax / 2;
+      }
+    }
+  }
+
+  return { igst: roundTwo(igst), cgstSgst: roundTwo(cgst + sgst) };
 }
 
 async function getExpenseCategories(userId, startDate, endDate) {
@@ -183,21 +247,11 @@ async function getExpenseCategories(userId, startDate, endDate) {
   ]);
 }
 
-const getRecentIncome = (userId, startDate, endDate) => Income.find({
-  user: userId,
-  date: { $gte: startDate, $lte: endDate },
-  status: { $in: ['PAID', 'PARTIAL'] },
-}).sort({ date: -1, createdAt: -1 }).limit(4).select('incomeNumber client vendor grandTotal taxTotal date status').lean();
 
-const getRecentExpenses = (userId, startDate, endDate) => Expense.find({
-  user: userId,
-  date: { $gte: startDate, $lte: endDate },
-  status: ACTIVE_EXPENSE_STATUSES,
-}).sort({ date: -1, createdAt: -1 }).limit(4).select('expenseNumber vendor client grandTotal taxTotal date status').lean();
 
 async function getPayrollTdsPayable(userId, startDate, endDate) {
   const [result] = await Payroll.aggregate([
-    { $match: { user: userId, status: { $ne: 'CANCELLED' }, paymentDate: { $gte: startDate, $lte: endDate } } },
+    { $match: { user: userId, status: { $nin: ['cancelled', 'draft'] }, paymentDate: { $gte: startDate, $lte: endDate } } },
     { $group: { _id: null, total: { $sum: '$deductions.tds' } } },
   ]);
   return result?.total || 0;
@@ -287,7 +341,7 @@ async function getInvoiceTdsDeducted(userId, startDate, endDate) {
 exports.getTaxDashboard = async (req, res) => {
   try {
     const { startDate, endDate } = getMonthRange(req.query);
-    const previous = previousMonthRange(startDate);
+    const previous = previousPeriodRange(startDate, endDate);
     const userId = req.user._id;
 
     const [
@@ -302,8 +356,6 @@ exports.getTaxDashboard = async (req, res) => {
       trend6Months,
       expenseCredits,
       expenseCategories,
-      recentIncome,
-      recentExpenses,
       payrollTdsPayable,
       expenseTdsPayable,
       invoiceTdsDeducted,
@@ -325,8 +377,6 @@ exports.getTaxDashboard = async (req, res) => {
       getTrend6Months(userId, endDate),
       getExpenseGstCredits(userId, startDate, endDate),
       getExpenseCategories(userId, startDate, endDate),
-      getRecentIncome(userId, startDate, endDate),
-      getRecentExpenses(userId, startDate, endDate),
       getPayrollTdsPayable(userId, startDate, endDate),
       getExpenseTdsPayable(userId, startDate, endDate),
       getInvoiceTdsDeducted(userId, startDate, endDate),
@@ -395,26 +445,10 @@ exports.getTaxDashboard = async (req, res) => {
         liability: outputLiability,
         credit: inputCredit,
         netPayable,
+        inputIgst: expenseCredits.igst,
+        inputCgstSgst: expenseCredits.cgstSgst,
       },
       categories: expenseCategories,
-      recentIncome: recentIncome.map((item) => ({
-        id: item._id,
-        number: item.incomeNumber,
-        party: item.client?.name || item.vendor?.name || 'Income',
-        amount: item.grandTotal,
-        tax: item.taxTotal,
-        date: item.date,
-        status: item.status,
-      })),
-      recentExpenses: recentExpenses.map((item) => ({
-        id: item._id,
-        number: item.expenseNumber,
-        party: item.vendor?.name || item.client?.name || 'Expense',
-        amount: item.grandTotal,
-        tax: item.taxTotal,
-        date: item.date,
-        status: item.status,
-      })),
       trend: trend6Months,
       overdueInvoices,
       topClients,
