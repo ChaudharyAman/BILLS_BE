@@ -34,7 +34,7 @@ const ExpenseSchema = new mongoose.Schema({
   
   // Parties involved
   vendor: {
-    vendorRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' }, // Stored as a client theoretically or a Vendor
+    vendorRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' },
     name: { type: String },
   },
   client: {
@@ -59,7 +59,7 @@ const ExpenseSchema = new mongoose.Schema({
 
   // Notes
   terms: String,
-  privateNotes: String, // Specifically for Sleekbills feature
+  privateNotes: String,
 
   status: {
     type: String,
@@ -73,25 +73,66 @@ const ExpenseSchema = new mongoose.Schema({
   tds_nature: { type: String, default: "deductor" },
   net_vendor_payment: { type: Number, default: 0 },
 
+  // camelCase TDS fields for Expense TDS receivable asset tracking
+  tdsApplicable: { type: Boolean, default: false },
+  tdsSection: { type: String, enum: ['194C', '194J', '194I', '194A', 'Manual'], default: null },
+  tdsRate: { type: Number, default: null },
+  tdsAmount: { type: Number, default: 0 },
+  tdsReceivable: { type: Number, default: 0 },
+  tdsPaidToGovernment: { type: Boolean, default: false },
+
 }, { timestamps: true });
 
 // Compound unique index: same expense number is allowed across different users
 ExpenseSchema.pre('save', async function() {
+  const activeTdsApplicable = this.tdsApplicable !== undefined ? this.tdsApplicable : this.tds_applicable;
+  const activeTdsSection = this.tdsSection !== undefined && this.tdsSection !== null ? this.tdsSection : this.tds_section;
+  const activeTdsRate = this.tdsRate !== undefined && this.tdsRate !== null ? this.tdsRate : this.tds_rate;
+
+  if (activeTdsApplicable && activeTdsRate) {
+    const baseAmount = Number(this.subTotal) || 0;
+    const computedTds = Math.round((baseAmount * (activeTdsRate / 100)) * 100) / 100;
+
+    this.tdsApplicable = true;
+    this.tdsSection = ['194C', '194J', '194I', '194A', 'Manual'].includes(activeTdsSection) ? activeTdsSection : 'Manual';
+    this.tdsRate = activeTdsRate;
+    this.tdsAmount = computedTds;
+    this.tdsReceivable = computedTds;
+
+    this.tds_applicable = true;
+    this.tds_section = String(activeTdsSection || 'Manual');
+    this.tds_rate = activeTdsRate;
+    this.tds_amount = computedTds;
+  } else {
+    this.tdsApplicable = false;
+    this.tdsSection = null;
+    this.tdsRate = null;
+    this.tdsAmount = 0;
+    this.tdsReceivable = 0;
+
+    this.tds_applicable = false;
+    this.tds_section = "";
+    this.tds_rate = 0;
+    this.tds_amount = 0;
+  }
+
   const grandTotal = Number(this.grandTotal) || 0;
   const amountPaid = Math.round((Number(this.amountPaid) || 0) * 100) / 100;
   const taxTotal = Number(this.taxTotal) || 0;
-  const tdsAmount = this.tds_applicable ? (Number(this.tds_amount) || 0) : 0;
+  const tdsAmt = this.tdsApplicable ? this.tdsAmount : 0;
   const basePayable = this.reverseCharge ? Math.max(grandTotal - taxTotal, 0) : grandTotal;
-  const payableAmount = Math.round(Math.max(basePayable - tdsAmount, 0) * 100) / 100;
+  const payableAmount = Math.round(Math.max(basePayable - tdsAmt, 0) * 100) / 100;
   
   if (amountPaid > payableAmount) {
     throw new Error('Amount paid cannot exceed payable amount');
   }
   this.amountPaid = amountPaid;
   this.balanceDue = Math.round(Math.max(payableAmount - amountPaid, 0) * 100) / 100;
-  this.net_vendor_payment = Math.round(Math.max(basePayable - tdsAmount, 0) * 100) / 100;
+  this.net_vendor_payment = Math.round(Math.max(basePayable - tdsAmt, 0) * 100) / 100;
 });
 
 ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true });
+ExpenseSchema.index({ user: 1, date: 1 });
+ExpenseSchema.index({ user: 1, 'items.taxRate': 1 });
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

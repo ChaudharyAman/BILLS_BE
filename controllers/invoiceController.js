@@ -9,6 +9,7 @@ const escapeRegex = require('../utils/escapeRegex');
 const { buildAutoDocumentNumber } = require('../utils/documentNumber');
 const { syncIncomeFromInvoice, removeIncomeForInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
+const { calculateTds } = require('../utils/tdsCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseOptionalDateRange, parseImportedDate } = require('../utils/dateRange');
 
@@ -22,6 +23,24 @@ const TDS_SECTION_LABELS = {
   '194A': 'Interest',
   'Manual': 'Manual Custom Rate'
 };
+
+function hasValidGstin(gstin) {
+  return /^[0-9A-Z]{15}$/.test(String(gstin || '').trim().toUpperCase());
+}
+
+function determineInvoiceType({ items = [], placeOfSupply = '', client } = {}) {
+  const invoiceItems = Array.isArray(items) ? items : [];
+  if (invoiceItems.length && invoiceItems.every((item) => item.isNilRated === true || Number(item.taxRate) === 0)) {
+    return 'NilRated';
+  }
+  if (/international|export/i.test(String(placeOfSupply || ''))) {
+    return 'Export';
+  }
+  if (hasValidGstin(client?.gstin || client?.client?.gstin)) {
+    return 'B2B';
+  }
+  return 'B2C';
+}
 
 function isInvoiceNumberDuplicateError(error) {
   return (
@@ -542,9 +561,18 @@ exports.createInvoice = async (req, res) => {
       ? await resolvePdfImportItems(req.user._id, items || [])
       : (items || []);
 
+    const documentInvoiceType = ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'].includes(invoiceType)
+      ? invoiceType
+      : 'Tax Invoice';
+
     // Process items
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } =
-      processItems(resolvedItems, invoiceType, isIntraState);
+      processItems(resolvedItems, documentInvoiceType, isIntraState);
+
+    const autoInvoiceType = determineInvoiceType({ items: processedItems, placeOfSupply: clientState, client });
+    const storedGstInvoiceType = req.body.overrideInvoiceType && ['B2B', 'B2C', 'Export', 'NilRated'].includes(invoiceType)
+      ? invoiceType
+      : autoInvoiceType;
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
@@ -552,13 +580,19 @@ exports.createInvoice = async (req, res) => {
     const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
     
-    // TDS calculations
-    const activeTdsApplicable = req.body.tds_applicable !== undefined ? !!req.body.tds_applicable : !!tdsApplicable;
-    const activeTdsSection = req.body.tds_section || tdsSection || '';
-    const activeTdsRate = req.body.tds_rate !== undefined ? Number(req.body.tds_rate) : (tdsRate !== undefined ? Number(tdsRate) : 0);
-    const activeTdsSectionLabel = req.body.tds_section_label || TDS_SECTION_LABELS[activeTdsSection] || '';
-    const activeTdsBaseAmount = subTotal;
-    const activeTdsAmount = activeTdsApplicable ? roundToTwo((activeTdsBaseAmount * activeTdsRate) / 100) : 0;
+    // TDS is calculated on taxable/base amount only, excluding GST.
+    const clientTdsApplies = storedGstInvoiceType === 'B2B' && client.tds_applicable === true;
+    const activeTdsApplicable = req.body.tds_applicable !== undefined ? !!req.body.tds_applicable : (tdsApplicable !== undefined ? !!tdsApplicable : clientTdsApplies);
+    const requestedTdsSection = req.body.tds_section || tdsSection || client.tds_default_section || client.default_tds_section || '194J';
+    const requestedTdsRate = req.body.tds_rate !== undefined ? req.body.tds_rate : (tdsRate !== undefined ? tdsRate : (client.tds_default_rate || client.default_tds_rate || 10));
+    const tdsCalc = activeTdsApplicable
+      ? calculateTds({ baseAmount: subTotal, section: requestedTdsSection, rate: requestedTdsRate })
+      : calculateTds({ baseAmount: 0, section: requestedTdsSection, rate: 0 });
+    const activeTdsSection = activeTdsApplicable ? tdsCalc.section : '';
+    const activeTdsRate = activeTdsApplicable ? tdsCalc.rate : 0;
+    const activeTdsSectionLabel = req.body.tds_section_label || TDS_SECTION_LABELS[activeTdsSection] || tdsCalc.sectionLabel || '';
+    const activeTdsBaseAmount = activeTdsApplicable ? tdsCalc.baseAmount : 0;
+    const activeTdsAmount = activeTdsApplicable ? tdsCalc.amount : 0;
     const activeNetPayable = roundToTwo(subTotal + (reverseCharge ? 0 : taxTotal) - activeTdsAmount);
 
     const finalTds = activeTdsApplicable ? activeTdsAmount : (Number(tds) || 0);
@@ -567,7 +601,7 @@ exports.createInvoice = async (req, res) => {
       ? !!req.body.client_will_deduct_tds 
       : activeTdsApplicable;
     const activeTdsReceivableAmount = activeClientWillDeductTds 
-      ? roundToTwo((subTotal * activeTdsRate) / 100) 
+      ? tdsCalc.receivable
       : 0;
     const activeExpectedReceipt = roundToTwo(grandTotal - activeTdsReceivableAmount);
 
@@ -596,7 +630,9 @@ exports.createInvoice = async (req, res) => {
       const invoice = new Invoice({
         user: req.user._id,
         invoiceNo,
-        invoiceType,
+        invoiceType: documentInvoiceType,
+        gstInvoiceType: storedGstInvoiceType,
+        overrideInvoiceType: !!req.body.overrideInvoiceType,
         date,
         dueDate,
         paymentMode,
@@ -627,6 +663,8 @@ exports.createInvoice = async (req, res) => {
         tdsApplicable: activeTdsApplicable,
         tdsSection: activeTdsSection,
         tdsRate: activeTdsRate,
+        tdsAmount: activeTdsAmount,
+        tdsReceivable: activeTdsReceivableAmount,
         tds_applicable: activeTdsApplicable,
         tds_section: activeTdsSection,
         tds_section_label: activeTdsSectionLabel,
@@ -811,9 +849,17 @@ exports.updateInvoice = async (req, res) => {
         } : null);
 
     const effectiveType = invoiceType || invoice.invoiceType || 'Tax Invoice';
+    const documentInvoiceType = ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'].includes(effectiveType)
+      ? effectiveType
+      : 'Tax Invoice';
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST, totalExcise } =
-      processItems(items || [], effectiveType, isIntraState);
+      processItems(items || [], documentInvoiceType, isIntraState);
+
+    const autoInvoiceType = determineInvoiceType({ items: processedItems, placeOfSupply: clientState, client });
+    const storedGstInvoiceType = req.body.overrideInvoiceType && ['B2B', 'B2C', 'Export', 'NilRated'].includes(effectiveType)
+      ? effectiveType
+      : autoInvoiceType;
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
@@ -821,13 +867,19 @@ exports.updateInvoice = async (req, res) => {
     const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
 
-    // TDS calculations
-    const activeTdsApplicable = req.body.tds_applicable !== undefined ? !!req.body.tds_applicable : !!tdsApplicable;
-    const activeTdsSection = req.body.tds_section || tdsSection || '';
-    const activeTdsRate = req.body.tds_rate !== undefined ? Number(req.body.tds_rate) : (tdsRate !== undefined ? Number(tdsRate) : 0);
-    const activeTdsSectionLabel = req.body.tds_section_label || TDS_SECTION_LABELS[activeTdsSection] || '';
-    const activeTdsBaseAmount = subTotal;
-    const activeTdsAmount = activeTdsApplicable ? roundToTwo((activeTdsBaseAmount * activeTdsRate) / 100) : 0;
+    // TDS is calculated on taxable/base amount only, excluding GST.
+    const clientTdsApplies = storedGstInvoiceType === 'B2B' && client.tds_applicable === true;
+    const activeTdsApplicable = req.body.tds_applicable !== undefined ? !!req.body.tds_applicable : (tdsApplicable !== undefined ? !!tdsApplicable : clientTdsApplies);
+    const requestedTdsSection = req.body.tds_section || tdsSection || client.tds_default_section || client.default_tds_section || '194J';
+    const requestedTdsRate = req.body.tds_rate !== undefined ? req.body.tds_rate : (tdsRate !== undefined ? tdsRate : (client.tds_default_rate || client.default_tds_rate || 10));
+    const tdsCalc = activeTdsApplicable
+      ? calculateTds({ baseAmount: subTotal, section: requestedTdsSection, rate: requestedTdsRate })
+      : calculateTds({ baseAmount: 0, section: requestedTdsSection, rate: 0 });
+    const activeTdsSection = activeTdsApplicable ? tdsCalc.section : '';
+    const activeTdsRate = activeTdsApplicable ? tdsCalc.rate : 0;
+    const activeTdsSectionLabel = req.body.tds_section_label || TDS_SECTION_LABELS[activeTdsSection] || tdsCalc.sectionLabel || '';
+    const activeTdsBaseAmount = activeTdsApplicable ? tdsCalc.baseAmount : 0;
+    const activeTdsAmount = activeTdsApplicable ? tdsCalc.amount : 0;
     const activeNetPayable = roundToTwo(subTotal + (reverseCharge ? 0 : taxTotal) - activeTdsAmount);
 
     const finalTds = activeTdsApplicable ? activeTdsAmount : (Number(tds) || 0);
@@ -836,7 +888,7 @@ exports.updateInvoice = async (req, res) => {
       ? !!req.body.client_will_deduct_tds 
       : activeTdsApplicable;
     const activeTdsReceivableAmount = activeClientWillDeductTds 
-      ? roundToTwo((subTotal * activeTdsRate) / 100) 
+      ? tdsCalc.receivable
       : 0;
     const activeExpectedReceipt = roundToTwo(grandTotal - activeTdsReceivableAmount);
 
@@ -853,7 +905,9 @@ exports.updateInvoice = async (req, res) => {
     }
 
     // Apply updates
-    invoice.invoiceType = effectiveType;
+    invoice.invoiceType = documentInvoiceType;
+    invoice.gstInvoiceType = storedGstInvoiceType;
+    invoice.overrideInvoiceType = !!req.body.overrideInvoiceType;
     // Allow updating invoiceNo only if a custom value was provided and it differs
     if (req.body.invoiceNo && req.body.invoiceNo !== 'Auto-generated' && req.body.invoiceNo !== invoice.invoiceNo) {
       const duplicate = await Invoice.findOne({ user: req.user._id, invoiceNo: req.body.invoiceNo, _id: { $ne: invoice._id } });
@@ -889,6 +943,8 @@ exports.updateInvoice = async (req, res) => {
     invoice.tdsApplicable = activeTdsApplicable;
     invoice.tdsSection = activeTdsSection;
     invoice.tdsRate = activeTdsRate;
+    invoice.tdsAmount = activeTdsAmount;
+    invoice.tdsReceivable = activeTdsReceivableAmount;
     invoice.tds_applicable = activeTdsApplicable;
     invoice.tds_section = activeTdsSection;
     invoice.tds_section_label = activeTdsSectionLabel;

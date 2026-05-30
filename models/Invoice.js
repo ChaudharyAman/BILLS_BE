@@ -48,9 +48,15 @@ const InvoiceSchema = new mongoose.Schema({
   },
   invoiceType: {
     type: String,
-    enum: ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'],
+    enum: ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice', 'B2B', 'B2C', 'Export', 'NilRated'],
     default: 'Tax Invoice',
   },
+  gstInvoiceType: {
+    type: String,
+    enum: ['B2B', 'B2C', 'Export', 'NilRated'],
+    required: false,
+  },
+  overrideInvoiceType: { type: Boolean, default: false, required: false },
   date: {
     type: Date,
     default: Date.now,
@@ -156,6 +162,8 @@ const InvoiceSchema = new mongoose.Schema({
   tdsApplicable: { type: Boolean, default: false },
   tdsSection: { type: String, default: '' },
   tdsRate: { type: Number, default: 0 },
+  tdsAmount: { type: Number, default: 0, required: false },
+  tdsReceivable: { type: Number, default: 0, required: false },
   tds_applicable: { type: Boolean, default: false },
   tds_section: { type: String, default: '' },
   tds_section_label: { type: String, default: '' },
@@ -201,5 +209,9 @@ const InvoiceSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 InvoiceSchema.index({ user: 1, invoiceNo: 1 }, { unique: true });
+InvoiceSchema.index({ user: 1, date: 1 });
+InvoiceSchema.index({ user: 1, invoiceType: 1 });
+InvoiceSchema.index({ user: 1, gstInvoiceType: 1 });
+InvoiceSchema.index({ user: 1, 'items.taxRate': 1 });
 
 module.exports = mongoose.model('Invoice', InvoiceSchema);
