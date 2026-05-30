@@ -74,6 +74,10 @@ function roundToTwo(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
+function hasImportValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== '';
+}
+
 function formatDateKey(value) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return '';
@@ -158,8 +162,10 @@ exports.getQuotes = async (req, res) => {
       sortObj['createdAt'] = -1;
     }
 
+    const selectFields = exportAll ? '-items -terms -shippingAddress' : '-items -notes -terms -shippingAddress';
     const quotesQuery = Quote.find(query)
-      .select('-items -notes -terms -shippingAddress')
+      .select(selectFields)
+      .populate('user', 'username')
       .lean()
       .sort(sortObj);
 
@@ -252,6 +258,7 @@ exports.createQuote = async (req, res) => {
     });
     const hasManualQuoteNo = !!quoteNo;
 
+
     if (quoteNo) {
       const existing = await Quote.findOne({ user: req.user._id, quoteNo });
       if (existing) {
@@ -268,9 +275,10 @@ exports.createQuote = async (req, res) => {
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
     const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
+    const effectiveType = 'Invoice';
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
-      processItems(items || [], invoiceType || 'Tax Invoice', isIntraState);
+      processItems(items || [], effectiveType, isIntraState);
 
     const finalShipping = Number(shippingCharges) || 0;
     const finalPackaging = Number(packagingCharges) || 0;
@@ -286,7 +294,7 @@ exports.createQuote = async (req, res) => {
     let saved = null;
     for (let attempt = 0; attempt < 25; attempt += 1) {
       const quote = new Quote({
-        user: req.user._id, quoteNo, invoiceType: invoiceType || 'Tax Invoice',
+        user: req.user._id, quoteNo, invoiceType: 'Invoice',
         date, validUntil, paymentMode, paymentTerms,
         client: clientSnapshot, items: processedItems,
         subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
@@ -408,7 +416,7 @@ exports.updateQuote = async (req, res) => {
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.billingAddress?.state || '';
     const isIntraState = !isInterStateSupply(clientState, COMPANY_STATE, COMPANY_GSTIN);
-    const effectiveType = invoiceType || quote.invoiceType || 'Tax Invoice';
+    const effectiveType = 'Invoice';
 
     const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
       processItems(items || [], effectiveType, isIntraState);
@@ -661,10 +669,7 @@ exports.bulkCreateQuotes = async (req, res) => {
         });
       }
 
-      let invoiceType = qData.invoiceType || 'Tax Invoice';
-      if (!['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'].includes(invoiceType)) {
-        invoiceType = 'Tax Invoice';
-      }
+      let invoiceType = 'Invoice';
 
       const { processedItems, subTotal, taxTotal, totalCGST, totalSGST, totalIGST } =
         processItems(qData.items || [], invoiceType, isIntraState);
@@ -672,24 +677,38 @@ exports.bulkCreateQuotes = async (req, res) => {
       const finalShipping = Number(qData.shippingCharges) || 0;
       const finalPackaging = Number(qData.packagingCharges) || 0;
       const finalDiscount = Number(qData.discountTotal) || 0;
-      const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+      const computedGrandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
+
+      const finalSubTotal = hasImportValue(qData.importedSubTotal) ? roundToTwo(qData.importedSubTotal) : subTotal;
+      const finalGrandTotal = hasImportValue(qData.importedGrandTotal) ? roundToTwo(qData.importedGrandTotal) : roundToTwo(computedGrandTotal);
       const finalDate = parseImportedDate(qData.date);
 
       if (originalQuoteNo) {
-        const existingQuote = await Quote.findOne({ user: req.user._id, quoteNo: originalQuoteNo });
-        if (existingQuote && isSameImportedQuote(existingQuote, finalDate, grandTotal)) {
+        const existingQuote = await Quote.findOne({
+          user: req.user._id,
+          quoteNo: originalQuoteNo,
+          'client.name': { $regex: new RegExp(`^${escapeRegex(rowClientName)}$`, 'i') },
+          grandTotal: finalGrandTotal,
+          date: {
+            $gte: new Date(new Date(finalDate).setHours(0, 0, 0, 0)),
+            $lte: new Date(new Date(finalDate).setHours(23, 59, 59, 999))
+          }
+        });
+
+        if (existingQuote) {
           skippedQuotes.push({
             importRowId,
             quoteNo: originalQuoteNo,
             clientName: rowClientName,
             date: finalDate,
-            grandTotal,
-            reason: 'same quote number, date, and amount already exist',
+            grandTotal: finalGrandTotal,
+            reason: 'this already exists',
           });
           continue;
         }
 
-        if (existingQuote) {
+        const existingQuoteNoOnly = await Quote.findOne({ user: req.user._id, quoteNo: originalQuoteNo });
+        if (existingQuoteNoOnly) {
           currentQuoteNo = await generateNextUniqueQuoteNumber({
             userId: req.user._id,
             quotePrefix: userSettings?.quotePrefix || 'QT',
@@ -700,7 +719,7 @@ exports.bulkCreateQuotes = async (req, res) => {
             quoteNo: currentQuoteNo,
             clientName: rowClientName,
             date: finalDate,
-            grandTotal,
+            grandTotal: finalGrandTotal,
             reason: 'same quote number exists with different date or amount',
           });
         }
@@ -742,9 +761,9 @@ exports.bulkCreateQuotes = async (req, res) => {
              gstin: client.gstin || '',
           },
           items: processedItems,
-          subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
+          subTotal: finalSubTotal, taxTotal, totalCGST, totalSGST, totalIGST,
           shippingCharges: finalShipping, packagingCharges: finalPackaging,
-          discountTotal: finalDiscount, grandTotal,
+          discountTotal: finalDiscount, grandTotal: finalGrandTotal,
           bankDetails: userSettings?.bankDetails || {},
           status: importedStatus,
           user: req.user._id
