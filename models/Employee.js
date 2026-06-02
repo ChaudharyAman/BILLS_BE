@@ -48,7 +48,7 @@ const EmployeeSchema = new mongoose.Schema({
   petrol: { type: Number, default: 0, min: 0 },
   lta: { type: Number, default: 0, min: 0 },
   employerNPS: { type: Number, default: 0, min: 0 },
-  insuranceAmount: { type: Number, default: 1000, min: 0 },
+  insuranceAmount: { type: Number, default: 0, min: 0 },
   joiningBonus: { type: Number, default: 0, min: 0 },
   basicPercent: { type: Number, default: null },
   hraPercent: { type: Number, default: null },
@@ -121,7 +121,7 @@ const EmployeeSchema = new mongoose.Schema({
     revisedBy: { type: String },
     createdAt: { type: Date, default: Date.now },
   }],
-}, { timestamps: true });
+}, { timestamps: true, strict: false });
 
 EmployeeSchema.index({ user: 1, employeeId: 1 }, { unique: true });
 EmployeeSchema.index({ user: 1, email: 1 });

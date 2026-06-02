@@ -113,6 +113,16 @@ const PayrollSchema = new mongoose.Schema({
   notes: String,
   remarks: String,
   expenseRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense', default: null },
+  auditLog: [
+    {
+      status:     { type: String },
+      changedBy:  { type: String },
+      changedById:{ type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      changedAt:  { type: Date, default: Date.now },
+      netSalary:  { type: Number },
+      notes:      { type: String },
+    }
+  ],
 }, { timestamps: true });
 
 PayrollSchema.pre('validate', function() {
