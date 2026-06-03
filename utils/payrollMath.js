@@ -437,7 +437,10 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   };
 };
 
-const buildPayrollSnapshot = (employee, configInput, attendance, adjustments = {}, monthNum) => {
+const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustments = {}, monthNum) => {
+  const employee = (employeeInput && typeof employeeInput.toObject === 'function')
+    ? employeeInput.toObject()
+    : employeeInput;
   const config = normalizeConfig(configInput);
   
   const mergedSource = {
