@@ -126,9 +126,14 @@ const EmployeeSchema = new mongoose.Schema({
 EmployeeSchema.index({ user: 1, employeeId: 1 }, { unique: true });
 EmployeeSchema.index({ user: 1, email: 1 });
 
-EmployeeSchema.pre('save', function() {
+EmployeeSchema.pre('save', async function() {
+  const PayrollConfig = mongoose.model('PayrollConfig');
+  let config = {};
+  if (this.user) {
+    config = await PayrollConfig.findOne({ user: this.user }).lean() || {};
+  }
   const { buildMasterSalaryStructure } = require('../utils/payrollMath');
-  const master = buildMasterSalaryStructure(this);
+  const master = buildMasterSalaryStructure(this, config);
 
   const salary = this.salaryStructure || {};
   salary.basic = master.basicMaster;
@@ -185,8 +190,15 @@ const applySalaryStructureUpdate = async function() {
     }
   };
 
+  const PayrollConfig = mongoose.model('PayrollConfig');
+  const userId = set.user || currentDoc.user;
+  let config = {};
+  if (userId) {
+    config = await PayrollConfig.findOne({ user: userId }).lean() || {};
+  }
+
   const { buildMasterSalaryStructure } = require('../utils/payrollMath');
-  const master = buildMasterSalaryStructure(mergedEmployee);
+  const master = buildMasterSalaryStructure(mergedEmployee, config);
 
   if (set.salaryStructure && typeof set.salaryStructure === 'object') {
     set.salaryStructure = {

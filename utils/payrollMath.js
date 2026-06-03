@@ -9,7 +9,7 @@ const DEFAULT_PAYROLL_CONFIG = {
   esiBasicThreshold: 21000,
   lwfEmployer: 35,
   lwfEmployee: 15,
-  gratuityRate: 0.12,
+  gratuityRate: 0.0481,
   defaultWorkingDays: 30,
   defaultInsurance: 0,
   ltaMaxPercent: 0.0833,
