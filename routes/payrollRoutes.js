@@ -15,6 +15,8 @@ const {
   exportPayrollExcel,
   emailPayslip,
   reopenPayroll,
+  getPayrollTrend,
+  getPayrollAuditLog,
 } = require('../controllers/payrollController');
 
 router.use(protect);
@@ -22,6 +24,7 @@ router.use(protect);
 router.get('/config', getPayrollConfig);
 router.put('/config', updatePayrollConfig);
 router.post('/calculate-salary', calculateSalary);
+router.get('/trend', getPayrollTrend);
 router.get('/export', exportPayrollExcel);
 router.post('/process', processPayroll);
 router.put('/bulk-approve', bulkApprovePayroll);
@@ -35,5 +38,6 @@ router.post('/:id/mark-paid', markPayrollAsPaid);
 router.post('/:id/reopen', reopenPayroll);
 router.get('/:id/generate-payslip', generatePayslip);
 router.post('/:id/email-payslip', emailPayslip);
+router.get('/:id/audit-log', getPayrollAuditLog);
 
 module.exports = router;

@@ -1,6 +1,106 @@
 const Client = require('../models/Client');
 const escapeRegex = require('../utils/escapeRegex');
 
+const mergeClientFields = (existing, incoming) => {
+  if (!existing || !incoming) return;
+
+  // Simple fields
+  const fields = [
+    'email', 'phone', 'gstin', 'pan', 'tan', 'tin', 'vat', 'website', 
+    'notes', 'placeOfSupply', 'terms', 'vendorCode', 'facebook', 'lst', 'cst', 'dlNo'
+  ];
+  fields.forEach(field => {
+    if (!existing[field] && incoming[field]) {
+      existing[field] = incoming[field];
+    }
+  });
+
+  // Boolean flags - if either is true, set it to true
+  if (incoming.isClient !== undefined) {
+    existing.isClient = existing.isClient || incoming.isClient;
+  }
+  if (incoming.isVendor !== undefined) {
+    existing.isVendor = existing.isVendor || incoming.isVendor;
+  }
+  if (incoming.useForDispatch !== undefined) {
+    existing.useForDispatch = existing.useForDispatch || incoming.useForDispatch;
+  }
+  if (incoming.clientWiseItemPrice !== undefined) {
+    existing.clientWiseItemPrice = existing.clientWiseItemPrice || incoming.clientWiseItemPrice;
+  }
+
+  // Currency
+  if ((!existing.currency || existing.currency === 'INR') && incoming.currency) {
+    existing.currency = incoming.currency;
+  }
+
+  // Vendor relation
+  if ((!existing.vendorRelation || existing.vendorRelation === 'Bought From') && incoming.vendorRelation) {
+    existing.vendorRelation = incoming.vendorRelation;
+  }
+
+  // TDS settings
+  if (incoming.tds_applicable !== undefined) {
+    existing.tds_applicable = existing.tds_applicable || incoming.tds_applicable;
+  }
+  if (!existing.default_tds_section && incoming.default_tds_section) {
+    existing.default_tds_section = incoming.default_tds_section;
+  }
+  if (!existing.default_tds_rate && incoming.default_tds_rate) {
+    existing.default_tds_rate = incoming.default_tds_rate;
+  }
+  if (!existing.tds_default_section && incoming.tds_default_section) {
+    existing.tds_default_section = incoming.tds_default_section;
+  }
+  if (!existing.tds_default_rate && incoming.tds_default_rate) {
+    existing.tds_default_rate = incoming.tds_default_rate;
+  }
+
+  // Address objects merging
+  const mergeAddress = (existingAddr, incomingAddr) => {
+    if (!incomingAddr) return;
+    const addrFields = ['line1', 'line2', 'city', 'state', 'zip', 'country'];
+    addrFields.forEach(f => {
+      if (!existingAddr[f] && incomingAddr[f]) {
+        existingAddr[f] = incomingAddr[f];
+      }
+    });
+  };
+
+  if (incoming.billingAddress) {
+    if (!existing.billingAddress) {
+      existing.billingAddress = incoming.billingAddress;
+    } else {
+      mergeAddress(existing.billingAddress, incoming.billingAddress);
+    }
+  }
+
+  if (incoming.shippingAddress) {
+    if (!existing.shippingAddress) {
+      existing.shippingAddress = incoming.shippingAddress;
+    } else {
+      mergeAddress(existing.shippingAddress, incoming.shippingAddress);
+    }
+  }
+
+  // Contacts array
+  if (Array.isArray(incoming.contacts) && incoming.contacts.length > 0) {
+    if (!Array.isArray(existing.contacts) || existing.contacts.length === 0) {
+      existing.contacts = incoming.contacts;
+    } else {
+      incoming.contacts.forEach(incomingContact => {
+        const isDuplicate = existing.contacts.some(c => 
+          (c.email && c.email.toLowerCase() === (incomingContact.email || '').toLowerCase()) ||
+          (c.phone && c.phone === incomingContact.phone)
+        );
+        if (!isDuplicate) {
+          existing.contacts.push(incomingContact);
+        }
+      });
+    }
+  }
+};
+
 // Get all clients
 exports.getClients = async (req, res) => {
   try {
@@ -83,6 +183,19 @@ exports.createClient = async (req, res) => {
       tds_applicable, default_tds_section, default_tds_rate
     } = req.body;
 
+    if (name && typeof name === 'string') {
+      const existingClient = await Client.findOne({
+        user: req.user._id,
+        name: { $regex: new RegExp("^" + escapeRegex(name.trim()) + "$", "i") }
+      });
+
+      if (existingClient) {
+        mergeClientFields(existingClient, req.body);
+        const savedClient = await existingClient.save();
+        return res.status(200).json(savedClient);
+      }
+    }
+
     const client = new Client({
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
@@ -113,24 +226,39 @@ exports.bulkCreateClients = async (req, res) => {
     
     for (const [index, clientData] of clients.entries()) {
       try {
-        const client = new Client({
-          name: clientData.name,
-          email: clientData.email,
-          phone: clientData.phone,
-          billingAddress: clientData.billingAddress,
-          shippingAddress: clientData.shippingAddress,
-          gstin: clientData.gstin,
-          pan: clientData.pan,
-          terms: clientData.terms,
-          isClient: clientData.isClient,
-          isVendor: clientData.isVendor,
-          notes: clientData.notes,
-          placeOfSupply: clientData.placeOfSupply,
-          user: req.user._id
+        if (!clientData.name || typeof clientData.name !== 'string') {
+          throw new Error('Name is required');
+        }
+
+        const existingClient = await Client.findOne({
+          user: req.user._id,
+          name: { $regex: new RegExp("^" + escapeRegex(clientData.name.trim()) + "$", "i") }
         });
-        
-        const savedClient = await client.save();
-        createdClients.push(savedClient);
+
+        if (existingClient) {
+          mergeClientFields(existingClient, clientData);
+          const savedClient = await existingClient.save();
+          createdClients.push(savedClient);
+        } else {
+          const client = new Client({
+            name: clientData.name,
+            email: clientData.email,
+            phone: clientData.phone,
+            billingAddress: clientData.billingAddress,
+            shippingAddress: clientData.shippingAddress,
+            gstin: clientData.gstin,
+            pan: clientData.pan,
+            terms: clientData.terms,
+            isClient: clientData.isClient,
+            isVendor: clientData.isVendor,
+            notes: clientData.notes,
+            placeOfSupply: clientData.placeOfSupply,
+            user: req.user._id
+          });
+          
+          const savedClient = await client.save();
+          createdClients.push(savedClient);
+        }
       } catch (err) {
         errors.push({ index, client: clientData, error: err.message });
       }

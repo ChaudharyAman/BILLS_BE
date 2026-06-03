@@ -12,6 +12,7 @@ const {
   importEmployees,
   exportEmployeesExcel,
   addSalaryRevision,
+  updateEmployeeDeclarations,
 } = require('../controllers/employeeController');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -30,6 +31,7 @@ router.route('/:id')
   .get(getEmployeeById)
   .put(updateEmployee)
   .delete(deleteEmployee);
+router.put('/:id/declarations', updateEmployeeDeclarations);
 router.post('/:id/salary-revision', addSalaryRevision);
 
 module.exports = router;

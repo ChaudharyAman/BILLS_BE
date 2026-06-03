@@ -71,13 +71,30 @@ const IncomeSchema = new mongoose.Schema({
   terms: String,
   privateNotes: String, // Specifically for Sleekbills feature
 
+  placeOfSupply: { type: String, default: "" },
+
   status: {
     type: String,
     enum: ['DRAFT', 'PAID', 'PARTIAL', 'UNPAID', 'CANCELLED'],
     default: 'DRAFT',
   },
 
+  tds_applicable: { type: Boolean, default: false },
+  tds_section: { type: String, default: "" },
+  tds_rate: { type: Number, default: 0 },
+  tds_amount: { type: Number, default: 0 },
+  net_received_payment: { type: Number, default: 0 },
+  amountPaid: { type: Number, default: 0 },
+  balanceDue: { type: Number, default: 0 },
+
 }, { timestamps: true });
+
+IncomeSchema.pre('save', function() {
+  const basePayable = this.grandTotal || 0;
+  const tdsAmt = this.tds_applicable ? (this.tds_amount || 0) : 0;
+  this.net_received_payment = Math.round(Math.max(basePayable - tdsAmt, 0) * 100) / 100;
+  this.balanceDue = Math.round(Math.max(this.net_received_payment - (this.amountPaid || 0), 0) * 100) / 100;
+});
 
 // Compound unique index: same income number is allowed across different users
 IncomeSchema.index({ user: 1, incomeNumber: 1 }, { unique: true });

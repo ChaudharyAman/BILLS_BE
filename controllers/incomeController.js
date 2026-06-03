@@ -290,9 +290,19 @@ exports.createIncome = async (req, res) => {
       items,
       subTotal,
       taxTotal,
+      totalCGST,
+      totalSGST,
+      totalIGST,
       grandTotal,
       terms,
-      privateNotes
+      privateNotes,
+      placeOfSupply,
+      tds_applicable,
+      tds_section,
+      tds_rate,
+      tds_amount,
+      amountPaid,
+      status
     } = req.body;
 
     let resolvedVendor = null;
@@ -352,10 +362,19 @@ exports.createIncome = async (req, res) => {
       items,
       subTotal,
       taxTotal,
+      totalCGST: Number(totalCGST) || 0,
+      totalSGST: Number(totalSGST) || 0,
+      totalIGST: Number(totalIGST) || 0,
       grandTotal,
       terms,
       privateNotes,
-      status: 'PAID' // Auto default to paid for now
+      status: status || 'PAID',
+      placeOfSupply: placeOfSupply || '',
+      tds_applicable: !!tds_applicable,
+      tds_section: tds_section || '',
+      tds_rate: Number(tds_rate) || 0,
+      tds_amount: Number(tds_amount) || 0,
+      amountPaid: Number(amountPaid) || 0
     });
 
     res.status(201).json(income);
@@ -437,10 +456,19 @@ exports.updateIncome = async (req, res) => {
       items,
       subTotal,
       taxTotal,
+      totalCGST,
+      totalSGST,
+      totalIGST,
       grandTotal,
       terms,
       privateNotes,
-      status
+      status,
+      placeOfSupply,
+      tds_applicable,
+      tds_section,
+      tds_rate,
+      tds_amount,
+      amountPaid
     } = req.body;
 
     let resolvedVendor = undefined;
@@ -487,24 +515,58 @@ exports.updateIncome = async (req, res) => {
       }
     }
 
+    if (incomeNumber && incomeNumber !== income.incomeNumber) {
+      const existingNumber = await Income.findOne({ incomeNumber, user: req.user._id });
+      if (existingNumber) {
+        return res.status(400).json({ message: 'Income number already exists' });
+      }
+    }
+
+    const basePayable = grandTotal !== undefined ? (Number(grandTotal) || 0) : (income.grandTotal || 0);
+    const tdsApplicable = tds_applicable !== undefined ? !!tds_applicable : (income.tds_applicable || false);
+    const tdsAmt = tdsApplicable ? (tds_amount !== undefined ? (Number(tds_amount) || 0) : (income.tds_amount || 0)) : 0;
+    const netReceived = Math.round(Math.max(basePayable - tdsAmt, 0) * 100) / 100;
+    const paidAmt = amountPaid !== undefined ? (Number(amountPaid) || 0) : (income.amountPaid || 0);
+    const balDue = Math.round(Math.max(netReceived - paidAmt, 0) * 100) / 100;
+
+    let computedStatus = status;
+    if (!status) {
+      if (balDue === 0) {
+        computedStatus = 'PAID';
+      } else if (paidAmt > 0) {
+        computedStatus = 'PARTIAL';
+      } else {
+        computedStatus = 'UNPAID';
+      }
+    }
+
     const updateData = {
-      category,
-      subCategory,
-      project,
-      department,
-      incomeNumber,
-      date,
-      vendor: resolvedVendor,
-      client: resolvedClient,
-      paymentMethod,
-      reverseCharge: reverseCharge !== undefined ? !!reverseCharge : undefined,
-      items,
-      subTotal,
-      taxTotal,
-      grandTotal,
-      terms,
-      privateNotes,
-      status
+      project: project !== undefined ? (project || null) : income.project,
+      department: department !== undefined ? (department || null) : income.department,
+      incomeNumber: incomeNumber !== undefined ? incomeNumber : income.incomeNumber,
+      date: date !== undefined ? date : income.date,
+      vendor: resolvedVendor !== undefined ? resolvedVendor : income.vendor,
+      client: resolvedClient !== undefined ? resolvedClient : income.client,
+      paymentMethod: paymentMethod !== undefined ? paymentMethod : income.paymentMethod,
+      reverseCharge: reverseCharge !== undefined ? !!reverseCharge : income.reverseCharge,
+      items: items !== undefined ? items : income.items,
+      subTotal: subTotal !== undefined ? Number(subTotal) : income.subTotal,
+      taxTotal: taxTotal !== undefined ? Number(taxTotal) : income.taxTotal,
+      totalCGST: totalCGST !== undefined ? Number(totalCGST) : income.totalCGST,
+      totalSGST: totalSGST !== undefined ? Number(totalSGST) : income.totalSGST,
+      totalIGST: totalIGST !== undefined ? Number(totalIGST) : income.totalIGST,
+      grandTotal: grandTotal !== undefined ? Number(grandTotal) : income.grandTotal,
+      terms: terms !== undefined ? terms : income.terms,
+      privateNotes: privateNotes !== undefined ? privateNotes : income.privateNotes,
+      status: computedStatus,
+      placeOfSupply: placeOfSupply !== undefined ? placeOfSupply : income.placeOfSupply,
+      tds_applicable: tdsApplicable,
+      tds_section: tds_section !== undefined ? tds_section : income.tds_section,
+      tds_rate: tds_rate !== undefined ? Number(tds_rate) : income.tds_rate,
+      tds_amount: tdsAmt,
+      amountPaid: paidAmt,
+      net_received_payment: netReceived,
+      balanceDue: balDue
     };
 
     if (category !== undefined || subCategory !== undefined) {
@@ -534,6 +596,7 @@ exports.updateIncome = async (req, res) => {
     res.status(error.statusCode || 500).json({ message: error.message || 'Server Error updating income' });
   }
 };
+
 
 // @desc    Delete an income
 // @route   DELETE /api/incomes/:id

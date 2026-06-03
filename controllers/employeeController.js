@@ -456,3 +456,27 @@ exports.addSalaryRevision = async (req, res) => {
     res.status(500).json({ message: 'Server error updating salary revision' });
   }
 };
+
+exports.updateEmployeeDeclarations = async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
+      return res.status(404).json({ message: 'Employee not found' });
+    }
+
+    const { taxRegime, declarations } = req.body;
+
+    const employee = await Employee.findOneAndUpdate(
+      { _id: req.params.id, user: req.user._id },
+      { $set: { taxRegime, declarations } },
+      { returnDocument: 'after', runValidators: true }
+    )
+      .populate('department', 'name code')
+      .select('+panNumber +uanNumber +aadharNumber +bankDetails.accountNumber');
+
+    if (!employee) return res.status(404).json({ message: 'Employee not found' });
+    res.json(employee);
+  } catch (error) {
+    console.error('Error updating declarations:', error);
+    res.status(500).json({ message: 'Server error updating declarations' });
+  }
+};

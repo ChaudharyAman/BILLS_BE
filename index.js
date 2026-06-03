@@ -4,7 +4,6 @@ const dotenv = require('dotenv');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
-const { fork } = require('child_process');
 const path = require('path');
 const connectDB = require('./db');
 const bootstrapAdmin = require('./utils/bootstrap');
@@ -85,38 +84,8 @@ app.get('/', (req, res) => {
 
 const { cleanupStaleIncomes } = require('./services/invoiceIncomeSync');
 
-function runMigrationScript(scriptPath) {
-  return new Promise((resolve, reject) => {
-    const child = fork(scriptPath, [], {
-      env: { ...process.env, MONGO_URI: process.env.MONGO_URI || process.env.MONGODB_URI }
-    });
-    child.on('exit', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`Migration script ${path.basename(scriptPath)} failed with exit code ${code}`));
-      }
-    });
-    child.on('error', reject);
-  });
-}
-
 async function startServer(port = process.env.PORT || 5000) {
   await connectDB();
-
-  // Run migrations in production environment sequentially
-  if (process.env.NODE_ENV === 'production') {
-    try {
-      console.log('Production environment detected. Starting database migrations...');
-      await runMigrationScript(path.join(__dirname, 'scripts/migrateClientTypes.js'));
-      await runMigrationScript(path.join(__dirname, 'scripts/migrateInvoiceTypes.js'));
-      await runMigrationScript(path.join(__dirname, 'scripts/migrateExpenseTypes.js'));
-      console.log('All database migrations completed successfully.');
-    } catch (err) {
-      console.error('Database migration failed:', err.message);
-      process.exit(1);
-    }
-  }
 
   await bootstrapAdmin();
   startScheduler();

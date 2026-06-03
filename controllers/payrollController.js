@@ -293,7 +293,7 @@ exports.processPayroll = async (req, res) => {
           adjustments.loanDeduction = activeLoans.reduce((sum, loan) => sum + Math.min(loan.emiAmount, loan.remainingBalance), 0);
         }
 
-        const snapshot = buildPayrollSnapshot(employee, config, attendance, adjustments);
+        const snapshot = buildPayrollSnapshot(employee, config, attendance, adjustments, month);
         const statusVal = saveAsDraft ? 'draft' : 'processed';
         const payroll = await Payroll.create({
           user: req.user._id,
@@ -341,7 +341,15 @@ exports.processPayroll = async (req, res) => {
           notes: payload.notes || '',
           remarks: payload.remarks || '',
           reimbursements: snapshot.reimbursements,
-          totalReimbursementApproved: snapshot.totalReimbursementApproved
+          totalReimbursementApproved: snapshot.totalReimbursementApproved,
+          auditLog: [{
+            status: statusVal,
+            changedBy: req.user.name,
+            changedById: req.user._id,
+            changedAt: new Date(),
+            netSalary: snapshot.netSalary,
+            notes: saveAsDraft ? 'Payroll initialized as draft' : 'Payroll calculated and processed'
+          }]
         });
 
         await AuditLog.create({
@@ -416,6 +424,18 @@ exports.bulkApprovePayroll = async (req, res) => {
       });
       await payroll.save();
 
+      await Payroll.updateOne(
+        { _id: payroll._id },
+        { $push: { auditLog: {
+          status: 'approved',
+          changedBy: req.user.name,
+          changedById: req.user._id,
+          changedAt: new Date(),
+          netSalary: payroll.netSalary,
+          notes: req.body.remarks || 'Bulk approved'
+        }}}
+      );
+
       await AuditLog.create({
         user: req.user._id,
         actor: req.user._id,
@@ -454,7 +474,7 @@ exports.updatePayrollConfig = async (req, res) => {
     const allowed = [
       'basicPercent', 'hraPercent', 'pfRate', 'pfCap', 'pfEmployerRate',
       'esiEmployeeRate', 'esiEmployerRate', 'esiBasicThreshold', 'lwfEmployer', 'lwfEmployee',
-      'gratuityRate', 'defaultWorkingDays', 'defaultInsurance', 'ltaMaxPercent',
+      'gratuityRate', 'defaultWorkingDays', 'defaultInsurance', 'ltaMaxPercent', 'salaryComponents',
     ];
     const update = {};
     allowed.forEach((key) => {
@@ -486,6 +506,9 @@ exports.calculateSalary = async (req, res) => {
       monthlyCTC,
       basicPercent: req.body.basicPercent !== undefined && req.body.basicPercent !== null ? Number(req.body.basicPercent) : null,
       hraPercent: req.body.hraPercent !== undefined && req.body.hraPercent !== null ? Number(req.body.hraPercent) : null,
+      basic: req.body.basic !== undefined ? Number(req.body.basic) : undefined,
+      hra: req.body.hra !== undefined ? Number(req.body.hra) : undefined,
+      specialAllowance: req.body.specialAllowance !== undefined ? Number(req.body.specialAllowance) : undefined,
       flexiAmount: Number(req.body.flexiAmount) || 0,
       broadband: Number(req.body.broadband) || 0,
       petrol: Number(req.body.petrol) || 0,
@@ -514,6 +537,7 @@ exports.calculateSalary = async (req, res) => {
     };
 
     const master = buildMasterSalaryStructure(previewSource, config);
+    const month = Number(req.body.month) || (new Date().getMonth() + 1);
     const snapshot = buildPayrollSnapshot(
       previewSource,
       config,
@@ -529,7 +553,8 @@ exports.calculateSalary = async (req, res) => {
         retentionBonus: Number(req.body.retentionBonus) || 0,
         arrear: Number(req.body.arrear) || 0,
         referralBonus: Number(req.body.referralBonus) || 0,
-      }
+      },
+      month
     );
 
     res.json({
@@ -683,6 +708,20 @@ exports.updatePayroll = async (req, res) => {
     }
 
     await payroll.save();
+
+    if (req.body.status && req.body.status !== oldStatus) {
+      await Payroll.updateOne(
+        { _id: payroll._id },
+        { $push: { auditLog: {
+          status: req.body.status,
+          changedBy: req.user.name,
+          changedById: req.user._id,
+          changedAt: new Date(),
+          netSalary: payroll.netSalary,
+          notes: req.body.remarks || `Status transitioned to ${req.body.status}`
+        }}}
+      );
+    }
     await payroll.populate('employee', 'employeeId firstName lastName designation');
 
     await AuditLog.create({
@@ -789,6 +828,18 @@ exports.markPayrollAsPaid = async (req, res) => {
 
     await payroll.save();
 
+    await Payroll.updateOne(
+      { _id: payroll._id },
+      { $push: { auditLog: {
+        status: 'paid',
+        changedBy: req.user.name,
+        changedById: req.user._id,
+        changedAt: new Date(),
+        netSalary: payroll.netSalary,
+        notes: req.body.remarks || 'Payroll marked as paid and expense generated'
+      }}}
+    );
+
     await AuditLog.create({
       user: req.user._id,
       actor: req.user._id,
@@ -850,6 +901,7 @@ exports.generatePayslip = async (req, res) => {
         status: payroll.status,
         notes: payroll.notes,
         remarks: payroll.remarks,
+        auditLog: payroll.auditLog || [],
         generatedAt: new Date(),
         company: settings ? {
           companyName: settings.companyName,
@@ -915,6 +967,18 @@ exports.reopenPayroll = async (req, res) => {
 
     await payroll.save();
 
+    await Payroll.updateOne(
+      { _id: payroll._id },
+      { $push: { auditLog: {
+        status: 'processed',
+        changedBy: req.user.name,
+        changedById: req.user._id,
+        changedAt: new Date(),
+        netSalary: payroll.netSalary,
+        notes: remarks || 'Payroll re-opened',
+      }}}
+    );
+
     await AuditLog.create({
       user: req.user._id,
       actor: req.user._id,
@@ -931,6 +995,61 @@ exports.reopenPayroll = async (req, res) => {
   }
 };
 
+exports.getPayrollTrend = async (req, res) => {
+  try {
+    const { endMonth, endYear, count = 6 } = req.query;
+    const userId = req.user._id;
+
+    // Build array of { month, year } for last N months
+    const periods = [];
+    let m = parseInt(endMonth), y = parseInt(endYear);
+    for (let i = 0; i < parseInt(count); i++) {
+      periods.push({ month: m, year: y });
+      m--;
+      if (m === 0) { m = 12; y--; }
+    }
+    periods.reverse();
+
+    // Single aggregation
+    const results = await Payroll.aggregate([
+      {
+        $match: {
+          user: new mongoose.Types.ObjectId(String(userId)),
+          $or: periods.map(p => ({ month: p.month, year: p.year })),
+          status: { $ne: 'cancelled' },
+        }
+      },
+      {
+        $group: {
+          _id: { month: '$month', year: '$year' },
+          total: { $sum: '$netSalary' },
+        }
+      }
+    ]);
+
+    // Map results back to ordered periods
+    const trend = periods.map(p => {
+      const found = results.find(r => r._id.month === p.month && r._id.year === p.year);
+      const label = `${new Date(0, p.month - 1).toLocaleString('en-US', { month: 'short' })} ${String(p.year).slice(-2)}`;
+      return { label, total: found?.total || 0 };
+    });
+
+    res.json({ trend });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to fetch trend data' });
+  }
+};
+
+exports.getPayrollAuditLog = async (req, res) => {
+  try {
+    const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id }).select('auditLog').lean();
+    if (!payroll) return res.status(404).json({ message: 'Not found' });
+    res.json({ auditLog: payroll.auditLog || [] });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch audit log' });
+  }
+};
 
 exports.__private__ = {
   getOrCreateConfig,

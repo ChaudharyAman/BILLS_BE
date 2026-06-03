@@ -561,26 +561,24 @@ exports.updateExpense = async (req, res) => {
       : {};
 
     const updateData = {
-      category,
-      subCategory,
-      project,
-      department,
-      expenseNumber,
-      date,
-      vendor: resolvedVendor,
-      client: resolvedClient,
-      paymentMethod,
-      reverseCharge: reverseCharge !== undefined ? !!reverseCharge : undefined,
-      items: sanitizeItems(items),
-      subTotal,
-      taxTotal,
-      grandTotal,
-      amountPaid: paymentState.amountPaid,
-      balanceDue: paymentState.balanceDue,
-      dueDate,
-      terms,
-      privateNotes,
-      status: paymentState.status,
+      project: project !== undefined ? (project || null) : expense.project,
+      department: department !== undefined ? (department || null) : expense.department,
+      expenseNumber: expenseNumber !== undefined ? expenseNumber : expense.expenseNumber,
+      date: date !== undefined ? date : expense.date,
+      vendor: resolvedVendor !== undefined ? resolvedVendor : expense.vendor,
+      client: resolvedClient !== undefined ? resolvedClient : expense.client,
+      paymentMethod: paymentMethod !== undefined ? paymentMethod : expense.paymentMethod,
+      reverseCharge: reverseCharge !== undefined ? !!reverseCharge : expense.reverseCharge,
+      items: items !== undefined ? sanitizeItems(items) : expense.items,
+      subTotal: subTotal !== undefined ? Number(subTotal) : expense.subTotal,
+      taxTotal: taxTotal !== undefined ? Number(taxTotal) : expense.taxTotal,
+      grandTotal: grandTotal !== undefined ? Number(grandTotal) : expense.grandTotal,
+      amountPaid: paymentState.amountPaid !== undefined ? paymentState.amountPaid : expense.amountPaid,
+      balanceDue: paymentState.balanceDue !== undefined ? paymentState.balanceDue : expense.balanceDue,
+      dueDate: dueDate !== undefined ? dueDate : expense.dueDate,
+      terms: terms !== undefined ? terms : expense.terms,
+      privateNotes: privateNotes !== undefined ? privateNotes : expense.privateNotes,
+      status: paymentState.status !== undefined ? paymentState.status : expense.status,
       tds_applicable: finalTdsApplicable,
       tds_section: finalTdsSection,
       tds_rate: finalTdsRate,
@@ -588,6 +586,13 @@ exports.updateExpense = async (req, res) => {
       tds_nature: finalTdsNature,
       net_vendor_payment: finalNetVendorPayment
     };
+
+    if (expenseNumber && expenseNumber !== expense.expenseNumber) {
+      const existing = await Expense.findOne({ expenseNumber, user: req.user._id });
+      if (existing) {
+        return res.status(400).json({ message: 'Expense number already exists' });
+      }
+    }
 
     if (category !== undefined || subCategory !== undefined) {
       const categoryData = await validateExpenseCategory(
@@ -599,14 +604,24 @@ exports.updateExpense = async (req, res) => {
       updateData.subCategory = categoryData.subCategory;
     }
 
-    // Remove undefined fields so we don't overwrite with nulls
+    // Remove undefined fields
     Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
 
-    expense = await Expense.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
-      { $set: updateData },
-      { returnDocument: 'after', runValidators: true }
-    )
+    // Apply fields to document
+    Object.keys(updateData).forEach(key => {
+      expense[key] = updateData[key];
+    });
+
+    // Also update camelCase TDS fields directly to keep in sync
+    expense.tdsApplicable = finalTdsApplicable;
+    expense.tdsSection = ['194C', '194J', '194I', '194A', 'Manual'].includes(finalTdsSection) ? finalTdsSection : 'Manual';
+    expense.tdsRate = finalTdsRate;
+    expense.tdsAmount = finalTdsAmount;
+    expense.tdsReceivable = finalTdsAmount;
+
+    await expense.save();
+
+    expense = await Expense.findOne({ _id: expense._id, user: req.user._id })
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent');
 
