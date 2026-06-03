@@ -85,9 +85,9 @@ const ExpenseSchema = new mongoose.Schema({
 
 // Compound unique index: same expense number is allowed across different users
 ExpenseSchema.pre('save', async function() {
-  const activeTdsApplicable = this.tdsApplicable !== undefined ? this.tdsApplicable : this.tds_applicable;
-  const activeTdsSection = this.tdsSection !== undefined && this.tdsSection !== null ? this.tdsSection : this.tds_section;
-  const activeTdsRate = this.tdsRate !== undefined && this.tdsRate !== null ? this.tdsRate : this.tds_rate;
+  const activeTdsApplicable = this.tds_applicable !== undefined ? this.tds_applicable : this.tdsApplicable;
+  const activeTdsSection = this.tds_section !== undefined && this.tds_section !== "" ? this.tds_section : this.tdsSection;
+  const activeTdsRate = this.tds_rate !== undefined ? this.tds_rate : this.tdsRate;
 
   if (activeTdsApplicable && activeTdsRate) {
     const baseAmount = Number(this.subTotal) || 0;
