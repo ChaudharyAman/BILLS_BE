@@ -1307,33 +1307,93 @@ exports.receiveHrmsWebhook = async (req, res) => {
       return res.status(400).json({ message: 'Missing employee data in webhook body.' });
     }
 
-    const empId = String(employeeData.employeeId || employeeData.emp_id || '').trim();
-    const email = String(employeeData.email || employeeData.corporate_email || '').trim().toLowerCase();
+    const empId = String(
+      employeeData.employeeId ||
+      employeeData.employeeCode ||
+      employeeData.emp_id ||
+      employeeData.emp_code ||
+      employeeData.employee_code ||
+      employeeData.userId ||
+      employeeData._id ||
+      ''
+    ).trim();
+
+    const email = String(
+      employeeData.email ||
+      employeeData.corporate_email ||
+      employeeData.work_email ||
+      employeeData.personal?.workEmail ||
+      employeeData.contact?.workEmail ||
+      ''
+    ).trim().toLowerCase();
 
     if (!empId || !email) {
       return res.status(400).json({ message: 'Invalid employee payload structure: missing employeeId/email.' });
     }
 
+    const phone = String(
+      employeeData.phone ||
+      employeeData.phone_number ||
+      employeeData.contact_no ||
+      employeeData.personal?.mobileNumber ||
+      employeeData.contact?.mobileNumber ||
+      ''
+    ).trim();
+
+    const rawGender = employeeData.gender || employeeData.personal?.gender || '';
+    const gender = ['Male', 'Female', 'Other'].includes(rawGender) ? rawGender : '';
+
+    const designation = employeeData.designation || employeeData.job_title || employeeData.employment?.designation || '';
+    const location = employeeData.location || employeeData.city || employeeData.workLocation || employeeData.employment?.workLocation || '';
+
+    const joiningDateVal = employeeData.joiningDate || employeeData.date_of_joining || employeeData.employment?.joiningDate;
+    const joiningDate = joiningDateVal ? new Date(joiningDateVal) : new Date();
+
+    const status = (
+      employeeData.status === 'inactive' ||
+      employeeData.is_active === false ||
+      employeeData.isActive === false ||
+      employeeData.employment?.status === 'inactive'
+    ) ? 'inactive' : 'active';
+
+    const monthlyCTC = Number(
+      employeeData.monthlyCTC ||
+      employeeData.ctc ||
+      employeeData.base_salary_monthly ||
+      employeeData.compensation?.ctc
+    ) || 0;
+
+    const panNumber = employeeData.panNumber || employeeData.pan || employeeData.identity?.panNumber || '';
+    const aadharNumber = employeeData.aadharNumber || employeeData.aadhar || employeeData.aadhaar || employeeData.identity?.aadhaarNumber || '';
+
+    const bankDetails = {
+      accountName: (
+        employeeData.bankDetails?.accountName ||
+        employeeData.bankDetails?.accountHolderName ||
+        employeeData.bank_account_name ||
+        `${employeeData.firstName || employeeData.personal?.firstName || ''} ${employeeData.lastName || employeeData.personal?.lastName || ''}`.trim()
+      ),
+      accountNumber: employeeData.bankDetails?.accountNumber || employeeData.bank_account_no || '',
+      ifscCode: employeeData.bankDetails?.ifscCode || employeeData.bank_ifsc || '',
+      bankName: employeeData.bankDetails?.bankName || employeeData.bank_name || ''
+    };
+
     const query = { user: userId, employeeId: empId };
     const updateData = {
-      firstName: employeeData.firstName || employeeData.first_name || 'Unknown',
-      lastName: employeeData.lastName || employeeData.last_name || 'Employee',
+      employeeId: empId,
+      firstName: employeeData.firstName || employeeData.personal?.firstName || 'Unknown',
+      lastName: employeeData.lastName || employeeData.personal?.lastName || 'Employee',
       email,
-      phone: String(employeeData.phone || employeeData.phone_number || employeeData.contact_no || '').trim(),
-      gender: ['Male', 'Female', 'Other'].includes(employeeData.gender) ? employeeData.gender : '',
-      designation: employeeData.designation || employeeData.job_title || '',
-      location: employeeData.location || employeeData.city || '',
-      joiningDate: employeeData.joiningDate ? new Date(employeeData.joiningDate) : (employeeData.date_of_joining ? new Date(employeeData.date_of_joining) : new Date()),
-      status: employeeData.status === 'inactive' || employeeData.is_active === false ? 'inactive' : 'active',
-      monthlyCTC: Number(employeeData.monthlyCTC || employeeData.ctc || employeeData.base_salary_monthly) || 0,
-      panNumber: employeeData.panNumber || employeeData.pan || '',
-      aadharNumber: employeeData.aadharNumber || employeeData.aadhar || '',
-      bankDetails: {
-        accountName: employeeData.bankDetails?.accountName || employeeData.bank_account_name || `${employeeData.firstName || ''} ${employeeData.lastName || ''}`.trim(),
-        accountNumber: employeeData.bankDetails?.accountNumber || employeeData.bank_account_no || '',
-        ifscCode: employeeData.bankDetails?.ifscCode || employeeData.bank_ifsc || '',
-        bankName: employeeData.bankDetails?.bankName || employeeData.bank_name || ''
-      }
+      phone,
+      gender,
+      designation,
+      location,
+      joiningDate,
+      status,
+      monthlyCTC,
+      panNumber,
+      aadharNumber,
+      bankDetails
     };
 
     const config = await PayrollConfig.findOne({ user: userId }) || {};
@@ -1341,8 +1401,8 @@ exports.receiveHrmsWebhook = async (req, res) => {
     updateData.salaryStructure = {
       basic: master.basicMaster,
       hra: master.hraMaster,
-      conveyance: Number(employeeData.conveyance) || 0,
-      medicalAllowance: Number(employeeData.medicalAllowance) || 0,
+      conveyance: Number(employeeData.conveyance || employeeData.compensation?.conveyance) || 0,
+      medicalAllowance: Number(employeeData.medicalAllowance || employeeData.compensation?.medicalAllowance) || 0,
       specialAllowance: master.specialAllowance,
       grossSalary: master.grossSalary,
       ctc: master.grossTotalSalary,

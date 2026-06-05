@@ -49,34 +49,94 @@ exports.syncEmployeesFromExternal = async (userId) => {
 
     for (const extEmp of employeesList) {
       try {
-        const empId = String(extEmp.employeeId || extEmp.emp_id || '').trim();
-        const email = String(extEmp.email || extEmp.corporate_email || '').trim().toLowerCase();
+        const empId = String(
+          extEmp.employeeId ||
+          extEmp.employeeCode ||
+          extEmp.emp_id ||
+          extEmp.emp_code ||
+          extEmp.employee_code ||
+          extEmp.userId ||
+          extEmp._id ||
+          ''
+        ).trim();
+
+        const email = String(
+          extEmp.email ||
+          extEmp.corporate_email ||
+          extEmp.work_email ||
+          extEmp.personal?.workEmail ||
+          extEmp.contact?.workEmail ||
+          ''
+        ).trim().toLowerCase();
 
         if (!empId || !email) {
           errors.push({ id: empId || 'unknown', error: 'Missing employeeId or email in sync record' });
           continue;
         }
 
+        const phone = String(
+          extEmp.phone ||
+          extEmp.phone_number ||
+          extEmp.contact_no ||
+          extEmp.personal?.mobileNumber ||
+          extEmp.contact?.mobileNumber ||
+          ''
+        ).trim();
+
+        const rawGender = extEmp.gender || extEmp.personal?.gender || '';
+        const gender = ['Male', 'Female', 'Other'].includes(rawGender) ? rawGender : '';
+
+        const designation = extEmp.designation || extEmp.job_title || extEmp.employment?.designation || '';
+        const location = extEmp.location || extEmp.city || extEmp.workLocation || extEmp.employment?.workLocation || '';
+
+        const joiningDateVal = extEmp.joiningDate || extEmp.date_of_joining || extEmp.employment?.joiningDate;
+        const joiningDate = joiningDateVal ? new Date(joiningDateVal) : new Date();
+
+        const status = (
+          extEmp.status === 'inactive' ||
+          extEmp.is_active === false ||
+          extEmp.isActive === false ||
+          extEmp.employment?.status === 'inactive'
+        ) ? 'inactive' : 'active';
+
+        const monthlyCTC = Number(
+          extEmp.monthlyCTC ||
+          extEmp.ctc ||
+          extEmp.base_salary_monthly ||
+          extEmp.compensation?.ctc
+        ) || 0;
+
+        const panNumber = extEmp.panNumber || extEmp.pan || extEmp.identity?.panNumber || '';
+        const aadharNumber = extEmp.aadharNumber || extEmp.aadhar || extEmp.aadhaar || extEmp.identity?.aadhaarNumber || '';
+
+        const bankDetails = {
+          accountName: (
+            extEmp.bankDetails?.accountName ||
+            extEmp.bankDetails?.accountHolderName ||
+            extEmp.bank_account_name ||
+            `${extEmp.firstName || extEmp.personal?.firstName || ''} ${extEmp.lastName || extEmp.personal?.lastName || ''}`.trim()
+          ),
+          accountNumber: extEmp.bankDetails?.accountNumber || extEmp.bank_account_no || '',
+          ifscCode: extEmp.bankDetails?.ifscCode || extEmp.bank_ifsc || '',
+          bankName: extEmp.bankDetails?.bankName || extEmp.bank_name || ''
+        };
+
         const query = { user: userId, employeeId: empId };
         const updateData = {
-          firstName: extEmp.firstName || extEmp.first_name || 'Unknown',
-          lastName: extEmp.lastName || extEmp.last_name || 'Employee',
+          employeeId: empId,
+          firstName: extEmp.firstName || extEmp.personal?.firstName || 'Unknown',
+          lastName: extEmp.lastName || extEmp.personal?.lastName || 'Employee',
           email,
-          phone: String(extEmp.phone || extEmp.phone_number || extEmp.contact_no || '').trim(),
-          gender: ['Male', 'Female', 'Other'].includes(extEmp.gender) ? extEmp.gender : '',
-          designation: extEmp.designation || extEmp.job_title || '',
-          location: extEmp.location || extEmp.city || '',
-          joiningDate: extEmp.joiningDate ? new Date(extEmp.joiningDate) : (extEmp.date_of_joining ? new Date(extEmp.date_of_joining) : new Date()),
-          status: extEmp.status === 'inactive' || extEmp.is_active === false ? 'inactive' : 'active',
-          monthlyCTC: Number(extEmp.monthlyCTC || extEmp.ctc || extEmp.base_salary_monthly) || 0,
-          panNumber: extEmp.panNumber || extEmp.pan || '',
-          aadharNumber: extEmp.aadharNumber || extEmp.aadhar || '',
-          bankDetails: {
-            accountName: extEmp.bankDetails?.accountName || extEmp.bank_account_name || `${extEmp.firstName || ''} ${extEmp.lastName || ''}`.trim(),
-            accountNumber: extEmp.bankDetails?.accountNumber || extEmp.bank_account_no || '',
-            ifscCode: extEmp.bankDetails?.ifscCode || extEmp.bank_ifsc || '',
-            bankName: extEmp.bankDetails?.bankName || extEmp.bank_name || ''
-          }
+          phone,
+          gender,
+          designation,
+          location,
+          joiningDate,
+          status,
+          monthlyCTC,
+          panNumber,
+          aadharNumber,
+          bankDetails
         };
 
         // Determine / update salary structure
@@ -84,8 +144,8 @@ exports.syncEmployeesFromExternal = async (userId) => {
         updateData.salaryStructure = {
           basic: master.basicMaster,
           hra: master.hraMaster,
-          conveyance: Number(extEmp.conveyance) || 0,
-          medicalAllowance: Number(extEmp.medicalAllowance) || 0,
+          conveyance: Number(extEmp.conveyance || extEmp.compensation?.conveyance) || 0,
+          medicalAllowance: Number(extEmp.medicalAllowance || extEmp.compensation?.medicalAllowance) || 0,
           specialAllowance: master.specialAllowance,
           grossSalary: master.grossSalary,
           ctc: master.grossTotalSalary,
