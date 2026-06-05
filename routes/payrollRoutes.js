@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
+const { verifyMultiTenantWebhook } = require('../utils/cryptoHelper');
 const {
   processPayroll,
   bulkApprovePayroll,
@@ -17,9 +18,19 @@ const {
   reopenPayroll,
   getPayrollTrend,
   getPayrollAuditLog,
+  syncEmployees,
+  syncAttendance,
+  receiveHrmsWebhook,
 } = require('../controllers/payrollController');
 
+// Webhook endpoint (unprotected, authenticated via HMAC signature check)
+router.post('/integration/webhook', verifyMultiTenantWebhook, receiveHrmsWebhook);
+
 router.use(protect);
+
+// Protected integration routes
+router.post('/integration/sync-employees', syncEmployees);
+router.get('/integration/attendance-sync', syncAttendance);
 
 router.get('/config', getPayrollConfig);
 router.put('/config', updatePayrollConfig);

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const nodemailer = require('nodemailer');
 const Payroll = require('../models/Payroll');
 const Employee = require('../models/Employee');
 const Expense = require('../models/Expense');
@@ -8,6 +9,7 @@ const PayrollConfig = require('../models/PayrollConfig');
 const Loan = require('../models/Loan');
 const ReimbursementClaim = require('../models/ReimbursementClaim');
 const AuditLog = require('../models/AuditLog');
+const hrmsSyncService = require('../services/hrmsSyncService');
 const {
   roundAmount,
   buildMasterSalaryStructure,
@@ -39,7 +41,7 @@ const getPayrollCategory = async (userId) => Category.findOneAndUpdate(
       icon: 'FaUsers',
     },
   },
-  { upsert: true, new: true, setDefaultsOnInsert: true }
+  { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
 );
 
 const shouldExcludeEmployeeFromRun = (employee) => employee.status !== 'active' || Boolean(employee.dateOfLeaving);
@@ -484,7 +486,7 @@ exports.updatePayrollConfig = async (req, res) => {
     const config = await PayrollConfig.findOneAndUpdate(
       { user: req.user._id },
       { $set: update },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
+      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
     );
     res.json(config);
   } catch (error) {
@@ -929,13 +931,230 @@ exports.emailPayslip = async (req, res) => {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
-    const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id });
+    const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id }).populate('employee');
     if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
 
-    res.json({ message: 'Email feature coming soon' });
+    const employeeEmail = payroll.employeeSnapshot?.email || payroll.employee?.email;
+    if (!employeeEmail) {
+      return res.status(400).json({ message: 'Employee email address is not configured.' });
+    }
+
+    const settings = await Settings.findOne({ user: req.user._id }) || {};
+    const companyName = settings.companyName || 'Flance';
+    
+    // 1. Build SMTP Transport config
+    const smtpHost = process.env.SMTP_HOST || 'smtp.mailtrap.io';
+    const smtpPort = Number(process.env.SMTP_PORT) || 2525;
+    const smtpUser = process.env.SMTP_USER || '';
+    const smtpPass = process.env.SMTP_PASS || '';
+    const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      auth: {
+        user: smtpUser,
+        pass: smtpPass
+      },
+      tls: {
+        rejectUnauthorized: false
+      }
+    });
+
+    const monthLabel = monthName(payroll.month);
+    const payPeriodLabel = `${monthLabel} ${payroll.year}`;
+    const employeeName = `${payroll.employeeSnapshot?.firstName || ''} ${payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Employee';
+
+    // 2. Generate HTML body (visually matching PayslipGeneration.jsx)
+    const fmt = (val) => `INR ${(Number(val) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    let earningsRows = '';
+    const addRow = (label, val) => {
+      if (Number(val) > 0) {
+        earningsRows += `
+          <tr>
+            <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; color: #475569;">${label}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; text-align: right; font-weight: 500; color: #1e293b;">${fmt(val)}</td>
+          </tr>`;
+      }
+    };
+
+    addRow('Basic Salary', payroll.earnings?.basic);
+    addRow('House Rent Allowance (HRA)', payroll.earnings?.hra);
+    addRow('Flexi Allowance', payroll.earnings?.flexiAmount);
+    addRow('Broadband', payroll.earnings?.broadband);
+    addRow('Petrol', payroll.earnings?.petrol);
+    addRow('LTA', payroll.earnings?.lta);
+    addRow('Conveyance', payroll.earnings?.conveyance);
+    addRow('Medical Allowance', payroll.earnings?.medicalAllowance);
+    addRow('Special Allowance', payroll.earnings?.specialAllowance);
+    addRow('Overtime', payroll.earnings?.overtime);
+    (payroll.earnings?.otherEarnings || []).forEach(item => {
+      addRow(item.name, item.amount);
+    });
+
+    let deductionsRows = '';
+    const addDedRow = (label, val) => {
+      if (Number(val) > 0) {
+        deductionsRows += `
+          <tr>
+            <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; color: #475569;">${label}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; text-align: right; font-weight: 500; color: #e11d48;">-${fmt(val)}</td>
+          </tr>`;
+      }
+    };
+
+    addDedRow('PF Employee Share', payroll.deductions?.pfEmployee);
+    addDedRow('ESI Employee Share', payroll.deductions?.esiEmployee);
+    addDedRow('Professional Tax (PT)', payroll.deductions?.professionalTax);
+    addDedRow('Income Tax (TDS)', payroll.deductions?.tds);
+    addDedRow('Insurance Employee Share', payroll.deductions?.insuranceEmployee);
+    addDedRow('LWF Employee Share', payroll.deductions?.lwfEmployee);
+    addDedRow('Gratuity Deduction', payroll.deductions?.gratuityDeduction);
+    addDedRow('Loan Deduction', payroll.deductions?.loanDeduction);
+    addDedRow('Advance Deduction', payroll.deductions?.advanceDeduction);
+    (payroll.deductions?.otherDeductions || []).forEach(item => {
+      addDedRow(item.name, item.amount);
+    });
+
+    const emailHtmlBody = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Payslip for ${payPeriodLabel}</title>
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+        <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="margin: 40px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); border: 1px solid #e2e8f0;">
+          <!-- Header -->
+          <tr>
+            <td bgcolor="#0f172a" style="padding: 30px 40px; color: #ffffff;">
+              <table width="100%" border="0" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td>
+                    <h1 style="margin: 0; font-size: 24px; font-weight: 700; tracking-tight: -0.025em;">${companyName}</h1>
+                    <p style="margin: 5px 0 0 0; font-size: 14px; color: #94a3b8;">Salary Statement / Pay Slip</p>
+                  </td>
+                  <td align="right" style="vertical-align: top;">
+                    <span style="background-color: rgba(255,255,255,0.1); padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; text-transform: uppercase;">${payroll.status}</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          
+          <!-- Employee and Attendance Summary -->
+          <tr>
+            <td style="padding: 30px 40px;">
+              <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
+                <tr>
+                  <td width="50%" style="vertical-align: top;">
+                    <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.1em; margin-bottom: 5px;">Employee Details</div>
+                    <div style="font-size: 15px; font-weight: 600; color: #0f172a;">${employeeName}</div>
+                    <div style="font-size: 13px; color: #475569; margin-top: 2px;">ID: ${payroll.employeeSnapshot?.employeeId || '-'}</div>
+                    <div style="font-size: 13px; color: #475569;">Designation: ${payroll.employeeSnapshot?.designation || '-'}</div>
+                  </td>
+                  <td width="50%" style="vertical-align: top; padding-left: 20px; border-left: 1px solid #e2e8f0;">
+                    <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.1em; margin-bottom: 5px;">Payroll Cycle</div>
+                    <div style="font-size: 15px; font-weight: 600; color: #0f172a;">${payPeriodLabel}</div>
+                    <div style="font-size: 13px; color: #475569; margin-top: 2px;">Working Days: ${payroll.workingDays}</div>
+                    <div style="font-size: 13px; color: #475569;">Paid Days: ${payroll.paidDays} (LOP: ${payroll.lop})</div>
+                  </td>
+                </tr>
+              </table>
+              
+              <!-- Calculations -->
+              <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
+                <tr>
+                  <!-- Earnings -->
+                  <td width="50%" style="vertical-align: top; padding-right: 15px;">
+                    <table width="100%" border="0" cellpadding="0" cellspacing="0" style="border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; font-size: 13px;">
+                      <tr bgcolor="#f8fafc">
+                        <td style="padding: 10px 12px; font-weight: 700; color: #475569; border-bottom: 1px solid #e2e8f0;">Earnings</td>
+                        <td style="padding: 10px 12px; font-weight: 700; color: #475569; border-bottom: 1px solid #e2e8f0; text-align: right;">Amount</td>
+                      </tr>
+                      ${earningsRows}
+                      <tr bgcolor="#f8fafc" style="font-weight: 700;">
+                        <td style="padding: 12px 10px; color: #0f172a;">Total Earnings</td>
+                        <td style="padding: 12px 10px; text-align: right; color: #0f172a;">${fmt(payroll.earnings?.totalEarnings)}</td>
+                      </tr>
+                    </table>
+                  </td>
+                  
+                  <!-- Deductions -->
+                  <td width="50%" style="vertical-align: top; padding-left: 15px;">
+                    <table width="100%" border="0" cellpadding="0" cellspacing="0" style="border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; font-size: 13px;">
+                      <tr bgcolor="#f8fafc">
+                        <td style="padding: 10px 12px; font-weight: 700; color: #475569; border-bottom: 1px solid #e2e8f0;">Deductions</td>
+                        <td style="padding: 10px 12px; font-weight: 700; color: #475569; border-bottom: 1px solid #e2e8f0; text-align: right;">Amount</td>
+                      </tr>
+                      ${deductionsRows}
+                      <tr bgcolor="#f8fafc" style="font-weight: 700;">
+                        <td style="padding: 12px 10px; color: #0f172a;">Total Deductions</td>
+                        <td style="padding: 12px 10px; text-align: right; color: #0f172a;">${fmt(payroll.deductions?.totalDeductions)}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+              
+              <!-- Total Take-home -->
+              <table width="100%" border="0" cellpadding="0" cellspacing="0" style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; margin-bottom: 25px;">
+                <tr>
+                  <td style="padding: 20px 24px;">
+                    <div style="font-size: 12px; font-weight: 700; text-transform: uppercase; color: #166534; letter-spacing: 0.1em;">Net Take Home Salary</div>
+                    <div style="font-size: 28px; font-weight: 800; color: #166534; margin-top: 5px;">${fmt(payroll.netSalary)}</div>
+                    <div style="font-size: 12px; color: #15803d; margin-top: 4px;">Payment Method: ${payroll.paymentMethod || 'Bank Transfer'} ${payroll.transactionId ? `(Txn: ${payroll.transactionId})` : ''}</div>
+                  </td>
+                </tr>
+              </table>
+              
+              <!-- Footer Note -->
+              <table width="100%" border="0" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="font-size: 12px; line-height: 18px; color: #64748b;">
+                    <strong>Notes:</strong> ${payroll.remarks || payroll.notes || 'This is a system-generated statement. Please login to the employee portal to download/print your official PDF document.'}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          
+          <!-- Bottom Accent -->
+          <tr>
+            <td bgcolor="#f8fafc" style="padding: 20px 40px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #94a3b8;">
+              &copy; ${new Date().getFullYear()} ${companyName}. All rights reserved.
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `;
+
+    // 3. Dispatch secure TLS Email
+    await transporter.sendMail({
+      from: `"${companyName} HR & Payroll" <${process.env.SMTP_SENDER || 'payroll@flance.local'}>`,
+      to: employeeEmail,
+      subject: `Payslip Statement for ${payPeriodLabel} - ${employeeName}`,
+      html: emailHtmlBody
+    });
+
+    // 4. Append log to database
+    payroll.auditLog.push({
+      status: payroll.status,
+      changedBy: 'System Auto-Email',
+      changedById: req.user._id,
+      changedAt: new Date(),
+      netSalary: payroll.netSalary,
+      notes: `Payslip email successfully sent to ${employeeEmail}`
+    });
+    await payroll.save();
+
+    res.json({ message: `Payslip email successfully sent to ${employeeEmail}.` });
   } catch (error) {
-    console.error('Error stubbing payslip email:', error);
-    res.status(500).json({ message: 'Server error emailing payslip' });
+    console.error('Error sending payslip email:', error.message);
+    res.status(500).json({ message: `Failed to dispatch payslip email: ${error.message}` });
   }
 };
 
@@ -1048,6 +1267,99 @@ exports.getPayrollAuditLog = async (req, res) => {
     res.json({ auditLog: payroll.auditLog || [] });
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch audit log' });
+  }
+};
+
+exports.syncEmployees = async (req, res) => {
+  try {
+    const result = await hrmsSyncService.syncEmployeesFromExternal(req.user._id);
+    res.json({ message: 'Employee directory sync completed successfully.', ...result });
+  } catch (error) {
+    console.error('Webhook/Sync Employees error:', error.message);
+    res.status(500).json({ message: `Sync failed: ${error.message}` });
+  }
+};
+
+exports.syncAttendance = async (req, res) => {
+  try {
+    const month = Number(req.query.month) || (new Date().getMonth() + 1);
+    const year = Number(req.query.year) || new Date().getFullYear();
+    const result = await hrmsSyncService.syncAttendanceFromExternal(req.user._id, month, year);
+    res.json({ attendance: result });
+  } catch (error) {
+    console.error('Webhook/Sync Attendance error:', error.message);
+    res.status(500).json({ message: `Attendance sync failed: ${error.message}` });
+  }
+};
+
+exports.receiveHrmsWebhook = async (req, res) => {
+  try {
+    const userId = req.tenantUserId;
+    const { encryptionSecret } = req.integrationSettings;
+    
+    let payload = req.body;
+    if (payload && payload.data && payload.iv && payload.salt && payload.authTag) {
+      payload = decryptPayload(payload, encryptionSecret);
+    }
+
+    const employeeData = payload.employee || payload;
+    if (!employeeData) {
+      return res.status(400).json({ message: 'Missing employee data in webhook body.' });
+    }
+
+    const empId = String(employeeData.employeeId || employeeData.emp_id || '').trim();
+    const email = String(employeeData.email || employeeData.corporate_email || '').trim().toLowerCase();
+
+    if (!empId || !email) {
+      return res.status(400).json({ message: 'Invalid employee payload structure: missing employeeId/email.' });
+    }
+
+    const query = { user: userId, employeeId: empId };
+    const updateData = {
+      firstName: employeeData.firstName || employeeData.first_name || 'Unknown',
+      lastName: employeeData.lastName || employeeData.last_name || 'Employee',
+      email,
+      phone: String(employeeData.phone || employeeData.phone_number || employeeData.contact_no || '').trim(),
+      gender: ['Male', 'Female', 'Other'].includes(employeeData.gender) ? employeeData.gender : '',
+      designation: employeeData.designation || employeeData.job_title || '',
+      location: employeeData.location || employeeData.city || '',
+      joiningDate: employeeData.joiningDate ? new Date(employeeData.joiningDate) : (employeeData.date_of_joining ? new Date(employeeData.date_of_joining) : new Date()),
+      status: employeeData.status === 'inactive' || employeeData.is_active === false ? 'inactive' : 'active',
+      monthlyCTC: Number(employeeData.monthlyCTC || employeeData.ctc || employeeData.base_salary_monthly) || 0,
+      panNumber: employeeData.panNumber || employeeData.pan || '',
+      aadharNumber: employeeData.aadharNumber || employeeData.aadhar || '',
+      bankDetails: {
+        accountName: employeeData.bankDetails?.accountName || employeeData.bank_account_name || `${employeeData.firstName || ''} ${employeeData.lastName || ''}`.trim(),
+        accountNumber: employeeData.bankDetails?.accountNumber || employeeData.bank_account_no || '',
+        ifscCode: employeeData.bankDetails?.ifscCode || employeeData.bank_ifsc || '',
+        bankName: employeeData.bankDetails?.bankName || employeeData.bank_name || ''
+      }
+    };
+
+    const config = await PayrollConfig.findOne({ user: userId }) || {};
+    const master = buildMasterSalaryStructure(updateData, config);
+    updateData.salaryStructure = {
+      basic: master.basicMaster,
+      hra: master.hraMaster,
+      conveyance: Number(employeeData.conveyance) || 0,
+      medicalAllowance: Number(employeeData.medicalAllowance) || 0,
+      specialAllowance: master.specialAllowance,
+      grossSalary: master.grossSalary,
+      ctc: master.grossTotalSalary,
+      otherAllowances: []
+    };
+
+    const existingEmp = await Employee.findOne(query);
+    if (existingEmp) {
+      await Employee.updateOne(query, { $set: updateData });
+    } else {
+      await Employee.create({ ...updateData, user: userId });
+    }
+
+    res.json({ message: 'Webhook employee update processed successfully.' });
+  } catch (error) {
+    console.error('HRMS Webhook processor error:', error.message);
+    res.status(500).json({ message: `Webhook error: ${error.message}` });
   }
 };
 
