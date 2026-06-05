@@ -70,14 +70,14 @@ exports.updateSettings = async (req, res) => {
       companyName, contactName, website, email, phone, gstin, pan,
       address, defaultTerms, defaultNotes, bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
-      defaultCurrency, timezone, dateFormat
+      defaultCurrency, timezone, dateFormat, integration
     } = req.body;
 
     const settingsUpdate = {
       companyName, contactName, website, email, phone, gstin, pan,
       address, defaultTerms, defaultNotes, bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
-      defaultCurrency, timezone, dateFormat
+      defaultCurrency, timezone, dateFormat, integration
     };
 
     // Remove undefined fields

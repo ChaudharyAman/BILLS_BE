@@ -53,6 +53,15 @@ const SettingsSchema = new mongoose.Schema({
   timezone:        { type: String, default: 'Asia/Kolkata' },
   dateFormat:      { type: String, default: 'DD-MMM-YYYY' },
 
+  integration: {
+    enabled: { type: Boolean, default: false },
+    externalTenantId: { type: String, default: '', index: true },
+    apiUrl: { type: String, default: '' },
+    apiKey: { type: String, default: '' },
+    encryptionSecret: { type: String, default: '' },
+    webhookSecret: { type: String, default: '' }
+  }
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('Settings', SettingsSchema);
