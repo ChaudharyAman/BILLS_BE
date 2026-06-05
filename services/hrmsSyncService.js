@@ -27,7 +27,6 @@ exports.syncEmployeesFromExternal = async (userId) => {
       params: { tenantId: externalTenantId },
       headers: {
         'Authorization': `Bearer ${apiKey}`,
-        'x-tenant-id': externalTenantId,
         'Accept': 'application/json'
       },
       timeout: 10000 // 10s timeout
@@ -130,7 +129,6 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
       params: { tenantId: externalTenantId, month, year },
       headers: {
         'Authorization': `Bearer ${apiKey}`,
-        'x-tenant-id': externalTenantId,
         'Accept': 'application/json'
       },
       timeout: 10000
