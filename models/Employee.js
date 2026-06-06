@@ -144,6 +144,12 @@ EmployeeSchema.pre('save', async function() {
   salary.grossSalary = master.grossSalary;
   salary.ctc = master.grossTotalSalary;
   this.salaryStructure = salary;
+
+  const deductions = this.deductions || {};
+  deductions.pf = master.pfEmployee;
+  deductions.esi = master.esiEmployee;
+  deductions.professionalTax = master.professionalTax;
+  this.deductions = deductions;
 });
 
 const applySalaryStructureUpdate = async function() {
@@ -220,6 +226,20 @@ const applySalaryStructureUpdate = async function() {
     update.$set['salaryStructure.specialAllowance'] = master.specialAllowance;
     update.$set['salaryStructure.grossSalary'] = master.grossSalary;
     update.$set['salaryStructure.ctc'] = master.grossTotalSalary;
+  }
+
+  if (set.deductions && typeof set.deductions === 'object') {
+    set.deductions = {
+      ...set.deductions,
+      pf: master.pfEmployee,
+      esi: master.esiEmployee,
+      professionalTax: master.professionalTax
+    };
+  } else {
+    if (!update.$set) update.$set = {};
+    update.$set['deductions.pf'] = master.pfEmployee;
+    update.$set['deductions.esi'] = master.esiEmployee;
+    update.$set['deductions.professionalTax'] = master.professionalTax;
   }
 
   this.setUpdate(update);
