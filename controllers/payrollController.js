@@ -477,6 +477,7 @@ exports.updatePayrollConfig = async (req, res) => {
       'basicPercent', 'hraPercent', 'pfRate', 'pfCap', 'pfEmployerRate',
       'esiEmployeeRate', 'esiEmployerRate', 'esiBasicThreshold', 'lwfEmployer', 'lwfEmployee',
       'gratuityRate', 'defaultWorkingDays', 'defaultInsurance', 'ltaMaxPercent', 'salaryComponents',
+      'pfCalculationType', 'pfAmountEmployee', 'pfAmountEmployer',
     ];
     const update = {};
     allowed.forEach((key) => {

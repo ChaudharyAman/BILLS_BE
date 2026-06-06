@@ -4,6 +4,9 @@ const DEFAULT_PAYROLL_CONFIG = {
   pfRate: 0.12,
   pfCap: 15000,
   pfEmployerRate: 0.12,
+  pfCalculationType: 'percent',
+  pfAmountEmployee: 1800,
+  pfAmountEmployer: 1800,
   esiEmployeeRate: 0.0075,
   esiEmployerRate: 0.0325,
   esiBasicThreshold: 21000,
@@ -32,6 +35,9 @@ const normalizeConfig = (config = {}) => {
     pfRate: getNum(cfg.pfRate, DEFAULT_PAYROLL_CONFIG.pfRate),
     pfCap: getNum(cfg.pfCap, DEFAULT_PAYROLL_CONFIG.pfCap),
     pfEmployerRate: getNum(cfg.pfEmployerRate, DEFAULT_PAYROLL_CONFIG.pfEmployerRate),
+    pfCalculationType: cfg.pfCalculationType || DEFAULT_PAYROLL_CONFIG.pfCalculationType,
+    pfAmountEmployee: getNum(cfg.pfAmountEmployee, DEFAULT_PAYROLL_CONFIG.pfAmountEmployee),
+    pfAmountEmployer: getNum(cfg.pfAmountEmployer, DEFAULT_PAYROLL_CONFIG.pfAmountEmployer),
     esiEmployeeRate: getNum(cfg.esiEmployeeRate, DEFAULT_PAYROLL_CONFIG.esiEmployeeRate),
     esiEmployerRate: getNum(cfg.esiEmployerRate, DEFAULT_PAYROLL_CONFIG.esiEmployerRate),
     esiBasicThreshold: getNum(cfg.esiBasicThreshold, DEFAULT_PAYROLL_CONFIG.esiBasicThreshold),
@@ -259,9 +265,20 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   }
 
   // PF Calculation
-  const pfBase = pfEnabled ? roundAmount(Math.min(basicMaster, config.pfCap)) : 0;
-  const pfEmployer = pfEnabled ? roundAmount(pfBase * config.pfEmployerRate) : 0;
-  const pfEmployee = pfEnabled ? roundAmount(pfBase * config.pfRate) : 0;
+  let pfEmployer = 0;
+  let pfEmployee = 0;
+  let pfBase = 0;
+  if (pfEnabled) {
+    if (config.pfCalculationType === 'fixed') {
+      pfEmployer = roundAmount(config.pfAmountEmployer);
+      pfEmployee = roundAmount(config.pfAmountEmployee);
+      pfBase = pfEmployee;
+    } else {
+      pfBase = roundAmount(Math.min(basicMaster, config.pfCap));
+      pfEmployer = roundAmount(pfBase * config.pfEmployerRate);
+      pfEmployee = roundAmount(pfBase * config.pfRate);
+    }
+  }
 
   // Gratuity Calculation
   const gratuity = gratuityEnabled ? roundAmount(basicMaster * config.gratuityRate) : 0;
