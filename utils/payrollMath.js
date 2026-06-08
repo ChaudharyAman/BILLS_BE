@@ -370,6 +370,13 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
 
   const grossSalary = hasDynamicComponents
     ? roundAmount(Object.entries(earningsMap).reduce((sum, [id, val]) => {
+        const comp = config.salaryComponents?.find(c => c.id === id);
+        if (comp) {
+          if (comp.taxable || comp.id === 'hra') {
+            return sum + val;
+          }
+          return sum;
+        }
         if (['flexi', 'broadband', 'petrol', 'lta'].includes(id)) return sum;
         return sum + val;
       }, 0) + otherAllowancesSum)

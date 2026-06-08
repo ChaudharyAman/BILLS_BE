@@ -1,4 +1,4 @@
-const XLSX = require('xlsx');
+const XLSX = require('xlsx-js-style');
 
 const setHeaderStyle = (worksheet, cells = []) => {
   cells.forEach((cellAddress) => {

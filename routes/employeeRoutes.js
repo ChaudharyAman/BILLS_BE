@@ -11,6 +11,7 @@ const {
   getActiveEmployees,
   importEmployees,
   exportEmployeesExcel,
+  downloadImportTemplateExcel,
   addSalaryRevision,
   updateEmployeeDeclarations,
 } = require('../controllers/employeeController');
@@ -24,6 +25,7 @@ router.route('/')
   .post(createEmployee);
 
 router.get('/active', getActiveEmployees);
+router.get('/import-template', downloadImportTemplateExcel);
 router.post('/import', upload.single('file'), importEmployees);
 router.get('/export', exportEmployeesExcel);
 

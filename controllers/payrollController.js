@@ -473,6 +473,36 @@ exports.getPayrollConfig = async (req, res) => {
 
 exports.updatePayrollConfig = async (req, res) => {
   try {
+    if (req.body.salaryComponents !== undefined) {
+      const components = Array.isArray(req.body.salaryComponents) ? req.body.salaryComponents : [];
+      
+      const remainderComps = components.filter(c => c.linkedTo === 'remainder');
+      if (remainderComps.length > 1) {
+        return res.status(400).json({
+          message: `Only one salary component can be linked to 'Remainder'. Found: ${remainderComps.map(c => c.name || 'Unnamed').join(', ')}`
+        });
+      }
+
+      const names = new Set();
+      for (const c of components) {
+        const trimmedName = (c.name || '').trim();
+        if (!trimmedName) {
+          return res.status(400).json({ message: 'Component name cannot be empty' });
+        }
+        const lowerName = trimmedName.toLowerCase();
+        if (names.has(lowerName)) {
+          return res.status(400).json({ message: `Component name "${trimmedName}" is duplicated. All component names must be unique.` });
+        }
+        names.add(lowerName);
+      }
+
+      const hasBasic = components.some(c => c.id === 'basic');
+      const hasHra = components.some(c => c.id === 'hra');
+      if (!hasBasic || !hasHra) {
+        return res.status(400).json({ message: 'Basic Salary and HRA are core components and must be present.' });
+      }
+    }
+
     const allowed = [
       'basicPercent', 'hraPercent', 'pfRate', 'pfCap', 'pfEmployerRate',
       'esiEmployeeRate', 'esiEmployerRate', 'esiBasicThreshold', 'lwfEmployer', 'lwfEmployee',
