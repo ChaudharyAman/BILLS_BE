@@ -142,25 +142,451 @@ const getCellValue = (row, aliases = []) => {
   return '';
 };
 
-const findCustomComponent = (headerKey, config) => {
-  const normHeader = String(headerKey).toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (!config?.salaryComponents) return null;
-  for (const c of config.salaryComponents) {
-    if (['basic', 'hra', 'special', 'conveyance', 'medical', 'flexi', 'broadband', 'petrol', 'lta'].includes(c.id)) {
-      continue;
-    }
-    const normId = String(c.id).toLowerCase().replace(/[^a-z0-9]/g, '');
-    const normName = String(c.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    let normLabel = normName;
-    if (c.frequency === 'quarterly') normLabel = normName + 'quarterly';
-    else if (c.frequency === 'semi_annually') normLabel = normName + 'semiannually';
-    else if (c.frequency === 'annually') normLabel = normName + 'annually';
+const getComponentValueFromRow = (rawRow, c) => {
+  const normId = String(c.id).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const normName = String(c.name || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-    if (normHeader === normId || normHeader === normName || normHeader === normLabel) {
-      return c;
+  for (const headerKey of Object.keys(rawRow)) {
+    const normHeader = String(headerKey).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (normHeader === normId || normHeader === normName) {
+      return rawRow[headerKey];
+    }
+    if (normHeader.startsWith(normName) || normName.startsWith(normHeader)) {
+      return rawRow[headerKey];
     }
   }
-  return null;
+
+  const FALLBACKS = {
+    basic: ['BASIC SALARY', 'BASIC', 'BASIC PERCENT', 'BASIC %'],
+    hra: ['HRA', 'HOUSE RENT ALLOWANCE', 'HRA %', 'HRA PERCENT'],
+    special: ['SPECIAL ALLOWANCE', 'SPECIAL'],
+    flexi: ['FLEXI AMOUNT', 'FLEXI', 'FLEXI ALLOWANCE', 'MEAL ALLOWANCE'],
+    broadband: ['BROADBAND', 'BROADBAND ALLOWANCE'],
+    petrol: ['PETROL', 'PETROL ALLOWANCE'],
+    lta: ['LTA', 'LEAVE TRAVEL ALLOWANCE'],
+    conveyance: ['CONVEYANCE', 'CONVEYANCE ALLOWANCE'],
+    medical: ['MEDICAL ALLOWANCE', 'MEDICAL'],
+  };
+
+  const aliases = FALLBACKS[c.id] || [];
+  for (const alias of aliases) {
+    const normAlias = alias.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    for (const headerKey of Object.keys(rawRow)) {
+      const normHeader = String(headerKey).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (normHeader === normAlias) {
+        return rawRow[headerKey];
+      }
+    }
+  }
+  return undefined;
+};
+
+const GROUP_COLORS = {
+  'Personal Details': { bg: 'DDEBF7', fg: '1F4E78' },
+  'Employment Details': { bg: 'E2F0D9', fg: '385723' },
+  'Statutory Toggles': { bg: 'FFF0F5', fg: '8B0086' },
+  'Salary Details': { bg: 'FFF2CC', fg: '7F6000' },
+  'Flexi & Other Allowance': { bg: 'F2F2F2', fg: '595959' },
+  'Deductions': { bg: 'FCE4D6', fg: 'C65911' },
+  'Bank Details': { bg: 'E8E8FF', fg: '2F2F80' },
+  'Identity Details': { bg: 'E1D5E7', fg: '603080' },
+  'Address Details': { bg: 'E6F2FF', fg: '0055A5' },
+  'Tax Declarations & Exemptions': { bg: 'EAFBF0', fg: '0E7035' },
+  'Custom Components': { bg: 'F0F8FF', fg: '004080' },
+  'Other Details': { bg: 'FFF5EE', fg: '8B4513' }
+};
+
+const buildExcelColumns = (config, rootCustomKeys = []) => {
+  const basicDef = config?.basicPercent !== undefined && config?.basicPercent !== null
+    ? (config.basicPercent > 1 ? config.basicPercent / 100 : config.basicPercent)
+    : 0.5;
+  const hraDef = config?.hraPercent !== undefined && config?.hraPercent !== null
+    ? (config.hraPercent > 1 ? config.hraPercent / 100 : config.hraPercent)
+    : 0.5;
+  const pfRate = config?.pfRate !== undefined && config?.pfRate !== null ? config.pfRate : 0.12;
+  const pfCap = config?.pfCap !== undefined && config?.pfCap !== null ? config.pfCap : 15000;
+  const pfEmployerRate = config?.pfEmployerRate !== undefined && config?.pfEmployerRate !== null ? config.pfEmployerRate : 0.12;
+  const gratuityRate = config?.gratuityRate !== undefined && config?.gratuityRate !== null ? config.gratuityRate : 0.0481;
+
+  let salaryComponents = config?.salaryComponents;
+  if (!salaryComponents || salaryComponents.length === 0) {
+    salaryComponents = [
+      { id: 'basic',                    name: 'Basic Salary',                  type: 'earning',   taxable: true,  linkedTo: 'ctc_percent',   linkValue: basicDef,      frequency: 'monthly' },
+      { id: 'hra',                      name: 'HRA',                           type: 'earning',   taxable: false, linkedTo: 'basic_percent', linkValue: hraDef,        frequency: 'monthly' },
+      { id: 'special',                  name: 'Special Allowance',             type: 'earning',   taxable: true,  linkedTo: 'remainder',     linkValue: 0,             frequency: 'monthly' },
+      { id: 'flexi',                    name: 'Flexi Allowance',               type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+      { id: 'broadband',                name: 'Broadband',                     type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+      { id: 'petrol',                   name: 'Petrol',                        type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+      { id: 'lta',                      name: 'LTA',                           type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+      { id: 'conveyance',               name: 'Conveyance',                    type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+      { id: 'medical',                  name: 'Medical Allowance',             type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+    ];
+  }
+
+  const activeConfig = {
+    ...config,
+    salaryComponents
+  };
+
+  const columns = [];
+
+  // Group: Personal Details
+  columns.push({ header: 'Employee ID', group: 'Personal Details', key: 'employeeId', sample: 'EMP-001' });
+  columns.push({ header: 'First Name', group: 'Personal Details', key: 'firstName', sample: 'John' });
+  columns.push({ header: 'Last Name', group: 'Personal Details', key: 'lastName', sample: 'Doe' });
+  columns.push({ header: 'Email', group: 'Personal Details', key: 'email', sample: 'john.doe@example.com' });
+  columns.push({ header: 'Phone', group: 'Personal Details', key: 'phone', sample: '9876543210' });
+  columns.push({ header: 'Date of Birth', group: 'Personal Details', key: 'dateOfBirth', sample: '1990-01-01', type: 'date' });
+  columns.push({ header: 'Gender', group: 'Personal Details', key: 'gender', sample: 'Male' });
+
+  // Group: Employment Details
+  columns.push({ header: 'Joining Date', group: 'Employment Details', key: 'joiningDate', sample: '2026-06-01', type: 'date' });
+  columns.push({ header: 'Date of Leaving', group: 'Employment Details', key: 'dateOfLeaving', sample: '', type: 'date' });
+  columns.push({ header: 'Location', group: 'Employment Details', key: 'location', sample: 'Delhi' });
+  columns.push({ header: 'Designation', group: 'Employment Details', key: 'designation', sample: 'Software Engineer' });
+  columns.push({ header: 'Department', group: 'Employment Details', key: 'department', sample: 'Engineering' });
+  columns.push({ header: 'Employment Type', group: 'Employment Details', key: 'employmentType', sample: 'full-time' });
+  columns.push({ header: 'Status', group: 'Employment Details', key: 'status', sample: 'active' });
+
+  // Group: Statutory Toggles
+  columns.push({ header: 'Tax Regime', group: 'Statutory Toggles', key: 'taxRegime', sample: 'new' });
+  columns.push({ header: 'PF Enabled', group: 'Statutory Toggles', key: 'pfEnabled', sample: 'No' });
+  columns.push({ header: 'ESI Enabled', group: 'Statutory Toggles', key: 'esiEnabled', sample: 'No' });
+  columns.push({ header: 'PT Enabled', group: 'Statutory Toggles', key: 'ptEnabled', sample: 'No' });
+  columns.push({ header: 'LWF Enabled', group: 'Statutory Toggles', key: 'lwfEnabled', sample: 'No' });
+  columns.push({ header: 'Gratuity Enabled', group: 'Statutory Toggles', key: 'gratuityEnabled', sample: 'No' });
+  columns.push({ header: 'Include PF in CTC', group: 'Statutory Toggles', key: 'includePfInCTC', sample: 'No' });
+  columns.push({ header: 'Include Gratuity in CTC', group: 'Statutory Toggles', key: 'includeGratuityInCTC', sample: 'No' });
+
+  // Helper to find dynamic column letters
+  const getColLetter = (k) => {
+    const idx = columns.findIndex(c => c.key === k);
+    return idx !== -1 ? XLSX.utils.encode_col(idx) : '';
+  };
+
+  // Group: Salary Details
+  columns.push({ header: 'Monthly CTC', group: 'Salary Details', key: 'monthlyCTC', isSummable: true, sample: 50000 });
+  columns.push({ header: 'Basic %', group: 'Salary Details', key: 'basicPercent', sample: basicDef * 100 });
+  columns.push({ header: 'HRA %', group: 'Salary Details', key: 'hraPercent', sample: hraDef * 100 });
+
+  const earnings = activeConfig.salaryComponents ? activeConfig.salaryComponents.filter(c => c.type === 'earning') : [];
+  const grossEarnings = earnings.filter(c => c.taxable || c.id === 'hra');
+  const flexiEarnings = earnings.filter(c => !c.taxable && c.id !== 'hra');
+
+  // Add Gross Earnings columns
+  grossEarnings.forEach(c => {
+    let suffix = '';
+    if (c.frequency === 'quarterly') suffix = ' (Quarterly)';
+    else if (c.frequency === 'semi_annually') suffix = ' (Semi-Annually)';
+    else if (c.frequency === 'annually') suffix = ' (Annually)';
+
+    const colDef = {
+      header: `${c.name || c.id}${suffix}`,
+      group: 'Salary Details',
+      key: c.id,
+      isSummable: true,
+      sample: c.linkedTo === 'remainder' ? 0 : (c.linkedTo === 'fixed' ? c.linkValue : 0),
+    };
+
+    if (c.id === 'basic') {
+      colDef.getValue = (employee, rNum, mode) => {
+        const ctcL = getColLetter('monthlyCTC');
+        const basicPctL = getColLetter('basicPercent');
+        const f = `ROUND(${ctcL}${rNum} * IF(${basicPctL}${rNum}<>"", ${basicPctL}${rNum}/100, ${basicDef}), 2)`;
+        if (mode === 'template') return { f };
+        return { f, v: Number(employee?.salaryStructure?.basic) || 0 };
+      };
+    } else if (c.id === 'hra') {
+      colDef.getValue = (employee, rNum, mode) => {
+        const basicL = getColLetter('basic');
+        const hraPctL = getColLetter('hraPercent');
+        const f = `ROUND(${basicL}${rNum} * IF(${hraPctL}${rNum}<>"", ${hraPctL}${rNum}/100, ${hraDef}), 2)`;
+        if (mode === 'template') return { f };
+        return { f, v: Number(employee?.salaryStructure?.hra) || 0 };
+      };
+    } else if (c.linkedTo === 'remainder') {
+      colDef.getValue = (employee, rNum, mode) => {
+        const ctcL = getColLetter('monthlyCTC');
+        const otherEarningLetters = activeConfig.salaryComponents
+          .filter(e => e.type === 'earning' && e.id !== c.id)
+          .map(e => getColLetter(e.id) + rNum);
+
+        const terms = [`${ctcL}${rNum}`, ...otherEarningLetters];
+        if (getColLetter('employerNPS')) terms.push(`${getColLetter('employerNPS')}${rNum}`);
+        if (getColLetter('insuranceAmount')) terms.push(`${getColLetter('insuranceAmount')}${rNum}`);
+
+        const pfTerm = `IF(${getColLetter('includePfInCTC')}${rNum}="Yes", ${getColLetter('employerPF')}${rNum}, 0)`;
+        const gratuityTerm = `IF(${getColLetter('includeGratuityInCTC')}${rNum}="Yes", ${getColLetter('employerGratuity')}${rNum}, 0)`;
+        
+        const subtractedTerms = terms.slice(1).join(' - ');
+        const f = `ROUND(MAX(${terms[0]}${subtractedTerms ? ' - ' + subtractedTerms : ''} - ${pfTerm} - ${gratuityTerm}, 0), 2)`;
+        
+        if (mode === 'template') return { f };
+        const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
+        return { f, v: Number(val) || 0 };
+      };
+    } else if (c.linkedTo === 'ctc_percent') {
+      colDef.getValue = (employee, rNum, mode) => {
+        const ctcL = getColLetter('monthlyCTC');
+        const f = `ROUND(${ctcL}${rNum} * ${c.linkValue}, 2)`;
+        if (mode === 'template') return { f };
+        const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
+        return { f, v: Number(val) || 0 };
+      };
+    } else if (c.linkedTo === 'basic_percent') {
+      colDef.getValue = (employee, rNum, mode) => {
+        const basicL = getColLetter('basic');
+        const f = `ROUND(${basicL}${rNum} * ${c.linkValue}, 2)`;
+        if (mode === 'template') return { f };
+        const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
+        return { f, v: Number(val) || 0 };
+      };
+    } else {
+      colDef.getValue = (employee, rNum, mode) => {
+        if (mode === 'template') return c.linkValue || 0;
+        const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
+        return val !== undefined && val !== null ? Number(val) || 0 : 0;
+      };
+    }
+
+    columns.push(colDef);
+  });
+
+  // Gross Salary, Employer PF, Employer Gratuity, Total Deductions, Net Take Home
+  columns.push({
+    header: 'Gross Salary',
+    group: 'Salary Details',
+    key: 'grossSalary',
+    isSummable: true,
+    getValue: (employee, rNum, mode) => {
+      const grossEarningLetters = grossEarnings.map(e => getColLetter(e.id) + rNum);
+      const f = `ROUND(${grossEarningLetters.join(' + ')}, 2)`;
+      if (mode === 'template') return { f };
+      return { f, v: Number(employee?.salaryStructure?.grossSalary) || 0 };
+    }
+  });
+
+  columns.push({
+    header: 'Employer PF',
+    group: 'Salary Details',
+    key: 'employerPF',
+    isSummable: true,
+    getValue: (employee, rNum, mode) => {
+      const basicL = getColLetter('basic');
+      const pfEnabledL = getColLetter('pfEnabled');
+      const f = `ROUND(IF(${pfEnabledL}${rNum}="Yes", MIN(${basicL}${rNum}, ${pfCap}) * ${pfEmployerRate}, 0), 2)`;
+      if (mode === 'template') return { f };
+      return { f, v: Number(employee?.deductions?.pf) || 0 };
+    }
+  });
+
+  columns.push({
+    header: 'Employer Gratuity',
+    group: 'Salary Details',
+    key: 'employerGratuity',
+    isSummable: true,
+    getValue: (employee, rNum, mode) => {
+      const basicL = getColLetter('basic');
+      const gratuityEnabledL = getColLetter('gratuityEnabled');
+      const f = `ROUND(IF(${gratuityEnabledL}${rNum}="Yes", ${basicL}${rNum} * ${gratuityRate}, 0), 2)`;
+      if (mode === 'template') return { f };
+      const val = employee?.salaryStructure?.ctc ? Math.max(0, roundAmount(employee.salaryStructure.ctc - employee.salaryStructure.grossSalary - (employee.deductions?.pf || 0))) : 0;
+      return { f, v: val };
+    }
+  });
+
+  columns.push({
+    header: 'Total Deductions',
+    group: 'Salary Details',
+    key: 'totalDeductions',
+    isSummable: true,
+    getValue: (employee, rNum, mode) => {
+      const basicL = getColLetter('basic');
+      const pfEnabledL = getColLetter('pfEnabled');
+      const ptL = getColLetter('professionalTax');
+      const tdsL = getColLetter('tds');
+      const f = `ROUND(IF(${pfEnabledL}${rNum}="Yes", MIN(${basicL}${rNum}, ${pfCap}) * ${pfRate}, 0) + ${ptL}${rNum} + ${tdsL}${rNum}, 2)`;
+      if (mode === 'template') return { f };
+      const val = (Number(employee?.deductions?.pf) || 0) + (Number(employee?.deductions?.professionalTax) || 0) + (Number(employee?.deductions?.tds) || 0);
+      return { f, v: val };
+    }
+  });
+
+  columns.push({
+    header: 'Net Take Home',
+    group: 'Salary Details',
+    key: 'netTakeHome',
+    isSummable: true,
+    getValue: (employee, rNum, mode) => {
+      const grossSalaryL = getColLetter('grossSalary');
+      const totalDeductionsL = getColLetter('totalDeductions');
+      const flexiEarningLetters = flexiEarnings.map(e => getColLetter(e.id) + rNum);
+      const addedFlexi = flexiEarningLetters.length > 0 ? ' + ' + flexiEarningLetters.join(' + ') : '';
+      const f = `ROUND(${grossSalaryL}${rNum} - ${totalDeductionsL}${rNum}${addedFlexi}, 2)`;
+      if (mode === 'template') return { f };
+      const grossSalaryVal = Number(employee?.salaryStructure?.grossSalary) || 0;
+      const totalDeductionsVal = (Number(employee?.deductions?.pf) || 0) + (Number(employee?.deductions?.professionalTax) || 0) + (Number(employee?.deductions?.tds) || 0);
+      const flexiVal = flexiEarnings.reduce((sum, e) => {
+        const val = employee?.salaryStructure?.[e.id] !== undefined ? employee.salaryStructure[e.id] : employee[e.id];
+        return sum + (Number(val) || 0);
+      }, 0);
+      return { f, v: Math.max(0, roundAmount(grossSalaryVal - totalDeductionsVal + flexiVal)) };
+    }
+  });
+
+  // Group: Flexi & Other Allowance
+  flexiEarnings.forEach(c => {
+    let suffix = '';
+    if (c.frequency === 'quarterly') suffix = ' (Quarterly)';
+    else if (c.frequency === 'semi_annually') suffix = ' (Semi-Annually)';
+    else if (c.frequency === 'annually') suffix = ' (Annually)';
+
+    const colDef = {
+      header: `${c.name || c.id}${suffix}`,
+      group: 'Flexi & Other Allowance',
+      key: c.id,
+      isSummable: true,
+      sample: c.linkedTo === 'remainder' ? 0 : (c.linkedTo === 'fixed' ? c.linkValue : 0),
+    };
+
+    if (c.linkedTo === 'remainder') {
+      colDef.getValue = (employee, rNum, mode) => {
+        const ctcL = getColLetter('monthlyCTC');
+        const otherEarningLetters = activeConfig.salaryComponents
+          .filter(e => e.type === 'earning' && e.id !== c.id)
+          .map(e => getColLetter(e.id) + rNum);
+
+        const terms = [`${ctcL}${rNum}`, ...otherEarningLetters];
+        if (getColLetter('employerNPS')) terms.push(`${getColLetter('employerNPS')}${rNum}`);
+        if (getColLetter('insuranceAmount')) terms.push(`${getColLetter('insuranceAmount')}${rNum}`);
+
+        const pfTerm = `IF(${getColLetter('includePfInCTC')}${rNum}="Yes", ${getColLetter('employerPF')}${rNum}, 0)`;
+        const gratuityTerm = `IF(${getColLetter('includeGratuityInCTC')}${rNum}="Yes", ${getColLetter('employerGratuity')}${rNum}, 0)`;
+
+        const subtractedTerms = terms.slice(1).join(' - ');
+        const f = `ROUND(MAX(${terms[0]}${subtractedTerms ? ' - ' + subtractedTerms : ''} - ${pfTerm} - ${gratuityTerm}, 0), 2)`;
+
+        if (mode === 'template') return { f };
+        const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
+        return { f, v: Number(val) || 0 };
+      };
+    } else if (c.linkedTo === 'ctc_percent') {
+      colDef.getValue = (employee, rNum, mode) => {
+        const ctcL = getColLetter('monthlyCTC');
+        const f = `ROUND(${ctcL}${rNum} * ${c.linkValue}, 2)`;
+        if (mode === 'template') return { f };
+        const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
+        return { f, v: Number(val) || 0 };
+      };
+    } else if (c.linkedTo === 'basic_percent') {
+      colDef.getValue = (employee, rNum, mode) => {
+        const basicL = getColLetter('basic');
+        const f = `ROUND(${basicL}${rNum} * ${c.linkValue}, 2)`;
+        if (mode === 'template') return { f };
+        const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
+        return { f, v: Number(val) || 0 };
+      };
+    } else {
+      colDef.getValue = (employee, rNum, mode) => {
+        if (mode === 'template') return c.linkValue || 0;
+        const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
+        return val !== undefined && val !== null ? Number(val) || 0 : 0;
+      };
+    }
+
+    columns.push(colDef);
+  });
+
+  // NPS, Insurance, Joining Bonus
+  columns.push({
+    header: 'Employer NPS',
+    group: 'Flexi & Other Allowance',
+    key: 'employerNPS',
+    isSummable: true,
+    sample: 0,
+    getValue: (employee) => Number(employee?.employerNPS) || 0
+  });
+
+  columns.push({
+    header: 'Insurance Amount',
+    group: 'Flexi & Other Allowance',
+    key: 'insuranceAmount',
+    isSummable: true,
+    sample: 0,
+    getValue: (employee) => Number(employee?.insuranceAmount) || 0
+  });
+
+  columns.push({
+    header: 'Joining Bonus',
+    group: 'Flexi & Other Allowance',
+    key: 'joiningBonus',
+    isSummable: true,
+    sample: 0,
+    getValue: (employee) => Number(employee?.joiningBonus) || 0
+  });
+
+  // Group: Deductions
+  columns.push({
+    header: 'Professional Tax',
+    group: 'Deductions',
+    key: 'professionalTax',
+    isSummable: true,
+    sample: 200,
+    getValue: (employee) => Number(employee?.deductions?.professionalTax) || 0
+  });
+
+  columns.push({
+    header: 'TDS',
+    group: 'Deductions',
+    key: 'tds',
+    isSummable: true,
+    sample: 0,
+    getValue: (employee) => Number(employee?.deductions?.tds) || 0
+  });
+
+  // Group: Bank Details
+  columns.push({ header: 'Account Name', group: 'Bank Details', key: 'bankDetails.accountName', sample: 'John Doe', getValue: (employee) => employee?.bankDetails?.accountName || '' });
+  columns.push({ header: 'Account Number', group: 'Bank Details', key: 'bankDetails.accountNumber', sample: '1234567890', getValue: (employee) => employee?.bankDetails?.accountNumber || '' });
+  columns.push({ header: 'IFSC Code', group: 'Bank Details', key: 'bankDetails.ifscCode', sample: 'UTIB0000123', getValue: (employee) => employee?.bankDetails?.ifscCode || '' });
+  columns.push({ header: 'Bank Name', group: 'Bank Details', key: 'bankDetails.bankName', sample: 'Axis Bank', getValue: (employee) => employee?.bankDetails?.bankName || '' });
+  columns.push({ header: 'Branch', group: 'Bank Details', key: 'bankDetails.branch', sample: 'Delhi', getValue: (employee) => employee?.bankDetails?.branch || '' });
+
+  // Group: Identity Details
+  columns.push({ header: 'PAN Number', group: 'Identity Details', key: 'panNumber', sample: 'ABCDE1234F', getValue: (employee) => employee?.panNumber || '' });
+  columns.push({ header: 'UAN Number', group: 'Identity Details', key: 'uanNumber', sample: '', getValue: (employee) => employee?.uanNumber || '' });
+  columns.push({ header: 'Aadhar Number', group: 'Identity Details', key: 'aadharNumber', sample: '123456789012', getValue: (employee) => employee?.aadharNumber || '' });
+
+  // Group: Address Details
+  columns.push({ header: 'Address Line 1', group: 'Address Details', key: 'address.line1', sample: '123 Street Name', getValue: (employee) => employee?.address?.line1 || '' });
+  columns.push({ header: 'Address Line 2', group: 'Address Details', key: 'address.line2', sample: '', getValue: (employee) => employee?.address?.line2 || '' });
+  columns.push({ header: 'City', group: 'Address Details', key: 'address.city', sample: 'Delhi', getValue: (employee) => employee?.address?.city || '' });
+  columns.push({ header: 'State', group: 'Address Details', key: 'address.state', sample: 'Delhi', getValue: (employee) => employee?.address?.state || '' });
+  columns.push({ header: 'Zip', group: 'Address Details', key: 'address.zip', sample: '110001', getValue: (employee) => employee?.address?.zip || '' });
+  columns.push({ header: 'Country', group: 'Address Details', key: 'address.country', sample: 'India', getValue: (employee) => employee?.address?.country || '' });
+
+  // Group: Tax Declarations & Exemptions
+  columns.push({ header: 'Section 80C', group: 'Tax Declarations & Exemptions', key: 'declarations.section80C', sample: 0, getValue: (employee) => employee?.declarations?.section80C || 0 });
+  columns.push({ header: 'Section 80D', group: 'Tax Declarations & Exemptions', key: 'declarations.section80D', sample: 0, getValue: (employee) => employee?.declarations?.section80D || 0 });
+  columns.push({ header: 'Section 24b', group: 'Tax Declarations & Exemptions', key: 'declarations.section24b', sample: 0, getValue: (employee) => employee?.declarations?.section24b || 0 });
+  columns.push({ header: 'Section 80CCD(1B)', group: 'Tax Declarations & Exemptions', key: 'declarations.section80CCD1B', sample: 0, getValue: (employee) => employee?.declarations?.section80CCD1B || 0 });
+  columns.push({ header: 'Rent Paid Monthly', group: 'Tax Declarations & Exemptions', key: 'declarations.rentPaidMonthly', sample: 0, getValue: (employee) => employee?.declarations?.rentPaidMonthly || 0 });
+  columns.push({ header: 'Is Metro City', group: 'Tax Declarations & Exemptions', key: 'declarations.isMetroCity', sample: 'No', getValue: (employee) => employee?.declarations?.isMetroCity ? 'Yes' : 'No' });
+  columns.push({ header: 'Other Exemptions', group: 'Tax Declarations & Exemptions', key: 'declarations.otherExemptions', sample: 0, getValue: (employee) => employee?.declarations?.otherExemptions || 0 });
+
+  rootCustomKeys.forEach(key => {
+    columns.push({
+      header: key,
+      group: 'Other Details',
+      key: key,
+      getValue: (employee) => {
+        const val = employee[key];
+        if (val && typeof val === 'object') return JSON.stringify(val);
+        return val !== undefined && val !== null ? val : '';
+      }
+    });
+  });
+
+  return columns;
 };
 
 const buildSalaryStructureFromCTC = (payload, config) => {
@@ -461,10 +887,19 @@ exports.importEmployees = async (req, res) => {
       const aadharNumber = String(getCellValue(rawRow, ['AADHAR', 'AADHAR NO', 'AADHAR NUMBER']) || '').trim();
       const uanNumber = String(getCellValue(rawRow, ['UAN', 'UAN NUMBER']) || '').trim();
       const phone = String(getCellValue(rawRow, ['PHONE', 'MOBILE', 'CONTACT']) || '').trim();
-      const flexiAmount = Number(getCellValue(rawRow, ['FLEXI AMOUNT', 'FLEXI', 'MEAL ALLOWANCE'])) || 0;
-      const broadband = Number(getCellValue(rawRow, ['BROADBAND'])) || 0;
-      const petrol = Number(getCellValue(rawRow, ['PETROL'])) || 0;
-      const lta = Number(getCellValue(rawRow, ['LTA'])) || 0;
+      const getStandardOrConfigValue = (cId, defaultAliases) => {
+        const comp = config.salaryComponents?.find(c => c.id === cId);
+        if (comp) {
+          const val = getComponentValueFromRow(rawRow, comp);
+          if (val !== undefined && val !== '') return Number(val) || 0;
+        }
+        return Number(getCellValue(rawRow, defaultAliases)) || 0;
+      };
+
+      const flexiAmount = getStandardOrConfigValue('flexi', ['FLEXI AMOUNT', 'FLEXI', 'FLEXI ALLOWANCE', 'MEAL ALLOWANCE']);
+      const broadband = getStandardOrConfigValue('broadband', ['BROADBAND']);
+      const petrol = getStandardOrConfigValue('petrol', ['PETROL']);
+      const lta = getStandardOrConfigValue('lta', ['LTA']);
       const employerNPS = Number(getCellValue(rawRow, ['EMPLOYER NPS', 'NPS'])) || 0;
       const rawInsurance = getCellValue(rawRow, ['INSURANCE', 'INSURANCE AMOUNT']);
       const insuranceAmount = (rawInsurance !== '' && !isNaN(Number(rawInsurance))) ? Number(rawInsurance) : 0;
@@ -616,13 +1051,27 @@ exports.importEmployees = async (req, res) => {
         },
       };
 
-      // Gather any custom fields from the raw row (non-standard columns)
+      // Gather any custom components and root custom fields
+      if (config.salaryComponents) {
+        config.salaryComponents.forEach(c => {
+          if (!['basic', 'hra', 'special', 'conveyance', 'medical', 'flexi', 'broadband', 'petrol', 'lta'].includes(c.id)) {
+            const val = getComponentValueFromRow(rawRow, c);
+            if (val !== undefined && val !== '') {
+              payload.salaryStructure[c.id] = Number(val) || 0;
+            }
+          }
+        });
+      }
+
       Object.keys(rawRow).forEach((key) => {
         if (!standardAliases.has(key)) {
-          const matchedComp = findCustomComponent(key, config);
-          if (matchedComp) {
-            payload.salaryStructure[matchedComp.id] = Number(rawRow[key]) || 0;
-          } else {
+          const isSalaryComp = config.salaryComponents?.some(c => {
+            const normId = String(c.id).toUpperCase().replace(/[^A-Z0-9]/g, '');
+            const normName = String(c.name || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+            const normHeader = String(key).toUpperCase().replace(/[^A-Z0-9]/g, '');
+            return normHeader === normId || normHeader === normName || normHeader.startsWith(normName) || normName.startsWith(normHeader);
+          });
+          if (!isSalaryComp) {
             const camelKey = toCamelCase(key);
             if (camelKey) {
               let val = rawRow[key];
@@ -630,7 +1079,7 @@ exports.importEmployees = async (req, res) => {
                 try {
                   val = JSON.parse(val);
                 } catch (e) {
-                  // Keep as string if parsing fails
+                  // Keep as string
                 }
               }
               payload[camelKey] = val;
@@ -674,20 +1123,6 @@ exports.exportEmployeesExcel = async (req, res) => {
 
     const config = await getOrCreateConfig(req.user._id);
 
-    // Map custom salary components from payroll config
-    const customCompHeadersMap = {};
-    if (config?.salaryComponents) {
-      config.salaryComponents.forEach((c) => {
-        if (!['basic', 'hra', 'special', 'conveyance', 'medical', 'flexi', 'broadband', 'petrol', 'lta'].includes(c.id)) {
-          let suffix = '';
-          if (c.frequency === 'quarterly') suffix = ' (Quarterly)';
-          else if (c.frequency === 'semi_annually') suffix = ' (Semi-Annually)';
-          else if (c.frequency === 'annually') suffix = ' (Annually)';
-          customCompHeadersMap[c.id] = `${c.name || c.id}${suffix}`;
-        }
-      });
-    }
-
     const standardKeys = new Set([
       '_id', 'user', 'employeeId', 'firstName', 'lastName', 'email', 'phone', 'dateOfBirth', 'gender',
       'address', 'designation', 'department', 'joiningDate', 'location', 'dateOfLeaving', 'employmentType',
@@ -698,209 +1133,77 @@ exports.exportEmployeesExcel = async (req, res) => {
       'salaryRevisions', 'createdAt', 'updatedAt', '__v'
     ]);
 
-    const rootCustomKeys = new Set();
+    const rootCustomKeysSet = new Set();
     employees.forEach((employee) => {
       Object.keys(employee).forEach((key) => {
         if (!standardKeys.has(key) && !key.startsWith('_') && !key.startsWith('$')) {
-          if (!customCompHeadersMap[key]) {
-            rootCustomKeys.add(key);
+          const isSalaryComp = config.salaryComponents?.some(c => c.id === key);
+          if (!isSalaryComp) {
+            rootCustomKeysSet.add(key);
           }
         }
       });
     });
-    const sortedRootCustomKeys = Array.from(rootCustomKeys).sort();
+    const rootCustomKeys = Array.from(rootCustomKeysSet).sort();
 
-    const headers = [
-      'Employee ID', 'First Name', 'Last Name', 'Email', 'Phone', 'Date of Birth', 'Gender',
-      'Joining Date', 'Date of Leaving', 'Location', 'Designation', 'Department', 'Employment Type', 'Status',
-      'Tax Regime', 'PF Enabled', 'ESI Enabled', 'PT Enabled', 'LWF Enabled', 'Gratuity Enabled', 'Include PF in CTC', 'Include Gratuity in CTC',
-      'Monthly CTC', 'Basic %', 'HRA %',
-      'Basic Salary', 'HRA', 'Special Allowance', 'Gross Salary', 'Employer PF', 'Employer Gratuity', 'Total Deductions', 'Net Take Home',
-      'Flexi Amount', 'Broadband', 'Petrol', 'LTA', 'Employer NPS', 'Insurance Amount', 'Joining Bonus',
-      'Professional Tax', 'TDS',
-      'Account Name', 'Account Number', 'IFSC Code', 'Bank Name', 'Branch',
-      'PAN Number', 'UAN Number', 'Aadhar Number',
-      'Address Line 1', 'Address Line 2', 'City', 'State', 'Zip', 'Country',
-      'Section 80C', 'Section 80D', 'Section 24b', 'Section 80CCD(1B)', 'Rent Paid Monthly', 'Is Metro City', 'Other Exemptions',
-      ...Object.values(customCompHeadersMap),
-      ...sortedRootCustomKeys
-    ];
+    const columns = buildExcelColumns(config, rootCustomKeys);
 
-    const headerGroups = [
-      'Personal Details', '', '', '', '', '', '',
-      'Employment Details', '', '', '', '', '', '',
-      'Statutory Toggles', '', '', '', '', '', '', '',
-      'Salary Details', '', '', '', '', '', '', '', '', '', '',
-      'Flexi & Other Allowance', '', '', '', '', '', '',
-      'Deductions', '',
-      'Bank Details', '', '', '', '',
-      'Identity Details', '', '',
-      'Address Details', '', '', '', '', '',
-      'Tax Declarations & Exemptions', '', '', '', '', '', ''
-    ];
-
-    const merges = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },     // Personal Details
-      { s: { r: 0, c: 7 }, e: { r: 0, c: 13 } },    // Employment Details
-      { s: { r: 0, c: 14 }, e: { r: 0, c: 21 } },   // Statutory Toggles
-      { s: { r: 0, c: 22 }, e: { r: 0, c: 32 } },   // Salary Details
-      { s: { r: 0, c: 33 }, e: { r: 0, c: 39 } },   // Flexi & Other Allowance
-      { s: { r: 0, c: 40 }, e: { r: 0, c: 41 } },   // Deductions
-      { s: { r: 0, c: 42 }, e: { r: 0, c: 46 } },   // Bank Details
-      { s: { r: 0, c: 47 }, e: { r: 0, c: 49 } },   // Identity Details
-      { s: { r: 0, c: 50 }, e: { r: 0, c: 55 } },   // Address Details
-      { s: { r: 0, c: 56 }, e: { r: 0, c: 62 } },   // Tax Declarations
-    ];
-
-    const customCompCount = Object.keys(customCompHeadersMap).length;
-    if (customCompCount > 0) {
-      headerGroups.push('Custom Components');
-      for (let i = 1; i < customCompCount; i++) {
-        headerGroups.push('');
+    // Compute Merges dynamically
+    const merges = [];
+    let start = 0;
+    for (let i = 1; i <= columns.length; i++) {
+      if (i === columns.length || columns[i].group !== columns[start].group) {
+        if (columns[start].group) {
+          merges.push({
+            s: { r: 0, c: start },
+            e: { r: 0, c: i - 1 }
+          });
+        }
+        start = i;
       }
-      merges.push({
-        s: { r: 0, c: 63 },
-        e: { r: 0, c: 63 + customCompCount - 1 }
-      });
     }
 
-    const rootCustomCount = sortedRootCustomKeys.length;
-    if (rootCustomCount > 0) {
-      headerGroups.push('Other Details');
-      const startCol = 63 + customCompCount;
-      for (let i = 1; i < rootCustomCount; i++) {
-        headerGroups.push('');
-      }
-      merges.push({
-        s: { r: 0, c: startCol },
-        e: { r: 0, c: startCol + rootCustomCount - 1 }
+    const headerGroups = Array(columns.length).fill('');
+    merges.forEach(merge => {
+      headerGroups[merge.s.c] = columns[merge.s.c].group;
+    });
+
+    const headers = columns.map(c => c.header);
+
+    const dataRows = employees.map((employee, index) => {
+      const rNum = index + 3;
+      return columns.map(col => {
+        if (typeof col.getValue === 'function') {
+          return col.getValue(employee, rNum, 'export');
+        }
+        const keys = col.key.split('.');
+        let val = employee;
+        for (const k of keys) {
+          val = val ? val[k] : undefined;
+        }
+        if (['pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled', 'gratuityEnabled', 'includePfInCTC', 'includeGratuityInCTC'].includes(col.key)) {
+          if (val === true || val === 'true') return 'Yes';
+          if (val === false || val === 'false') return 'No';
+        }
+        return val !== undefined && val !== null ? val : '';
       });
-    }
+    });
 
     const startRow = 3;
     const endRow = employees.length + 2;
-    const totals = Array(headers.length).fill('');
+    const totals = Array(columns.length).fill('');
     totals[0] = 'TOTAL';
-
-    const sumColIndexes = [22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41];
-    for (let c = 63; c < 63 + customCompCount; c++) {
-      sumColIndexes.push(c);
-    }
-
-    sumColIndexes.forEach((colIndex) => {
-      const colLetter = XLSX.utils.encode_col(colIndex);
-      totals[colIndex] = { f: `SUM(${colLetter}${startRow}:${colLetter}${endRow})` };
+    columns.forEach((col, colIdx) => {
+      if (col.isSummable) {
+        const colLetter = XLSX.utils.encode_col(colIdx);
+        totals[colIdx] = { f: `SUM(${colLetter}${startRow}:${colLetter}${endRow})` };
+      }
     });
 
     const rows = [
       headerGroups,
       headers,
-      ...employees.map((employee, index) => {
-        const addr = employee.address || {};
-        const bank = employee.bankDetails || {};
-        const ded = employee.deductions || {};
-        const dec = employee.declarations || {};
-        const rNum = index + 3;
-
-        const pfEnabled = employee.pfEnabled !== false ? 'Yes' : 'No';
-        const gratuityEnabled = employee.gratuityEnabled !== false ? 'Yes' : 'No';
-        const includePfInCTC = employee.includePfInCTC !== false ? 'Yes' : 'No';
-        const includeGratuityInCTC = employee.includeGratuityInCTC !== false ? 'Yes' : 'No';
-
-        const basicDef = config.basicPercent !== undefined && config.basicPercent !== null
-          ? (config.basicPercent > 1 ? config.basicPercent / 100 : config.basicPercent)
-          : 0.5;
-        const hraDef = config.hraPercent !== undefined && config.hraPercent !== null
-          ? (config.hraPercent > 1 ? config.hraPercent / 100 : config.hraPercent)
-          : 0.5;
-        const pfRate = config.pfRate !== undefined && config.pfRate !== null ? config.pfRate : 0.12;
-        const pfCap = config.pfCap !== undefined && config.pfCap !== null ? config.pfCap : 15000;
-        const pfEmployerRate = config.pfEmployerRate !== undefined && config.pfEmployerRate !== null ? config.pfEmployerRate : 0.12;
-        const gratuityRate = config.gratuityRate !== undefined && config.gratuityRate !== null ? config.gratuityRate : 0.0481;
-
-        const standardValues = [
-          employee.employeeId || '',
-          employee.firstName || '',
-          employee.lastName || '',
-          employee.email || '',
-          employee.phone || '',
-          formatDateOnly(employee.dateOfBirth),
-          employee.gender || '',
-          formatDateOnly(employee.joiningDate),
-          formatDateOnly(employee.dateOfLeaving),
-          employee.location || '',
-          employee.designation || '',
-          employee.department?.name || '',
-          employee.employmentType || '',
-          employee.status || '',
-          employee.taxRegime || '',
-          pfEnabled,
-          employee.esiEnabled !== false ? 'Yes' : 'No',
-          employee.ptEnabled !== false ? 'Yes' : 'No',
-          employee.lwfEnabled !== false ? 'Yes' : 'No',
-          gratuityEnabled,
-          includePfInCTC,
-          includeGratuityInCTC,
-          Number(employee.monthlyCTC) || 0,
-          employee.basicPercent !== undefined && employee.basicPercent !== null ? Number(employee.basicPercent) : basicDef * 100,
-          employee.hraPercent !== undefined && employee.hraPercent !== null ? Number(employee.hraPercent) : hraDef * 100,
-          { f: `ROUND(W${rNum} * IF(X${rNum}<>"", X${rNum}/100, ${basicDef}), 2)`, v: Number(employee.salaryStructure?.basic) || 0 },
-          { f: `ROUND(Z${rNum} * IF(Y${rNum}<>"", Y${rNum}/100, ${hraDef}), 2)`, v: Number(employee.salaryStructure?.hra) || 0 },
-          { f: `ROUND(MAX(W${rNum} - Z${rNum} - AA${rNum} - AH${rNum} - AI${rNum} - AJ${rNum} - AK${rNum} - AL${rNum} - AM${rNum} - IF(U${rNum}="Yes", AD${rNum}, 0) - IF(V${rNum}="Yes", AE${rNum}, 0), 0), 2)`, v: Number(employee.salaryStructure?.specialAllowance) || 0 },
-          { f: `ROUND(Z${rNum} + AA${rNum} + AB${rNum}, 2)`, v: Number(employee.salaryStructure?.grossSalary) || 0 },
-          { f: `ROUND(IF(P${rNum}="Yes", MIN(Z${rNum}, ${pfCap}) * ${pfEmployerRate}, 0), 2)`, v: Number(ded.pf) || 0 },
-          { f: `ROUND(IF(T${rNum}="Yes", Z${rNum} * ${gratuityRate}, 0), 2)`, v: Number(employee.salaryStructure?.ctc) ? Number(employee.salaryStructure?.ctc) - Number(employee.salaryStructure?.grossSalary) - (Number(ded.pf) || 0) : 0 },
-          { f: `ROUND(IF(P${rNum}="Yes", MIN(Z${rNum}, ${pfCap}) * ${pfRate}, 0) + AO${rNum} + AP${rNum}, 2)`, v: (Number(ded.pf) || 0) + (Number(ded.professionalTax) || 0) + (Number(ded.tds) || 0) },
-          { f: `ROUND(AC${rNum} - AF${rNum} + AH${rNum} + AI${rNum} + AJ${rNum} + AK${rNum}, 2)`, v: (Number(employee.salaryStructure?.grossSalary) || 0) - ((Number(ded.pf) || 0) + (Number(ded.professionalTax) || 0) + (Number(ded.tds) || 0)) + (Number(employee.flexiAmount) || 0) + (Number(employee.broadband) || 0) + (Number(employee.petrol) || 0) + (Number(employee.lta) || 0) },
-          Number(employee.flexiAmount) || 0,
-          Number(employee.broadband) || 0,
-          Number(employee.petrol) || 0,
-          Number(employee.lta) || 0,
-          Number(employee.employerNPS) || 0,
-          Number(employee.insuranceAmount) || 0,
-          Number(employee.joiningBonus) || 0,
-          Number(ded.professionalTax) || 0,
-          Number(ded.tds) || 0,
-          bank.accountName || '',
-          bank.accountNumber || '',
-          bank.ifscCode || '',
-          bank.bankName || '',
-          bank.branch || '',
-          employee.panNumber || '',
-          employee.uanNumber || '',
-          employee.aadharNumber || '',
-          addr.line1 || '',
-          addr.line2 || '',
-          addr.city || '',
-          addr.state || '',
-          addr.zip || '',
-          addr.country || '',
-          Number(dec.section80C) || 0,
-          Number(dec.section80D) || 0,
-          Number(dec.section24b) || 0,
-          Number(dec.section80CCD1B) || 0,
-          Number(dec.rentPaidMonthly) || 0,
-          dec.isMetroCity ? 'Yes' : 'No',
-          Number(dec.otherExemptions) || 0,
-        ];
-
-        const customCompValues = Object.keys(customCompHeadersMap).map((cId) => {
-          const val = employee.salaryStructure?.[cId] !== undefined
-            ? employee.salaryStructure[cId]
-            : employee[cId];
-          return val !== undefined && val !== null ? val : '';
-        });
-
-        const rootCustomValues = sortedRootCustomKeys.map((key) => {
-          const val = employee[key];
-          if (val && typeof val === 'object') {
-            return JSON.stringify(val);
-          }
-          return val !== undefined && val !== null ? val : '';
-        });
-
-        return [...standardValues, ...customCompValues, ...rootCustomValues];
-      }),
+      ...dataRows,
       totals
     ];
 
@@ -908,60 +1211,30 @@ exports.exportEmployeesExcel = async (req, res) => {
     worksheet['!merges'] = merges;
     const workbook = XLSX.utils.book_new();
 
-    const categoryStyles = [
-      { start: 0, end: 6, bg: 'DDEBF7', fg: '1F4E78' },
-      { start: 7, end: 13, bg: 'E2F0D9', fg: '385723' },
-      { start: 14, end: 24, bg: 'FFF2CC', fg: '7F6000' },
-      { start: 25, end: 31, bg: 'F2F2F2', fg: '595959' },
-      { start: 32, end: 33, bg: 'FCE4D6', fg: 'C65911' },
-      { start: 34, end: 38, bg: 'E8E8FF', fg: '2F2F80' },
-      { start: 39, end: 41, bg: 'E1D5E7', fg: '603080' },
-      { start: 42, end: 49, bg: 'FFF0F5', fg: '8B0086' },
-      { start: 50, end: 55, bg: 'E6F2FF', fg: '0055A5' },
-      { start: 56, end: 62, bg: 'EAFBF0', fg: '0E7035' },
-    ];
-
-    if (customCompCount > 0) {
-      categoryStyles.push({
-        start: 63,
-        end: 63 + customCompCount - 1,
-        bg: 'F0F8FF',
-        fg: '004080'
+    columns.forEach((col, colIdx) => {
+      const grp = col.group;
+      const colors = GROUP_COLORS[grp] || { bg: 'FFFFFF', fg: '000000' };
+      const colLetter = XLSX.utils.encode_col(colIdx);
+      const addr1 = `${colLetter}1`;
+      const addr2 = `${colLetter}2`;
+      [addr1, addr2].forEach((addr) => {
+        if (!worksheet[addr]) return;
+        worksheet[addr].s = {
+          font: { bold: true, color: { rgb: colors.fg } },
+          fill: { fgColor: { rgb: colors.bg } },
+          alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+          border: {
+            top: { style: 'thin', color: { rgb: 'D9D9D9' } },
+            bottom: { style: 'thin', color: { rgb: 'D9D9D9' } },
+            left: { style: 'thin', color: { rgb: 'D9D9D9' } },
+            right: { style: 'thin', color: { rgb: 'D9D9D9' } }
+          }
+        };
       });
-    }
-
-    if (rootCustomCount > 0) {
-      categoryStyles.push({
-        start: 63 + customCompCount,
-        end: 63 + customCompCount + rootCustomCount - 1,
-        bg: 'FFF5EE',
-        fg: '8B4513'
-      });
-    }
-
-    categoryStyles.forEach(({ start, end, bg, fg }) => {
-      for (let c = start; c <= end; c++) {
-        const cell1 = `${XLSX.utils.encode_col(c)}1`;
-        const cell2 = `${XLSX.utils.encode_col(c)}2`;
-        [cell1, cell2].forEach((addr) => {
-          if (!worksheet[addr]) return;
-          worksheet[addr].s = {
-            font: { bold: true, color: { rgb: fg } },
-            fill: { fgColor: { rgb: bg } },
-            alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-            border: {
-              top: { style: 'thin', color: { rgb: 'D9D9D9' } },
-              bottom: { style: 'thin', color: { rgb: 'D9D9D9' } },
-              left: { style: 'thin', color: { rgb: 'D9D9D9' } },
-              right: { style: 'thin', color: { rgb: 'D9D9D9' } }
-            }
-          };
-        });
-      }
     });
 
     const totalRowIndex = employees.length + 3;
-    for (let c = 0; c < headers.length; c++) {
+    for (let c = 0; c < columns.length; c++) {
       const cellAddress = `${XLSX.utils.encode_col(c)}${totalRowIndex}`;
       if (worksheet[cellAddress]) {
         worksheet[cellAddress].s = {
@@ -976,7 +1249,7 @@ exports.exportEmployeesExcel = async (req, res) => {
       }
     }
 
-    worksheet['!cols'] = headers.map(() => ({ wch: 18 }));
+    worksheet['!cols'] = columns.map(() => ({ wch: 18 }));
 
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Employees');
     sendWorkbook(res, workbook, 'employees.xlsx');
@@ -990,163 +1263,66 @@ exports.exportEmployeesExcel = async (req, res) => {
 exports.downloadImportTemplateExcel = async (req, res) => {
   try {
     const config = await getOrCreateConfig(req.user._id);
+    const columns = buildExcelColumns(config);
 
-    const basicDef = config?.basicPercent !== undefined && config?.basicPercent !== null
-      ? (config.basicPercent > 1 ? config.basicPercent / 100 : config.basicPercent)
-      : 0.5;
-    const hraDef = config?.hraPercent !== undefined && config?.hraPercent !== null
-      ? (config.hraPercent > 1 ? config.hraPercent / 100 : config.hraPercent)
-      : 0.5;
-    const pfRate = config?.pfRate !== undefined && config?.pfRate !== null ? config.pfRate : 0.12;
-    const pfCap = config?.pfCap !== undefined && config?.pfCap !== null ? config.pfCap : 15000;
-    const pfEmployerRate = config?.pfEmployerRate !== undefined && config?.pfEmployerRate !== null ? config.pfEmployerRate : 0.12;
-    const gratuityRate = config?.gratuityRate !== undefined && config?.gratuityRate !== null ? config.gratuityRate : 0.0481;
-
-    const headers = [
-      'Employee ID', 'First Name', 'Last Name', 'Email', 'Phone', 'Date of Birth', 'Gender',
-      'Joining Date', 'Date of Leaving', 'Location', 'Designation', 'Department', 'Employment Type', 'Status',
-      'Tax Regime', 'PF Enabled', 'ESI Enabled', 'PT Enabled', 'LWF Enabled', 'Gratuity Enabled', 'Include PF in CTC', 'Include Gratuity in CTC',
-      'Monthly CTC', 'Basic %', 'HRA %',
-      'Basic Salary', 'HRA', 'Special Allowance', 'Gross Salary', 'Employer PF', 'Employer Gratuity', 'Total Deductions', 'Net Take Home',
-      'Flexi Amount', 'Broadband', 'Petrol', 'LTA', 'Employer NPS', 'Insurance Amount', 'Joining Bonus',
-      'Professional Tax', 'TDS',
-      'Account Name', 'Account Number', 'IFSC Code', 'Bank Name', 'Branch',
-      'PAN Number', 'UAN Number', 'Aadhar Number',
-      'Address Line 1', 'Address Line 2', 'City', 'State', 'Zip', 'Country',
-      'Section 80C', 'Section 80D', 'Section 24b', 'Section 80CCD(1B)', 'Rent Paid Monthly', 'Is Metro City', 'Other Exemptions'
-    ];
-
-    const customCompHeaders = [];
-    if (config?.salaryComponents) {
-      config.salaryComponents.forEach((c) => {
-        if (!['basic', 'hra', 'special', 'conveyance', 'medical', 'flexi', 'broadband', 'petrol', 'lta'].includes(c.id)) {
-          let suffix = '';
-          if (c.frequency === 'quarterly') suffix = ' (Quarterly)';
-          else if (c.frequency === 'semi_annually') suffix = ' (Semi-Annually)';
-          else if (c.frequency === 'annually') suffix = ' (Annually)';
-          customCompHeaders.push(`${c.name || c.id}${suffix}`);
+    // Compute Merges dynamically
+    const merges = [];
+    let start = 0;
+    for (let i = 1; i <= columns.length; i++) {
+      if (i === columns.length || columns[i].group !== columns[start].group) {
+        if (columns[start].group) {
+          merges.push({
+            s: { r: 0, c: start },
+            e: { r: 0, c: i - 1 }
+          });
         }
-      });
-    }
-
-    const allHeaders = [...headers, ...customCompHeaders];
-
-    const headerGroups = [
-      'Personal Details', '', '', '', '', '', '',
-      'Employment Details', '', '', '', '', '', '',
-      'Statutory Toggles', '', '', '', '', '', '', '',
-      'Salary Details', '', '', '', '', '', '', '', '', '', '',
-      'Flexi & Other Allowance', '', '', '', '', '', '',
-      'Deductions', '',
-      'Bank Details', '', '', '', '',
-      'Identity Details', '', '',
-      'Address Details', '', '', '', '', '',
-      'Tax Declarations & Exemptions', '', '', '', '', '', ''
-    ];
-
-    if (customCompHeaders.length > 0) {
-      headerGroups.push('Custom Components');
-      for (let i = 1; i < customCompHeaders.length; i++) {
-        headerGroups.push('');
+        start = i;
       }
     }
 
-    const merges = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },     // Personal Details
-      { s: { r: 0, c: 7 }, e: { r: 0, c: 13 } },    // Employment Details
-      { s: { r: 0, c: 14 }, e: { r: 0, c: 21 } },   // Statutory Toggles
-      { s: { r: 0, c: 22 }, e: { r: 0, c: 32 } },   // Salary Details
-      { s: { r: 0, c: 33 }, e: { r: 0, c: 39 } },   // Flexi & Other Allowance
-      { s: { r: 0, c: 40 }, e: { r: 0, c: 41 } },   // Deductions
-      { s: { r: 0, c: 42 }, e: { r: 0, c: 46 } },   // Bank Details
-      { s: { r: 0, c: 47 }, e: { r: 0, c: 49 } },   // Identity Details
-      { s: { r: 0, c: 50 }, e: { r: 0, c: 55 } },   // Address Details
-      { s: { r: 0, c: 56 }, e: { r: 0, c: 62 } },   // Tax Declarations
-    ];
+    const headerGroups = Array(columns.length).fill('');
+    merges.forEach(merge => {
+      headerGroups[merge.s.c] = columns[merge.s.c].group;
+    });
 
-    if (customCompHeaders.length > 0) {
-      merges.push({
-        s: { r: 0, c: 63 },
-        e: { r: 0, c: 63 + customCompHeaders.length - 1 }
-      });
-    }
+    const headers = columns.map(c => c.header);
 
-    const sampleRow = [
-      'EMP-001', 'John', 'Doe', 'john.doe@example.com', '9876543210', '1990-01-01', 'Male',
-      '2026-06-01', '', 'Delhi', 'Software Engineer', 'Engineering', 'full-time', 'active',
-      'new',
-      'No', 'No', 'No', 'No', 'No',
-      'No', 'No',
-      50000, basicDef * 100, hraDef * 100,
-      { f: `ROUND(W3 * IF(X3<>"", X3/100, ${basicDef}), 2)` },
-      { f: `ROUND(Z3 * IF(Y3<>"", Y3/100, ${hraDef}), 2)` },
-      { f: `ROUND(MAX(W3 - Z3 - AA3 - AH3 - AI3 - AJ3 - AK3 - AL3 - AM3 - IF(U3="Yes", AD3, 0) - IF(V3="Yes", AE3, 0), 0), 2)` },
-      { f: `ROUND(Z3 + AA3 + AB3, 2)` },
-      { f: `ROUND(IF(P3="Yes", MIN(Z3, ${pfCap}) * ${pfEmployerRate}, 0), 2)` },
-      { f: `ROUND(IF(T3="Yes", Z3 * ${gratuityRate}, 0), 2)` },
-      { f: `ROUND(IF(P3="Yes", MIN(Z3, ${pfCap}) * ${pfRate}, 0) + AO3 + AP3, 2)` },
-      { f: `ROUND(AC3 - AF3 + AH3 + AI3 + AJ3 + AK3, 2)` },
-      0, 0, 0, 0, 0, 0, 0,
-      200, 0,
-      'John Doe', '1234567890', 'UTIB0000123', 'Axis Bank', 'Delhi',
-      'ABCDE1234F', '', '123456789012',
-      '123 Street Name', '', 'Delhi', 'Delhi', '110001', 'India',
-      0, 0, 0, 0, 0, 'No', 0
-    ];
+    const sampleRow = columns.map(col => {
+      if (typeof col.getValue === 'function') {
+        return col.getValue(null, 3, 'template');
+      }
+      return col.sample !== undefined ? col.sample : '';
+    });
 
-    customCompHeaders.forEach(() => sampleRow.push(0));
-
-    const rows = [headerGroups, allHeaders, sampleRow];
+    const rows = [headerGroups, headers, sampleRow];
 
     const worksheet = XLSX.utils.aoa_to_sheet(rows);
     worksheet['!merges'] = merges;
     const workbook = XLSX.utils.book_new();
 
-    const categoryStyles = [
-      { start: 0, end: 6, bg: 'DDEBF7', fg: '1F4E78' },
-      { start: 7, end: 13, bg: 'E2F0D9', fg: '385723' },
-      { start: 14, end: 21, bg: 'FFF0F5', fg: '8B0086' },
-      { start: 22, end: 32, bg: 'FFF2CC', fg: '7F6000' },
-      { start: 33, end: 39, bg: 'F2F2F2', fg: '595959' },
-      { start: 40, end: 41, bg: 'FCE4D6', fg: 'C65911' },
-      { start: 42, end: 46, bg: 'E8E8FF', fg: '2F2F80' },
-      { start: 47, end: 49, bg: 'E1D5E7', fg: '603080' },
-      { start: 50, end: 55, bg: 'E6F2FF', fg: '0055A5' },
-      { start: 56, end: 62, bg: 'EAFBF0', fg: '0E7035' },
-    ];
-
-    const customCompCount = customCompHeaders.length;
-    if (customCompCount > 0) {
-      categoryStyles.push({
-        start: 63,
-        end: 63 + customCompCount - 1,
-        bg: 'F0F8FF',
-        fg: '004080'
+    columns.forEach((col, colIdx) => {
+      const grp = col.group;
+      const colors = GROUP_COLORS[grp] || { bg: 'FFFFFF', fg: '000000' };
+      const colLetter = XLSX.utils.encode_col(colIdx);
+      const addr1 = `${colLetter}1`;
+      const addr2 = `${colLetter}2`;
+      [addr1, addr2].forEach((addr) => {
+        if (!worksheet[addr]) return;
+        worksheet[addr].s = {
+          font: { bold: true, color: { rgb: colors.fg } },
+          fill: { fgColor: { rgb: colors.bg } },
+          alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+          border: {
+            top: { style: 'thin', color: { rgb: 'D9D9D9' } },
+            bottom: { style: 'thin', color: { rgb: 'D9D9D9' } },
+            left: { style: 'thin', color: { rgb: 'D9D9D9' } },
+            right: { style: 'thin', color: { rgb: 'D9D9D9' } }
+          }
+        };
       });
-    }
-
-    categoryStyles.forEach(({ start, end, bg, fg }) => {
-      for (let c = start; c <= end; c++) {
-        const cell1 = `${XLSX.utils.encode_col(c)}1`;
-        const cell2 = `${XLSX.utils.encode_col(c)}2`;
-        [cell1, cell2].forEach((addr) => {
-          if (!worksheet[addr]) return;
-          worksheet[addr].s = {
-            font: { bold: true, color: { rgb: fg } },
-            fill: { fgColor: { rgb: bg } },
-            alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-            border: {
-              top: { style: 'thin', color: { rgb: 'D9D9D9' } },
-              bottom: { style: 'thin', color: { rgb: 'D9D9D9' } },
-              left: { style: 'thin', color: { rgb: 'D9D9D9' } },
-              right: { style: 'thin', color: { rgb: 'D9D9D9' } }
-            }
-          };
-        });
-      }
     });
 
-    worksheet['!cols'] = allHeaders.map(() => ({ wch: 18 }));
+    worksheet['!cols'] = headers.map(() => ({ wch: 18 }));
 
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Template');
     sendWorkbook(res, workbook, 'employee_import_template.xlsx');
