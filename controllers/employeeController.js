@@ -396,7 +396,20 @@ exports.importEmployees = async (req, res) => {
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+    // Detect if the sheet has a two-tier header or a single-tier header
+    const firstCellAddress = XLSX.utils.encode_cell({ r: 0, c: 0 }); // A1
+    const firstCell = sheet[firstCellAddress];
+    const firstCellValue = firstCell ? String(firstCell.v).trim().toLowerCase() : '';
+
+    let rangeStart = 0;
+    if (firstCellValue && !['employee id', 'employeeid', 'employee_id'].includes(firstCellValue)) {
+      // It's likely a two-tier sheet where Row 1 is a category header (like "Personal Details")
+      // and Row 2 is the actual column headers
+      rangeStart = 1;
+    }
+
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', range: rangeStart });
     const config = await getOrCreateConfig(req.user._id);
 
     let imported = 0;
@@ -700,29 +713,94 @@ exports.exportEmployeesExcel = async (req, res) => {
     const headers = [
       'Employee ID', 'First Name', 'Last Name', 'Email', 'Phone', 'Date of Birth', 'Gender',
       'Joining Date', 'Date of Leaving', 'Location', 'Designation', 'Department', 'Employment Type', 'Status',
+      'Tax Regime', 'PF Enabled', 'ESI Enabled', 'PT Enabled', 'LWF Enabled', 'Gratuity Enabled', 'Include PF in CTC', 'Include Gratuity in CTC',
       'Monthly CTC', 'Basic %', 'HRA %',
       'Basic Salary', 'HRA', 'Special Allowance', 'Gross Salary', 'Employer PF', 'Employer Gratuity', 'Total Deductions', 'Net Take Home',
       'Flexi Amount', 'Broadband', 'Petrol', 'LTA', 'Employer NPS', 'Insurance Amount', 'Joining Bonus',
       'Professional Tax', 'TDS',
       'Account Name', 'Account Number', 'IFSC Code', 'Bank Name', 'Branch',
       'PAN Number', 'UAN Number', 'Aadhar Number',
-      'Tax Regime',
-      'PF Enabled', 'ESI Enabled', 'PT Enabled', 'LWF Enabled', 'Gratuity Enabled',
-      'Include PF in CTC', 'Include Gratuity in CTC',
       'Address Line 1', 'Address Line 2', 'City', 'State', 'Zip', 'Country',
       'Section 80C', 'Section 80D', 'Section 24b', 'Section 80CCD(1B)', 'Rent Paid Monthly', 'Is Metro City', 'Other Exemptions',
       ...Object.values(customCompHeadersMap),
       ...sortedRootCustomKeys
     ];
 
+    const headerGroups = [
+      'Personal Details', '', '', '', '', '', '',
+      'Employment Details', '', '', '', '', '', '',
+      'Statutory Toggles', '', '', '', '', '', '', '',
+      'Salary Details', '', '', '', '', '', '', '', '', '', '',
+      'Flexi & Other Allowance', '', '', '', '', '', '',
+      'Deductions', '',
+      'Bank Details', '', '', '', '',
+      'Identity Details', '', '',
+      'Address Details', '', '', '', '', '',
+      'Tax Declarations & Exemptions', '', '', '', '', '', ''
+    ];
+
+    const merges = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },     // Personal Details
+      { s: { r: 0, c: 7 }, e: { r: 0, c: 13 } },    // Employment Details
+      { s: { r: 0, c: 14 }, e: { r: 0, c: 21 } },   // Statutory Toggles
+      { s: { r: 0, c: 22 }, e: { r: 0, c: 32 } },   // Salary Details
+      { s: { r: 0, c: 33 }, e: { r: 0, c: 39 } },   // Flexi & Other Allowance
+      { s: { r: 0, c: 40 }, e: { r: 0, c: 41 } },   // Deductions
+      { s: { r: 0, c: 42 }, e: { r: 0, c: 46 } },   // Bank Details
+      { s: { r: 0, c: 47 }, e: { r: 0, c: 49 } },   // Identity Details
+      { s: { r: 0, c: 50 }, e: { r: 0, c: 55 } },   // Address Details
+      { s: { r: 0, c: 56 }, e: { r: 0, c: 62 } },   // Tax Declarations
+    ];
+
+    const customCompCount = Object.keys(customCompHeadersMap).length;
+    if (customCompCount > 0) {
+      headerGroups.push('Custom Components');
+      for (let i = 1; i < customCompCount; i++) {
+        headerGroups.push('');
+      }
+      merges.push({
+        s: { r: 0, c: 63 },
+        e: { r: 0, c: 63 + customCompCount - 1 }
+      });
+    }
+
+    const rootCustomCount = sortedRootCustomKeys.length;
+    if (rootCustomCount > 0) {
+      headerGroups.push('Other Details');
+      const startCol = 63 + customCompCount;
+      for (let i = 1; i < rootCustomCount; i++) {
+        headerGroups.push('');
+      }
+      merges.push({
+        s: { r: 0, c: startCol },
+        e: { r: 0, c: startCol + rootCustomCount - 1 }
+      });
+    }
+
+    const startRow = 3;
+    const endRow = employees.length + 2;
+    const totals = Array(headers.length).fill('');
+    totals[0] = 'TOTAL';
+
+    const sumColIndexes = [22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41];
+    for (let c = 63; c < 63 + customCompCount; c++) {
+      sumColIndexes.push(c);
+    }
+
+    sumColIndexes.forEach((colIndex) => {
+      const colLetter = XLSX.utils.encode_col(colIndex);
+      totals[colIndex] = { f: `SUM(${colLetter}${startRow}:${colLetter}${endRow})` };
+    });
+
     const rows = [
+      headerGroups,
       headers,
       ...employees.map((employee, index) => {
         const addr = employee.address || {};
         const bank = employee.bankDetails || {};
         const ded = employee.deductions || {};
         const dec = employee.declarations || {};
-        const rNum = index + 2;
+        const rNum = index + 3;
 
         const pfEnabled = employee.pfEnabled !== false ? 'Yes' : 'No';
         const gratuityEnabled = employee.gratuityEnabled !== false ? 'Yes' : 'No';
@@ -755,17 +833,25 @@ exports.exportEmployeesExcel = async (req, res) => {
           employee.department?.name || '',
           employee.employmentType || '',
           employee.status || '',
+          employee.taxRegime || '',
+          pfEnabled,
+          employee.esiEnabled !== false ? 'Yes' : 'No',
+          employee.ptEnabled !== false ? 'Yes' : 'No',
+          employee.lwfEnabled !== false ? 'Yes' : 'No',
+          gratuityEnabled,
+          includePfInCTC,
+          includeGratuityInCTC,
           Number(employee.monthlyCTC) || 0,
           employee.basicPercent !== undefined && employee.basicPercent !== null ? Number(employee.basicPercent) : basicDef * 100,
           employee.hraPercent !== undefined && employee.hraPercent !== null ? Number(employee.hraPercent) : hraDef * 100,
-          { f: `ROUND(O${rNum} * IF(P${rNum}<>"", P${rNum}/100, ${basicDef}), 2)`, v: Number(employee.salaryStructure?.basic) || 0 },
-          { f: `ROUND(R${rNum} * IF(Q${rNum}<>"", Q${rNum}/100, ${hraDef}), 2)`, v: Number(employee.salaryStructure?.hra) || 0 },
-          { f: `ROUND(MAX(O${rNum} - R${rNum} - S${rNum} - Z${rNum} - AA${rNum} - AB${rNum} - AC${rNum} - AD${rNum} - AE${rNum} - IF(AW${rNum}="Yes", V${rNum}, 0) - IF(AX${rNum}="Yes", W${rNum}, 0), 0), 2)`, v: Number(employee.salaryStructure?.specialAllowance) || 0 },
-          { f: `ROUND(R${rNum} + S${rNum} + T${rNum}, 2)`, v: Number(employee.salaryStructure?.grossSalary) || 0 },
-          { f: `ROUND(IF(AR${rNum}="Yes", MIN(R${rNum}, ${pfCap}) * ${pfEmployerRate}, 0), 2)`, v: Number(ded.pf) || 0 },
-          { f: `ROUND(IF(AV${rNum}="Yes", R${rNum} * ${gratuityRate}, 0), 2)`, v: Number(employee.salaryStructure?.ctc) ? Number(employee.salaryStructure?.ctc) - Number(employee.salaryStructure?.grossSalary) - (Number(ded.pf) || 0) : 0 },
-          { f: `ROUND(IF(AR${rNum}="Yes", MIN(R${rNum}, ${pfCap}) * ${pfRate}, 0) + AG${rNum} + AH${rNum}, 2)`, v: (Number(ded.pf) || 0) + (Number(ded.professionalTax) || 0) + (Number(ded.tds) || 0) },
-          { f: `ROUND(U${rNum} - X${rNum} + Z${rNum} + AA${rNum} + AB${rNum} + AC${rNum}, 2)`, v: (Number(employee.salaryStructure?.grossSalary) || 0) - ((Number(ded.pf) || 0) + (Number(ded.professionalTax) || 0) + (Number(ded.tds) || 0)) + (Number(employee.flexiAmount) || 0) + (Number(employee.broadband) || 0) + (Number(employee.petrol) || 0) + (Number(employee.lta) || 0) },
+          { f: `ROUND(W${rNum} * IF(X${rNum}<>"", X${rNum}/100, ${basicDef}), 2)`, v: Number(employee.salaryStructure?.basic) || 0 },
+          { f: `ROUND(Z${rNum} * IF(Y${rNum}<>"", Y${rNum}/100, ${hraDef}), 2)`, v: Number(employee.salaryStructure?.hra) || 0 },
+          { f: `ROUND(MAX(W${rNum} - Z${rNum} - AA${rNum} - AH${rNum} - AI${rNum} - AJ${rNum} - AK${rNum} - AL${rNum} - AM${rNum} - IF(U${rNum}="Yes", AD${rNum}, 0) - IF(V${rNum}="Yes", AE${rNum}, 0), 0), 2)`, v: Number(employee.salaryStructure?.specialAllowance) || 0 },
+          { f: `ROUND(Z${rNum} + AA${rNum} + AB${rNum}, 2)`, v: Number(employee.salaryStructure?.grossSalary) || 0 },
+          { f: `ROUND(IF(P${rNum}="Yes", MIN(Z${rNum}, ${pfCap}) * ${pfEmployerRate}, 0), 2)`, v: Number(ded.pf) || 0 },
+          { f: `ROUND(IF(T${rNum}="Yes", Z${rNum} * ${gratuityRate}, 0), 2)`, v: Number(employee.salaryStructure?.ctc) ? Number(employee.salaryStructure?.ctc) - Number(employee.salaryStructure?.grossSalary) - (Number(ded.pf) || 0) : 0 },
+          { f: `ROUND(IF(P${rNum}="Yes", MIN(Z${rNum}, ${pfCap}) * ${pfRate}, 0) + AO${rNum} + AP${rNum}, 2)`, v: (Number(ded.pf) || 0) + (Number(ded.professionalTax) || 0) + (Number(ded.tds) || 0) },
+          { f: `ROUND(AC${rNum} - AF${rNum} + AH${rNum} + AI${rNum} + AJ${rNum} + AK${rNum}, 2)`, v: (Number(employee.salaryStructure?.grossSalary) || 0) - ((Number(ded.pf) || 0) + (Number(ded.professionalTax) || 0) + (Number(ded.tds) || 0)) + (Number(employee.flexiAmount) || 0) + (Number(employee.broadband) || 0) + (Number(employee.petrol) || 0) + (Number(employee.lta) || 0) },
           Number(employee.flexiAmount) || 0,
           Number(employee.broadband) || 0,
           Number(employee.petrol) || 0,
@@ -783,14 +869,6 @@ exports.exportEmployeesExcel = async (req, res) => {
           employee.panNumber || '',
           employee.uanNumber || '',
           employee.aadharNumber || '',
-          employee.taxRegime || '',
-          pfEnabled,
-          employee.esiEnabled !== false ? 'Yes' : 'No',
-          employee.ptEnabled !== false ? 'Yes' : 'No',
-          employee.lwfEnabled !== false ? 'Yes' : 'No',
-          gratuityEnabled,
-          includePfInCTC,
-          includeGratuityInCTC,
           addr.line1 || '',
           addr.line2 || '',
           addr.city || '',
@@ -822,14 +900,81 @@ exports.exportEmployeesExcel = async (req, res) => {
         });
 
         return [...standardValues, ...customCompValues, ...rootCustomValues];
-      })
+      }),
+      totals
     ];
 
     const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    worksheet['!merges'] = merges;
     const workbook = XLSX.utils.book_new();
 
-    const headerCells = headers.map((_, colIndex) => `${XLSX.utils.encode_col(colIndex)}1`);
-    setHeaderStyle(worksheet, headerCells);
+    const categoryStyles = [
+      { start: 0, end: 6, bg: 'DDEBF7', fg: '1F4E78' },
+      { start: 7, end: 13, bg: 'E2F0D9', fg: '385723' },
+      { start: 14, end: 24, bg: 'FFF2CC', fg: '7F6000' },
+      { start: 25, end: 31, bg: 'F2F2F2', fg: '595959' },
+      { start: 32, end: 33, bg: 'FCE4D6', fg: 'C65911' },
+      { start: 34, end: 38, bg: 'E8E8FF', fg: '2F2F80' },
+      { start: 39, end: 41, bg: 'E1D5E7', fg: '603080' },
+      { start: 42, end: 49, bg: 'FFF0F5', fg: '8B0086' },
+      { start: 50, end: 55, bg: 'E6F2FF', fg: '0055A5' },
+      { start: 56, end: 62, bg: 'EAFBF0', fg: '0E7035' },
+    ];
+
+    if (customCompCount > 0) {
+      categoryStyles.push({
+        start: 63,
+        end: 63 + customCompCount - 1,
+        bg: 'F0F8FF',
+        fg: '004080'
+      });
+    }
+
+    if (rootCustomCount > 0) {
+      categoryStyles.push({
+        start: 63 + customCompCount,
+        end: 63 + customCompCount + rootCustomCount - 1,
+        bg: 'FFF5EE',
+        fg: '8B4513'
+      });
+    }
+
+    categoryStyles.forEach(({ start, end, bg, fg }) => {
+      for (let c = start; c <= end; c++) {
+        const cell1 = `${XLSX.utils.encode_col(c)}1`;
+        const cell2 = `${XLSX.utils.encode_col(c)}2`;
+        [cell1, cell2].forEach((addr) => {
+          if (!worksheet[addr]) return;
+          worksheet[addr].s = {
+            font: { bold: true, color: { rgb: fg } },
+            fill: { fgColor: { rgb: bg } },
+            alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+            border: {
+              top: { style: 'thin', color: { rgb: 'D9D9D9' } },
+              bottom: { style: 'thin', color: { rgb: 'D9D9D9' } },
+              left: { style: 'thin', color: { rgb: 'D9D9D9' } },
+              right: { style: 'thin', color: { rgb: 'D9D9D9' } }
+            }
+          };
+        });
+      }
+    });
+
+    const totalRowIndex = employees.length + 3;
+    for (let c = 0; c < headers.length; c++) {
+      const cellAddress = `${XLSX.utils.encode_col(c)}${totalRowIndex}`;
+      if (worksheet[cellAddress]) {
+        worksheet[cellAddress].s = {
+          font: { bold: true, color: { rgb: '000000' } },
+          fill: { fgColor: { rgb: 'F2F2F2' } },
+          alignment: { horizontal: c === 0 ? 'left' : 'right', vertical: 'center' },
+          border: {
+            top: { style: 'thin', color: { rgb: 'A0A0A0' } },
+            bottom: { style: 'double', color: { rgb: '000000' } }
+          }
+        };
+      }
+    }
 
     worksheet['!cols'] = headers.map(() => ({ wch: 18 }));
 
@@ -838,6 +983,176 @@ exports.exportEmployeesExcel = async (req, res) => {
   } catch (error) {
     console.error('Error exporting employees:', error);
     res.status(500).json({ message: 'Server error exporting employees' });
+  }
+};
+
+
+exports.downloadImportTemplateExcel = async (req, res) => {
+  try {
+    const config = await getOrCreateConfig(req.user._id);
+
+    const basicDef = config?.basicPercent !== undefined && config?.basicPercent !== null
+      ? (config.basicPercent > 1 ? config.basicPercent / 100 : config.basicPercent)
+      : 0.5;
+    const hraDef = config?.hraPercent !== undefined && config?.hraPercent !== null
+      ? (config.hraPercent > 1 ? config.hraPercent / 100 : config.hraPercent)
+      : 0.5;
+    const pfRate = config?.pfRate !== undefined && config?.pfRate !== null ? config.pfRate : 0.12;
+    const pfCap = config?.pfCap !== undefined && config?.pfCap !== null ? config.pfCap : 15000;
+    const pfEmployerRate = config?.pfEmployerRate !== undefined && config?.pfEmployerRate !== null ? config.pfEmployerRate : 0.12;
+    const gratuityRate = config?.gratuityRate !== undefined && config?.gratuityRate !== null ? config.gratuityRate : 0.0481;
+
+    const headers = [
+      'Employee ID', 'First Name', 'Last Name', 'Email', 'Phone', 'Date of Birth', 'Gender',
+      'Joining Date', 'Date of Leaving', 'Location', 'Designation', 'Department', 'Employment Type', 'Status',
+      'Tax Regime', 'PF Enabled', 'ESI Enabled', 'PT Enabled', 'LWF Enabled', 'Gratuity Enabled', 'Include PF in CTC', 'Include Gratuity in CTC',
+      'Monthly CTC', 'Basic %', 'HRA %',
+      'Basic Salary', 'HRA', 'Special Allowance', 'Gross Salary', 'Employer PF', 'Employer Gratuity', 'Total Deductions', 'Net Take Home',
+      'Flexi Amount', 'Broadband', 'Petrol', 'LTA', 'Employer NPS', 'Insurance Amount', 'Joining Bonus',
+      'Professional Tax', 'TDS',
+      'Account Name', 'Account Number', 'IFSC Code', 'Bank Name', 'Branch',
+      'PAN Number', 'UAN Number', 'Aadhar Number',
+      'Address Line 1', 'Address Line 2', 'City', 'State', 'Zip', 'Country',
+      'Section 80C', 'Section 80D', 'Section 24b', 'Section 80CCD(1B)', 'Rent Paid Monthly', 'Is Metro City', 'Other Exemptions'
+    ];
+
+    const customCompHeaders = [];
+    if (config?.salaryComponents) {
+      config.salaryComponents.forEach((c) => {
+        if (!['basic', 'hra', 'special', 'conveyance', 'medical', 'flexi', 'broadband', 'petrol', 'lta'].includes(c.id)) {
+          let suffix = '';
+          if (c.frequency === 'quarterly') suffix = ' (Quarterly)';
+          else if (c.frequency === 'semi_annually') suffix = ' (Semi-Annually)';
+          else if (c.frequency === 'annually') suffix = ' (Annually)';
+          customCompHeaders.push(`${c.name || c.id}${suffix}`);
+        }
+      });
+    }
+
+    const allHeaders = [...headers, ...customCompHeaders];
+
+    const headerGroups = [
+      'Personal Details', '', '', '', '', '', '',
+      'Employment Details', '', '', '', '', '', '',
+      'Statutory Toggles', '', '', '', '', '', '', '',
+      'Salary Details', '', '', '', '', '', '', '', '', '', '',
+      'Flexi & Other Allowance', '', '', '', '', '', '',
+      'Deductions', '',
+      'Bank Details', '', '', '', '',
+      'Identity Details', '', '',
+      'Address Details', '', '', '', '', '',
+      'Tax Declarations & Exemptions', '', '', '', '', '', ''
+    ];
+
+    if (customCompHeaders.length > 0) {
+      headerGroups.push('Custom Components');
+      for (let i = 1; i < customCompHeaders.length; i++) {
+        headerGroups.push('');
+      }
+    }
+
+    const merges = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },     // Personal Details
+      { s: { r: 0, c: 7 }, e: { r: 0, c: 13 } },    // Employment Details
+      { s: { r: 0, c: 14 }, e: { r: 0, c: 21 } },   // Statutory Toggles
+      { s: { r: 0, c: 22 }, e: { r: 0, c: 32 } },   // Salary Details
+      { s: { r: 0, c: 33 }, e: { r: 0, c: 39 } },   // Flexi & Other Allowance
+      { s: { r: 0, c: 40 }, e: { r: 0, c: 41 } },   // Deductions
+      { s: { r: 0, c: 42 }, e: { r: 0, c: 46 } },   // Bank Details
+      { s: { r: 0, c: 47 }, e: { r: 0, c: 49 } },   // Identity Details
+      { s: { r: 0, c: 50 }, e: { r: 0, c: 55 } },   // Address Details
+      { s: { r: 0, c: 56 }, e: { r: 0, c: 62 } },   // Tax Declarations
+    ];
+
+    if (customCompHeaders.length > 0) {
+      merges.push({
+        s: { r: 0, c: 63 },
+        e: { r: 0, c: 63 + customCompHeaders.length - 1 }
+      });
+    }
+
+    const sampleRow = [
+      'EMP-001', 'John', 'Doe', 'john.doe@example.com', '9876543210', '1990-01-01', 'Male',
+      '2026-06-01', '', 'Delhi', 'Software Engineer', 'Engineering', 'full-time', 'active',
+      'new',
+      'No', 'No', 'No', 'No', 'No',
+      'No', 'No',
+      50000, basicDef * 100, hraDef * 100,
+      { f: `ROUND(W3 * IF(X3<>"", X3/100, ${basicDef}), 2)` },
+      { f: `ROUND(Z3 * IF(Y3<>"", Y3/100, ${hraDef}), 2)` },
+      { f: `ROUND(MAX(W3 - Z3 - AA3 - AH3 - AI3 - AJ3 - AK3 - AL3 - AM3 - IF(U3="Yes", AD3, 0) - IF(V3="Yes", AE3, 0), 0), 2)` },
+      { f: `ROUND(Z3 + AA3 + AB3, 2)` },
+      { f: `ROUND(IF(P3="Yes", MIN(Z3, ${pfCap}) * ${pfEmployerRate}, 0), 2)` },
+      { f: `ROUND(IF(T3="Yes", Z3 * ${gratuityRate}, 0), 2)` },
+      { f: `ROUND(IF(P3="Yes", MIN(Z3, ${pfCap}) * ${pfRate}, 0) + AO3 + AP3, 2)` },
+      { f: `ROUND(AC3 - AF3 + AH3 + AI3 + AJ3 + AK3, 2)` },
+      0, 0, 0, 0, 0, 0, 0,
+      200, 0,
+      'John Doe', '1234567890', 'UTIB0000123', 'Axis Bank', 'Delhi',
+      'ABCDE1234F', '', '123456789012',
+      '123 Street Name', '', 'Delhi', 'Delhi', '110001', 'India',
+      0, 0, 0, 0, 0, 'No', 0
+    ];
+
+    customCompHeaders.forEach(() => sampleRow.push(0));
+
+    const rows = [headerGroups, allHeaders, sampleRow];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    worksheet['!merges'] = merges;
+    const workbook = XLSX.utils.book_new();
+
+    const categoryStyles = [
+      { start: 0, end: 6, bg: 'DDEBF7', fg: '1F4E78' },
+      { start: 7, end: 13, bg: 'E2F0D9', fg: '385723' },
+      { start: 14, end: 21, bg: 'FFF0F5', fg: '8B0086' },
+      { start: 22, end: 32, bg: 'FFF2CC', fg: '7F6000' },
+      { start: 33, end: 39, bg: 'F2F2F2', fg: '595959' },
+      { start: 40, end: 41, bg: 'FCE4D6', fg: 'C65911' },
+      { start: 42, end: 46, bg: 'E8E8FF', fg: '2F2F80' },
+      { start: 47, end: 49, bg: 'E1D5E7', fg: '603080' },
+      { start: 50, end: 55, bg: 'E6F2FF', fg: '0055A5' },
+      { start: 56, end: 62, bg: 'EAFBF0', fg: '0E7035' },
+    ];
+
+    const customCompCount = customCompHeaders.length;
+    if (customCompCount > 0) {
+      categoryStyles.push({
+        start: 63,
+        end: 63 + customCompCount - 1,
+        bg: 'F0F8FF',
+        fg: '004080'
+      });
+    }
+
+    categoryStyles.forEach(({ start, end, bg, fg }) => {
+      for (let c = start; c <= end; c++) {
+        const cell1 = `${XLSX.utils.encode_col(c)}1`;
+        const cell2 = `${XLSX.utils.encode_col(c)}2`;
+        [cell1, cell2].forEach((addr) => {
+          if (!worksheet[addr]) return;
+          worksheet[addr].s = {
+            font: { bold: true, color: { rgb: fg } },
+            fill: { fgColor: { rgb: bg } },
+            alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+            border: {
+              top: { style: 'thin', color: { rgb: 'D9D9D9' } },
+              bottom: { style: 'thin', color: { rgb: 'D9D9D9' } },
+              left: { style: 'thin', color: { rgb: 'D9D9D9' } },
+              right: { style: 'thin', color: { rgb: 'D9D9D9' } }
+            }
+          };
+        });
+      }
+    });
+
+    worksheet['!cols'] = allHeaders.map(() => ({ wch: 18 }));
+
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Template');
+    sendWorkbook(res, workbook, 'employee_import_template.xlsx');
+  } catch (error) {
+    console.error('Error generating import template:', error);
+    res.status(500).json({ message: 'Server error generating import template' });
   }
 };
 
