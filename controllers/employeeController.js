@@ -701,6 +701,7 @@ exports.exportEmployeesExcel = async (req, res) => {
       'Employee ID', 'First Name', 'Last Name', 'Email', 'Phone', 'Date of Birth', 'Gender',
       'Joining Date', 'Date of Leaving', 'Location', 'Designation', 'Department', 'Employment Type', 'Status',
       'Monthly CTC', 'Basic %', 'HRA %',
+      'Basic Salary', 'HRA', 'Special Allowance', 'Gross Salary', 'Employer PF', 'Employer Gratuity', 'Total Deductions', 'Net Take Home',
       'Flexi Amount', 'Broadband', 'Petrol', 'LTA', 'Employer NPS', 'Insurance Amount', 'Joining Bonus',
       'Professional Tax', 'TDS',
       'Account Name', 'Account Number', 'IFSC Code', 'Bank Name', 'Branch',
@@ -716,11 +717,28 @@ exports.exportEmployeesExcel = async (req, res) => {
 
     const rows = [
       headers,
-      ...employees.map((employee) => {
+      ...employees.map((employee, index) => {
         const addr = employee.address || {};
         const bank = employee.bankDetails || {};
         const ded = employee.deductions || {};
         const dec = employee.declarations || {};
+        const rNum = index + 2;
+
+        const pfEnabled = employee.pfEnabled !== false ? 'Yes' : 'No';
+        const gratuityEnabled = employee.gratuityEnabled !== false ? 'Yes' : 'No';
+        const includePfInCTC = employee.includePfInCTC !== false ? 'Yes' : 'No';
+        const includeGratuityInCTC = employee.includeGratuityInCTC !== false ? 'Yes' : 'No';
+
+        const basicDef = config.basicPercent !== undefined && config.basicPercent !== null
+          ? (config.basicPercent > 1 ? config.basicPercent / 100 : config.basicPercent)
+          : 0.5;
+        const hraDef = config.hraPercent !== undefined && config.hraPercent !== null
+          ? (config.hraPercent > 1 ? config.hraPercent / 100 : config.hraPercent)
+          : 0.5;
+        const pfRate = config.pfRate !== undefined && config.pfRate !== null ? config.pfRate : 0.12;
+        const pfCap = config.pfCap !== undefined && config.pfCap !== null ? config.pfCap : 15000;
+        const pfEmployerRate = config.pfEmployerRate !== undefined && config.pfEmployerRate !== null ? config.pfEmployerRate : 0.12;
+        const gratuityRate = config.gratuityRate !== undefined && config.gratuityRate !== null ? config.gratuityRate : 0.0481;
 
         const standardValues = [
           employee.employeeId || '',
@@ -738,8 +756,16 @@ exports.exportEmployeesExcel = async (req, res) => {
           employee.employmentType || '',
           employee.status || '',
           Number(employee.monthlyCTC) || 0,
-          employee.basicPercent !== undefined && employee.basicPercent !== null ? Number(employee.basicPercent) : '',
-          employee.hraPercent !== undefined && employee.hraPercent !== null ? Number(employee.hraPercent) : '',
+          employee.basicPercent !== undefined && employee.basicPercent !== null ? Number(employee.basicPercent) : basicDef * 100,
+          employee.hraPercent !== undefined && employee.hraPercent !== null ? Number(employee.hraPercent) : hraDef * 100,
+          { f: `ROUND(O${rNum} * IF(P${rNum}<>"", P${rNum}/100, ${basicDef}), 2)`, v: Number(employee.salaryStructure?.basic) || 0 },
+          { f: `ROUND(R${rNum} * IF(Q${rNum}<>"", Q${rNum}/100, ${hraDef}), 2)`, v: Number(employee.salaryStructure?.hra) || 0 },
+          { f: `ROUND(MAX(O${rNum} - R${rNum} - S${rNum} - Z${rNum} - AA${rNum} - AB${rNum} - AC${rNum} - AD${rNum} - AE${rNum} - IF(AW${rNum}="Yes", V${rNum}, 0) - IF(AX${rNum}="Yes", W${rNum}, 0), 0), 2)`, v: Number(employee.salaryStructure?.specialAllowance) || 0 },
+          { f: `ROUND(R${rNum} + S${rNum} + T${rNum}, 2)`, v: Number(employee.salaryStructure?.grossSalary) || 0 },
+          { f: `ROUND(IF(AR${rNum}="Yes", MIN(R${rNum}, ${pfCap}) * ${pfEmployerRate}, 0), 2)`, v: Number(ded.pf) || 0 },
+          { f: `ROUND(IF(AV${rNum}="Yes", R${rNum} * ${gratuityRate}, 0), 2)`, v: Number(employee.salaryStructure?.ctc) ? Number(employee.salaryStructure?.ctc) - Number(employee.salaryStructure?.grossSalary) - (Number(ded.pf) || 0) : 0 },
+          { f: `ROUND(IF(AR${rNum}="Yes", MIN(R${rNum}, ${pfCap}) * ${pfRate}, 0) + AG${rNum} + AH${rNum}, 2)`, v: (Number(ded.pf) || 0) + (Number(ded.professionalTax) || 0) + (Number(ded.tds) || 0) },
+          { f: `ROUND(U${rNum} - X${rNum} + Z${rNum} + AA${rNum} + AB${rNum} + AC${rNum}, 2)`, v: (Number(employee.salaryStructure?.grossSalary) || 0) - ((Number(ded.pf) || 0) + (Number(ded.professionalTax) || 0) + (Number(ded.tds) || 0)) + (Number(employee.flexiAmount) || 0) + (Number(employee.broadband) || 0) + (Number(employee.petrol) || 0) + (Number(employee.lta) || 0) },
           Number(employee.flexiAmount) || 0,
           Number(employee.broadband) || 0,
           Number(employee.petrol) || 0,
@@ -758,13 +784,13 @@ exports.exportEmployeesExcel = async (req, res) => {
           employee.uanNumber || '',
           employee.aadharNumber || '',
           employee.taxRegime || '',
-          employee.pfEnabled !== false ? 'Yes' : 'No',
+          pfEnabled,
           employee.esiEnabled !== false ? 'Yes' : 'No',
           employee.ptEnabled !== false ? 'Yes' : 'No',
           employee.lwfEnabled !== false ? 'Yes' : 'No',
-          employee.gratuityEnabled !== false ? 'Yes' : 'No',
-          employee.includePfInCTC !== false ? 'Yes' : 'No',
-          employee.includeGratuityInCTC !== false ? 'Yes' : 'No',
+          gratuityEnabled,
+          includePfInCTC,
+          includeGratuityInCTC,
           addr.line1 || '',
           addr.line2 || '',
           addr.city || '',
