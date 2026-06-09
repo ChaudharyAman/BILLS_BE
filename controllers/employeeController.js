@@ -265,7 +265,32 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
   };
 
   // Group: Salary Details
-  columns.push({ header: 'Monthly CTC', group: 'Salary Details', key: 'monthlyCTC', isSummable: true, sample: 50000 });
+  columns.push({
+    header: 'Annual CTC',
+    group: 'Salary Details',
+    key: 'annualCTC',
+    isSummable: true,
+    sample: 600000,
+    getValue: (employee, rNum, mode) => {
+      if (mode === 'template') return 600000;
+      return Number(employee?.monthlyCTC || 0) * 12;
+    }
+  });
+
+  columns.push({
+    header: 'Monthly CTC',
+    group: 'Salary Details',
+    key: 'monthlyCTC',
+    isSummable: true,
+    sample: 50000,
+    getValue: (employee, rNum, mode) => {
+      const annualCtcL = getColLetter('annualCTC');
+      const f = `${annualCtcL}${rNum} / 12`;
+      if (mode === 'template') return { f };
+      return { f, v: Number(employee?.monthlyCTC || 0) };
+    }
+  });
+
   columns.push({ header: 'Basic %', group: 'Salary Details', key: 'basicPercent', sample: basicDef * 100 });
   columns.push({ header: 'HRA %', group: 'Salary Details', key: 'hraPercent', sample: hraDef * 100 });
 
@@ -871,7 +896,13 @@ exports.importEmployees = async (req, res) => {
 
       const employeeId = String(getCellValue(rawRow, ['EMP NO', 'EMPLOYEE ID', 'EMP ID', 'EMP NO.']) || `EMP-${baseSequence}-${index + 1}`).trim();
       const emailRaw = String(getCellValue(rawRow, ['EMAIL', 'EMAIL ID']) || `${employeeId.toLowerCase()}@import.local`).trim().toLowerCase();
-      const monthlyCTC = Number(getCellValue(rawRow, ['MONTHLY CTC', 'CTC', 'MONTHLY SALARY'])) || 0;
+      let monthlyCTC = Number(getCellValue(rawRow, ['MONTHLY CTC', 'CTC', 'MONTHLY SALARY'])) || 0;
+      if (!monthlyCTC) {
+        const annualCTC = Number(getCellValue(rawRow, ['ANNUAL CTC', 'ANNUAL SALARY', 'YEARLY CTC'])) || 0;
+        if (annualCTC) {
+          monthlyCTC = annualCTC / 12;
+        }
+      }
       const location = String(getCellValue(rawRow, ['LOCATION', 'WORK LOCATION']) || '').trim();
       const joiningDate = parsePossibleDate(getCellValue(rawRow, ['DOJ', 'JOINING DATE', 'DATE OF JOINING'])) || new Date();
       const dateOfLeaving = parsePossibleDate(getCellValue(rawRow, ['DOL', 'DATE OF LEAVING']));
