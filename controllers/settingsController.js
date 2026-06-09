@@ -80,8 +80,12 @@ exports.updateSettings = async (req, res) => {
       defaultCurrency, timezone, dateFormat, integration
     };
 
-    // Remove undefined fields
-    Object.keys(settingsUpdate).forEach(key => settingsUpdate[key] === undefined && delete settingsUpdate[key]);
+    // Remove undefined fields and invalid "[object Object]" strings (common in multipart/form-data submissions)
+    Object.keys(settingsUpdate).forEach(key => {
+      if (settingsUpdate[key] === undefined || settingsUpdate[key] === '[object Object]') {
+        delete settingsUpdate[key];
+      }
+    });
 
     // Update User model if username/loginEmail provided
     if (username || loginEmail) {
