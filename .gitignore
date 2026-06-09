@@ -71,6 +71,7 @@ uploads/
 # Test output
 output.txt
 output_comp.txt
+SYSTEM_TEST_REPORT.md
 
 # Misc
 .cache/
