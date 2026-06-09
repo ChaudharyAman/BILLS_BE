@@ -270,8 +270,8 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   let pfBase = 0;
   if (pfEnabled) {
     if (config.pfCalculationType === 'fixed') {
-      pfEmployer = roundAmount(config.pfAmountEmployer);
-      pfEmployee = roundAmount(config.pfAmountEmployee);
+      pfEmployer = roundAmount(Math.min(config.pfAmountEmployer, basicMaster * config.pfEmployerRate));
+      pfEmployee = roundAmount(Math.min(config.pfAmountEmployee, basicMaster * config.pfRate));
       pfBase = pfEmployee;
     } else {
       pfBase = roundAmount(Math.min(basicMaster, config.pfCap));
