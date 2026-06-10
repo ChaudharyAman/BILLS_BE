@@ -44,57 +44,11 @@ const getCookieOptions = (req) => {
 
 // @desc    Register new user
 // @route   POST /api/auth/register
-// @access  Public
+// @access  Public (Disabled)
 exports.register = async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    let { email } = req.body;
-    
-    // Enforce lowercase email
-    if (email) email = email.toLowerCase();
-
-    // Check if user or email already exists
-    const existingUser = await User.findOne({ $or: [{ username }, { email }] });
-
-    if (existingUser) {
-      if (existingUser.email === email) {
-        return res.status(400).json({ message: 'Email is already registered' });
-      }
-      return res.status(400).json({ message: 'Username is already taken' });
-    }
-
-    // Create user
-    const user = await User.create({
-      username,
-      email,
-      password
-    });
-
-    if (user) {
-      const token = generateToken(user);
-      res.cookie('token', token, getCookieOptions(req));
-
-      res.status(201).json(buildAuthResponse(user));
-    } else {
-      res.status(400).json({ message: 'Invalid user data' });
-    }
-  } catch (error) {
-    console.error('Registration Error:', error);
-    
-    // Handle Mongoose Validation Errors
-    if (error.name === 'ValidationError') {
-        const messages = Object.values(error.errors).map(val => val.message);
-        return res.status(400).json({ message: messages.join(', ') });
-    }
-    
-    // Handle Duplicate Key Error (fallback)
-    if (error.code === 11000) {
-        return res.status(400).json({ message: 'User or Email already exists' });
-    }
-
-    console.error('CRITICAL SERVER ERROR during registration:', error);
-    res.status(500).json({ message: 'Server error during registration', error: error.message });
-  }
+  return res.status(403).json({
+    message: 'Public registration is disabled. Contact an administrator to create an account.'
+  });
 };
 
 // @desc    Authenticate user & get token
@@ -112,6 +66,10 @@ exports.login = async (req, res) => {
     });
 
     if (user && (await user.matchPassword(password))) {
+      if (user.isActive === false) {
+        return res.status(401).json({ message: 'Your account has been deactivated. Please contact your administrator.' });
+      }
+
       // Ensure users whose Pro end date has passed are downgraded at login.
       await syncExpiredSubscription(user);
 

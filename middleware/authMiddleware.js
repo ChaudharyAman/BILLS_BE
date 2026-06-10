@@ -21,6 +21,10 @@ const protect = async (req, res, next) => {
       return res.status(401).json({ message: 'Not authorized, user not found' });
     }
 
+    if (req.user.isActive === false) {
+      return res.status(401).json({ message: 'Not authorized, user account is deactivated' });
+    }
+
     // Keep plan state consistent: expired Pro users are auto-downgraded to free.
     if (req.user.subscription?.plan !== 'free') {
       await syncExpiredSubscription(req.user);

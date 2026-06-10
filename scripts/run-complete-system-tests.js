@@ -155,15 +155,15 @@ async function register(label) {
   const username = unique(label);
   const password = 'Pass@123456';
   const email = `${username}@example.com`;
-  const { response, data } = await api('POST', '/api/auth/register', {
-    expectedStatus: 201,
-    body: { username, email, password },
+  
+  const user = await User.create({
+    username,
+    email,
+    password,
   });
 
-  state.users[label] = { username, password, email, id: data.user._id };
-  ok(data.token === undefined, 'Auth response should not expose JWT token');
-  state.tokens[label] = cookieHeaderFromResponse(response);
-  return data.user;
+  state.users[label] = { username, password, email, id: String(user._id) };
+  return await login(label);
 }
 
 async function login(label) {
@@ -239,6 +239,15 @@ async function authAndAccessCases() {
   await run('Register admin user', async () => {
     const user = await register('admin');
     return user.username;
+  });
+
+  await run('Public self-registration is rejected with 403', async () => {
+    const tempUsername = unique('public-signup');
+    await api('POST', '/api/auth/register', {
+      expectedStatus: 403,
+      body: { username: tempUsername, email: `${tempUsername}@example.com`, password: 'Pass@123456' },
+    });
+    return '403 returned';
   });
 
   await run('Invalid login is rejected', async () => {
@@ -922,6 +931,70 @@ async function expenseAndBillingCases() {
     });
     ok(payments.data._id === state.users.pro.id, 'Admin payments endpoint returned wrong user');
     return `${users.data.length} users visible`;
+  });
+
+  await run('Admin user lifecycle (create, deactivate block, delete)', async () => {
+    const tempUsername = unique('temp-admin-user');
+    const tempEmail = `${tempUsername}@example.com`;
+    const tempPassword = 'Pass@123456';
+
+    // 1. Create User
+    const createRes = await api('POST', '/api/admin/users', {
+      token: state.tokens.admin,
+      expectedStatus: 201,
+      body: {
+        username: tempUsername,
+        email: tempEmail,
+        password: tempPassword,
+        role: 'user',
+        plan: 'pro',
+        billingCycle: 'monthly',
+        endDate: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString()
+      }
+    });
+    const tempUserId = createRes.data._id;
+    ok(tempUserId, 'User was not created');
+
+    // 2. Verify we can login
+    const loginRes = await api('POST', '/api/auth/login', {
+      expectedStatus: 200,
+      body: { username: tempUsername, password: tempPassword }
+    });
+    ok(loginRes.data.user.username === tempUsername, 'Failed to login as temp user');
+    const tempUserCookie = cookieHeaderFromResponse(loginRes.response);
+
+    // 3. Deactivate User
+    await api('PATCH', `/api/admin/users/${tempUserId}/plan`, {
+      token: state.tokens.admin,
+      expectedStatus: 200,
+      body: { isActive: false }
+    });
+
+    // 4. Verify login is blocked
+    await api('POST', '/api/auth/login', {
+      expectedStatus: 401,
+      body: { username: tempUsername, password: tempPassword }
+    });
+
+    // 5. Verify API request by deactivated user cookie is blocked
+    await api('GET', '/api/settings', {
+      token: tempUserCookie,
+      expectedStatus: 401
+    });
+
+    // 6. Delete User
+    await api('DELETE', `/api/admin/users/${tempUserId}`, {
+      token: state.tokens.admin,
+      expectedStatus: 200
+    });
+
+    // 7. Verify login fails because user is deleted
+    await api('POST', '/api/auth/login', {
+      expectedStatus: 401,
+      body: { username: tempUsername, password: tempPassword }
+    });
+
+    return 'Lifecycle verified';
   });
 
   skip('Browser-rendered frontend, print layouts, and modal UX', 'Needs Playwright/Cypress browser automation');
