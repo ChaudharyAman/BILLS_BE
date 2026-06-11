@@ -244,7 +244,11 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
   columns.push({ header: 'Date of Leaving', group: 'Employment Details', key: 'dateOfLeaving', sample: '', type: 'date' });
   columns.push({ header: 'Location', group: 'Employment Details', key: 'location', sample: 'Delhi' });
   columns.push({ header: 'Designation', group: 'Employment Details', key: 'designation', sample: 'Software Engineer' });
-  columns.push({ header: 'Department', group: 'Employment Details', key: 'department', sample: 'Engineering' });
+  columns.push({ header: 'Department', group: 'Employment Details', key: 'department', sample: 'Engineering', getValue: (employee) => {
+    if (!employee?.department) return '';
+    if (typeof employee.department === 'string') return employee.department;
+    return employee.department.name || '';
+  }});
   columns.push({ header: 'Employment Type', group: 'Employment Details', key: 'employmentType', sample: 'full-time' });
   columns.push({ header: 'Status', group: 'Employment Details', key: 'status', sample: 'active' });
 
@@ -866,7 +870,11 @@ exports.importEmployees = async (req, res) => {
     let imported = 0;
     let skipped = 0;
     const errors = [];
+    const importedEmployees = [];
+    const createdDepartments = [];
+    const warnings = [];
     const baseSequence = Date.now();
+    const createdDeptNames = new Set();
 
     const parseYesNo = (val) => {
       if (val === '' || val === undefined || val === null) return undefined;
@@ -1006,6 +1014,10 @@ exports.importEmployees = async (req, res) => {
             code,
             description: 'Auto-created during employee import',
           });
+          if (!createdDeptNames.has(departmentName.toLowerCase())) {
+            createdDeptNames.add(departmentName.toLowerCase());
+            createdDepartments.push({ name: departmentName, code });
+          }
         }
         if (dept) departmentId = dept._id;
       }
@@ -1122,9 +1134,31 @@ exports.importEmployees = async (req, res) => {
       const salaryStructure = buildSalaryStructureFromCTC(payload, config);
       payload.salaryStructure = salaryStructure;
 
+      // Collect per-row warnings for data quality issues
+      const rowWarnings = [];
+      if (emailRaw.endsWith('@import.local')) rowWarnings.push('Email auto-generated (not provided)');
+      if (!monthlyCTC) rowWarnings.push('No CTC specified');
+      if (!panNumber) rowWarnings.push('PAN missing');
+      if (!accountNumber) rowWarnings.push('Bank account missing');
+
       try {
-        await Employee.create(payload);
+        const created = await Employee.create(payload);
         imported += 1;
+        const empSummary = {
+          row: index + 2,
+          employeeId,
+          employeeName: `${firstName} ${lastName}`.trim(),
+          email: emailRaw,
+          monthlyCTC,
+          department: departmentName || null,
+          designation: designation || null,
+          status,
+        };
+        if (rowWarnings.length > 0) empSummary.warnings = rowWarnings;
+        importedEmployees.push(empSummary);
+        if (rowWarnings.length > 0) {
+          warnings.push({ row: index + 2, employeeId, employeeName: empSummary.employeeName, issues: rowWarnings });
+        }
       } catch (error) {
         skipped += 1;
         errors.push({
@@ -1137,7 +1171,34 @@ exports.importEmployees = async (req, res) => {
       }
     }
 
-    res.json({ imported, skipped, errors });
+    // Build summary statistics
+    const totalCTC = importedEmployees.reduce((sum, emp) => sum + (emp.monthlyCTC || 0), 0);
+    const byDepartment = {};
+    importedEmployees.forEach(emp => {
+      const dept = emp.department || 'Unassigned';
+      byDepartment[dept] = (byDepartment[dept] || 0) + 1;
+    });
+    const byStatus = {};
+    importedEmployees.forEach(emp => {
+      byStatus[emp.status] = (byStatus[emp.status] || 0) + 1;
+    });
+
+    res.json({
+      imported,
+      skipped,
+      totalRows: rows.length,
+      errors,
+      warnings,
+      importedEmployees,
+      createdDepartments,
+      summary: {
+        totalMonthlyCTC: Math.round(totalCTC * 100) / 100,
+        totalAnnualCTC: Math.round(totalCTC * 12 * 100) / 100,
+        byDepartment,
+        byStatus,
+        withWarnings: warnings.length,
+      },
+    });
   } catch (error) {
     console.error('Error importing employees:', error);
     res.status(500).json({ message: 'Server error importing employees' });
