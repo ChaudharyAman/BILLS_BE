@@ -26,7 +26,7 @@ app.use(cors({
     ].filter(Boolean);
 
     const allowLocalDevOrigin = process.env.NODE_ENV !== 'production';
-    const isLocalDevOrigin = allowLocalDevOrigin && typeof origin === 'string' && /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
+    const isLocalDevOrigin = allowLocalDevOrigin && typeof origin === 'string' && /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|[a-zA-Z0-9-]+\.local)(:\d+)?$/.test(origin);
 
     if (!origin || allowedOrigins.includes(origin) || isLocalDevOrigin) {
       return callback(null, true);

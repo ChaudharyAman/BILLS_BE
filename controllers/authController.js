@@ -76,7 +76,10 @@ exports.login = async (req, res) => {
       const token = generateToken(user);
       res.cookie('token', token, getCookieOptions(req));
 
-      res.json(buildAuthResponse(user));
+      res.json({
+        ...buildAuthResponse(user),
+        token
+      });
     } else {
       res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -89,7 +92,10 @@ exports.login = async (req, res) => {
 exports.me = async (req, res) => {
   const token = generateToken(req.user);
   res.cookie('token', token, getCookieOptions(req));
-  res.json(buildAuthResponse(req.user));
+  res.json({
+    ...buildAuthResponse(req.user),
+    token
+  });
 };
 
 // @desc    Update logged-in user's profile (username, email, phone, password)

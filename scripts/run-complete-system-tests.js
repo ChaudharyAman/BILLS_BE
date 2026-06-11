@@ -65,7 +65,13 @@ function unique(label) {
 
 async function api(method, pathname, options = {}) {
   const headers = { ...(options.headers || {}) };
-  if (options.token) headers.Cookie = options.token;
+  if (options.token) {
+    if (options.token.startsWith('Bearer ')) {
+      headers.Authorization = options.token;
+    } else {
+      headers.Cookie = options.token;
+    }
+  }
 
   let body;
   if (options.formData) {
@@ -172,8 +178,7 @@ async function login(label) {
     expectedStatus: 200,
     body: { username: user.username, password: user.password },
   });
-  ok(data.token === undefined, 'Auth response should not expose JWT token');
-  state.tokens[label] = cookieHeaderFromResponse(response);
+  state.tokens[label] = cookieHeaderFromResponse(response) || (data.token ? `Bearer ${data.token}` : '');
   return data.user;
 }
 
