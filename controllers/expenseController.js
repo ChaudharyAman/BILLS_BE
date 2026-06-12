@@ -105,6 +105,23 @@ exports.getExpenses = async (req, res) => {
 
     let query = { user: req.user._id };
     if (req.query.category) query.category = req.query.category;
+    if (req.query.excludeCategoryName) {
+      const Category = require('../models/Category');
+      const excludeCategory = await Category.findOne({
+        user: req.user._id,
+        name: req.query.excludeCategoryName,
+        type: 'expense'
+      });
+      if (excludeCategory) {
+        if (query.category) {
+          if (String(query.category) === String(excludeCategory._id)) {
+            query.category = null;
+          }
+        } else {
+          query.category = { $ne: excludeCategory._id };
+        }
+      }
+    }
     if (req.query.subCategory) query.subCategory = req.query.subCategory;
     if (req.query.project) query.project = req.query.project;
 

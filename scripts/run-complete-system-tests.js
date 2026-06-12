@@ -1066,6 +1066,337 @@ async function payrollAndEmployeeCases() {
     return employeeId;
   });
 
+  await run('Mid-month salary revision weighted CTC proration', async () => {
+    // 1. Revise salary effective mid-month (June 16th, 2026)
+    // Old CTC was 12000 (effective June 1st).
+    // New CTC is 15000 effective June 16th, 2026.
+    // Days in June 2026 = 30.
+    // June 1 to June 15 = 15 days @ 12000.
+    // June 16 to June 30 = 15 days @ 15000.
+    // Expected weighted CTC = (15 * 12000 + 15 * 15000) / 30 = 13500.
+    const revise = await api('POST', `/api/employees/${state.ids.employee}/salary-revision`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        newCTC: 15000,
+        effectiveDate: '2026-06-16',
+        reason: 'Promotion'
+      }
+    });
+    ok(revise.data.monthlyCTC === 15000, 'Salary revision new CTC mismatch');
+
+    // 2. Process payroll draft for June 2026
+    const process = await api('POST', '/api/payroll/process', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        month: 6,
+        year: 2026,
+        saveAsDraft: true,
+        employees: [{
+          employeeId: state.ids.employee,
+          workingDays: 30,
+          paidDays: 30,
+          paidLeaves: 0,
+          unpaidLeaves: 0,
+          adjustments: {
+            pfEnabled: true,
+            esiEnabled: true,
+            ptEnabled: true,
+            lwfEnabled: true,
+            gratuityEnabled: true,
+            includePfInCTC: true,
+            includeGratuityInCTC: true,
+            basicPercent: 50,
+            hraPercent: 50,
+            tds: 0
+          }
+        }]
+      }
+    });
+    ok(process.data.success.length === 1, 'Payroll process bulk run failed');
+    const payrollId = process.data.success[0].payrollId;
+
+    // 3. Fetch processed payroll draft and assert details
+    const getPayroll = await api('GET', `/api/payroll/${payrollId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+
+    const snapshotCTC = getPayroll.data.employeeSnapshot?.monthlyCTC;
+    ok(snapshotCTC === 13500, `Expected weighted monthlyCTC of 13500, got: ${snapshotCTC}`);
+
+    const basicEarning = getPayroll.data.earnings?.basic;
+    ok(basicEarning === 6750, `Expected Basic Earning of 6750 (50% of 13500), got: ${basicEarning}`);
+
+    // Verify salarySplits are computed and returned
+    ok(Array.isArray(getPayroll.data.salarySplits), 'Expected salarySplits to be an array');
+    ok(getPayroll.data.salarySplits.length === 2, `Expected 2 splits, got: ${getPayroll.data.salarySplits.length}`);
+    ok(getPayroll.data.salarySplits[0].monthlyCTC === 12000, `Expected segment 1 CTC 12000, got: ${getPayroll.data.salarySplits[0].monthlyCTC}`);
+    ok(getPayroll.data.salarySplits[1].monthlyCTC === 15000, `Expected segment 2 CTC 15000, got: ${getPayroll.data.salarySplits[1].monthlyCTC}`);
+    ok(getPayroll.data.salarySplits[0].daysCount === 15, `Expected segment 1 to have 15 days, got: ${getPayroll.data.salarySplits[0].daysCount}`);
+    ok(getPayroll.data.salarySplits[1].daysCount === 15, `Expected segment 2 to have 15 days, got: ${getPayroll.data.salarySplits[1].daysCount}`);
+
+    // Verify generate-payslip returns splits
+    const getPayslip = await api('GET', `/api/payroll/${payrollId}/generate-payslip`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    const payslipSplits = getPayslip.data.payslip?.salarySplits;
+    ok(Array.isArray(payslipSplits), 'Expected payslip salarySplits to be an array');
+    ok(payslipSplits.length === 2, `Expected 2 payslip splits, got: ${payslipSplits.length}`);
+
+    // Return result summary
+    return `Weighted CTC: ${snapshotCTC}, Basic: ${basicEarning}`;
+  });
+
+  await run('Mid-month salary revision with statutory toggle changes', async () => {
+    // 1. Create a new employee with CTC 20,000, joining July 1st, 2026. pfEnabled = true.
+    const employeeId = unique('EMP-TOGGLE');
+    const create = await api('POST', '/api/employees', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        employeeId,
+        firstName: 'Test',
+        lastName: 'Toggles',
+        email: `${employeeId}@test.com`,
+        joiningDate: '2026-07-01',
+        monthlyCTC: 20000,
+        pfEnabled: true,
+        esiEnabled: false,
+        ptEnabled: false,
+        lwfEnabled: false,
+        gratuityEnabled: false,
+        includePfInCTC: true,
+        includeGratuityInCTC: false
+      }
+    });
+    const targetEmpId = create.data._id;
+
+    // 2. Revise salary effective July 16th, 2026. newCTC = 30000, pfEnabled = false.
+    await api('POST', `/api/employees/${targetEmpId}/salary-revision`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        newCTC: 30000,
+        effectiveDate: '2026-07-16',
+        reason: 'Change toggles',
+        pfEnabled: false,
+        esiEnabled: false,
+        ptEnabled: false,
+        lwfEnabled: false,
+        gratuityEnabled: false,
+        includePfInCTC: true,
+        includeGratuityInCTC: false
+      }
+    });
+
+    // 3. Process payroll draft for July 2026 (31 days)
+    const process = await api('POST', '/api/payroll/process', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        month: 7,
+        year: 2026,
+        saveAsDraft: true,
+        employees: [{
+          employeeId: targetEmpId,
+          workingDays: 31,
+          paidDays: 31,
+          paidLeaves: 0,
+          unpaidLeaves: 0,
+          adjustments: {
+            esiEnabled: false,
+            ptEnabled: false,
+            lwfEnabled: false,
+            gratuityEnabled: false,
+            includePfInCTC: true,
+            includeGratuityInCTC: false,
+            basicPercent: 50,
+            hraPercent: 50,
+            tds: 0
+          }
+        }]
+      }
+    });
+    ok(process.data.success.length === 1, 'Payroll process bulk run failed');
+    const payrollId = process.data.success[0].payrollId;
+
+    // 4. Fetch processed payroll draft and assert details
+    const getPayroll = await api('GET', `/api/payroll/${payrollId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+
+    const snapshotCTC = getPayroll.data.employeeSnapshot?.monthlyCTC;
+    // (15 days * 20000 + 16 * 30000) / 31 = (300000 + 480000) / 31 = 780000 / 31 = 25161.29
+    ok(Math.abs(snapshotCTC - 25161.29) < 0.1, `Expected weighted monthlyCTC ~25161.29, got: ${snapshotCTC}`);
+
+    const pfEmployee = getPayroll.data.deductions?.pfEmployee;
+    // 15 days * (20000 * 0.50 * 0.12 = 1200 / 31 = 38.71) = 580.65
+    // 16 days * 0 = 0
+    // Total expected: 580.65
+    ok(Math.abs(pfEmployee - 580.65) < 0.1, `Expected prorated PF of 580.65, got: ${pfEmployee}`);
+
+    return `Weighted CTC: ${snapshotCTC}, Prorated PF: ${pfEmployee}`;
+  });
+
+  await run('Mid-month salary revision with LOP deduction strategies (older_first / newer_first)', async () => {
+    const employeeId = unique('EMP-LOPSTRAT');
+    const create = await api('POST', '/api/employees', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        employeeId,
+        firstName: 'Lop',
+        lastName: 'Strategies',
+        email: `${employeeId}@test.com`,
+        joiningDate: '2026-06-01',
+        monthlyCTC: 10000,
+        pfEnabled: false,
+        esiEnabled: false,
+        ptEnabled: false,
+        lwfEnabled: false,
+        gratuityEnabled: false,
+        includePfInCTC: false,
+        includeGratuityInCTC: false
+      }
+    });
+    const targetEmpId = create.data._id;
+
+    await api('POST', `/api/employees/${targetEmpId}/salary-revision`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        newCTC: 20000,
+        effectiveDate: '2026-06-16',
+        reason: 'LOP strategies test'
+      }
+    });
+
+    const processOlder = await api('POST', '/api/payroll/process', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        month: 6,
+        year: 2026,
+        saveAsDraft: true,
+        employees: [{
+          employeeId: targetEmpId,
+          workingDays: 30,
+          paidDays: 28,
+          paidLeaves: 0,
+          unpaidLeaves: 2,
+          adjustments: {
+            esiEnabled: false,
+            ptEnabled: false,
+            lwfEnabled: false,
+            gratuityEnabled: false,
+            includePfInCTC: false,
+            includeGratuityInCTC: false,
+            basicPercent: 50,
+            hraPercent: 50,
+            tds: 0,
+            lopStrategy: 'older_first'
+          }
+        }]
+      }
+    });
+    const payrollIdOlder = processOlder.data.success[0].payrollId;
+
+    const getPayrollOlder = await api('GET', `/api/payroll/${payrollIdOlder}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    const basicOlder = getPayrollOlder.data.earnings?.basic;
+    ok(Math.abs(basicOlder - 7166.67) < 1.0, `Expected older_first Basic ~7166.67, got: ${basicOlder}`);
+
+    const Payroll = require('../models/Payroll');
+    await Payroll.deleteOne({ _id: payrollIdOlder });
+
+    const processNewer = await api('POST', '/api/payroll/process', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        month: 6,
+        year: 2026,
+        saveAsDraft: true,
+        employees: [{
+          employeeId: targetEmpId,
+          workingDays: 30,
+          paidDays: 28,
+          paidLeaves: 0,
+          unpaidLeaves: 2,
+          adjustments: {
+            esiEnabled: false,
+            ptEnabled: false,
+            lwfEnabled: false,
+            gratuityEnabled: false,
+            includePfInCTC: false,
+            includeGratuityInCTC: false,
+            basicPercent: 50,
+            hraPercent: 50,
+            tds: 0,
+            lopStrategy: 'newer_first'
+          }
+        }]
+      }
+    });
+    const payrollIdNewer = processNewer.data.success[0].payrollId;
+
+    const getPayrollNewer = await api('GET', `/api/payroll/${payrollIdNewer}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    const basicNewer = getPayrollNewer.data.earnings?.basic;
+    ok(Math.abs(basicNewer - 6833.33) < 1.0, `Expected newer_first Basic ~6833.33, got: ${basicNewer}`);
+
+    await Payroll.deleteOne({ _id: payrollIdNewer });
+
+    const processCustom = await api('POST', '/api/payroll/process', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        month: 6,
+        year: 2026,
+        saveAsDraft: true,
+        employees: [{
+          employeeId: targetEmpId,
+          workingDays: 30,
+          paidDays: 28,
+          paidLeaves: 0,
+          unpaidLeaves: 2,
+          adjustments: {
+            esiEnabled: false,
+            ptEnabled: false,
+            lwfEnabled: false,
+            gratuityEnabled: false,
+            includePfInCTC: false,
+            includeGratuityInCTC: false,
+            basicPercent: 50,
+            hraPercent: 50,
+            tds: 0,
+            lopStrategy: 'custom',
+            segmentLops: [1.5, 0.5]
+          }
+        }]
+      }
+    });
+    const payrollIdCustom = processCustom.data.success[0].payrollId;
+
+    const getPayrollCustom = await api('GET', `/api/payroll/${payrollIdCustom}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    const basicCustom = getPayrollCustom.data.earnings?.basic;
+    ok(Math.abs(basicCustom - 7083.33) < 1.0, `Expected custom Basic ~7083.33, got: ${basicCustom}`);
+
+    await Payroll.deleteOne({ _id: payrollIdCustom });
+
+    return `older_first Basic: ${basicOlder}, newer_first Basic: ${basicNewer}, custom Basic: ${basicCustom}`;
+  });
+
   await run('Loan create, approve, and payroll EMI amortization', async () => {
     // Create loan
     const create = await api('POST', '/api/loans', {

@@ -23,6 +23,72 @@ const sumNamedAmounts = (items = []) => items.reduce((sum, item) => sum + (Numbe
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
+const getSegmentLops = (totalLop, workingDays, totalDays, strategy = 'proportional', segments = [], customLops = []) => {
+  const segmentLops = new Array(segments.length).fill(0);
+  if (totalLop <= 0 || segments.length === 0) return segmentLops;
+
+  if (strategy === 'custom') {
+    let sum = 0;
+    for (let i = 0; i < segments.length; i++) {
+      segmentLops[i] = Number(customLops[i]) || 0;
+      sum += segmentLops[i];
+    }
+    for (let i = 0; i < segments.length; i++) {
+      const segWorkingDays = (segments[i].daysCount / totalDays) * workingDays;
+      segmentLops[i] = Math.max(0, Math.min(segWorkingDays, segmentLops[i]));
+    }
+  } else if (strategy === 'older_first') {
+    let remainingLop = totalLop;
+    for (let i = 0; i < segments.length; i++) {
+      const segWorkingDays = (segments[i].daysCount / totalDays) * workingDays;
+      const segLop = Math.min(remainingLop, segWorkingDays);
+      segmentLops[i] = roundAmount(segLop);
+      remainingLop -= segLop;
+    }
+  } else if (strategy === 'newer_first') {
+    let remainingLop = totalLop;
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const segWorkingDays = (segments[i].daysCount / totalDays) * workingDays;
+      const segLop = Math.min(remainingLop, segWorkingDays);
+      segmentLops[i] = roundAmount(segLop);
+      remainingLop -= segLop;
+    }
+  } else {
+    // proportional
+    for (let i = 0; i < segments.length; i++) {
+      const segRatio = segments[i].daysCount / totalDays;
+      segmentLops[i] = roundAmount(segRatio * totalLop);
+    }
+  }
+  return segmentLops;
+};
+
+const getDayProrateArray = (totalDays, workingDays, paidDays, strategy = 'proportional', segmentLops = [], segments = []) => {
+  const dayProrate = new Array(totalDays).fill(1);
+  if (workingDays <= 0) return dayProrate;
+  const ratio = Math.min(paidDays / workingDays, 1);
+  if (ratio >= 1) return dayProrate;
+
+  if (segments.length === 0) {
+    dayProrate.fill(ratio);
+    return dayProrate;
+  }
+
+  const computedLops = getSegmentLops(workingDays - paidDays, workingDays, totalDays, strategy, segments, segmentLops);
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const segLop = computedLops[i] || 0;
+    const segRatio = seg.daysCount / totalDays;
+    const segWorkingDays = segRatio * workingDays;
+    const segProrate = segWorkingDays > 0 ? Math.max(0, Math.min(1, (segWorkingDays - segLop) / segWorkingDays)) : 1;
+    for (let d = seg.startDay; d <= seg.endDay; d++) {
+      dayProrate[d - 1] = segProrate;
+    }
+  }
+  return dayProrate;
+};
+
 const normalizeConfig = (config = {}) => {
   const getNum = (val, def) => {
     const n = Number(val);
@@ -461,32 +527,236 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   };
 };
 
-const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustments = {}, monthNum) => {
+const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustments = {}, monthNum, yearNum) => {
   const employee = (employeeInput && typeof employeeInput.toObject === 'function')
     ? employeeInput.toObject()
     : employeeInput;
   const config = normalizeConfig(configInput);
   
-  const mergedSource = {
-    ...employee,
-    pfEnabled: adjustments.pfEnabled !== undefined ? adjustments.pfEnabled : (employee.pfEnabled !== false),
-    esiEnabled: adjustments.esiEnabled !== undefined ? adjustments.esiEnabled : (employee.esiEnabled !== false),
-    ptEnabled: adjustments.ptEnabled !== undefined ? adjustments.ptEnabled : (employee.ptEnabled !== false),
-    lwfEnabled: adjustments.lwfEnabled !== undefined ? adjustments.lwfEnabled : (employee.lwfEnabled !== false),
-    gratuityEnabled: adjustments.gratuityEnabled !== undefined ? adjustments.gratuityEnabled : (employee.gratuityEnabled !== false),
-    includePfInCTC: adjustments.includePfInCTC !== undefined ? adjustments.includePfInCTC : (employee.includePfInCTC !== false),
-    includeGratuityInCTC: adjustments.includeGratuityInCTC !== undefined ? adjustments.includeGratuityInCTC : (employee.includeGratuityInCTC !== false),
-    basicPercent: adjustments.basicPercent !== undefined && adjustments.basicPercent !== null ? adjustments.basicPercent : employee.basicPercent,
-    hraPercent: adjustments.hraPercent !== undefined && adjustments.hraPercent !== null ? adjustments.hraPercent : employee.hraPercent,
+  const year = Number(yearNum) || Number(attendance?.year) || Number(adjustments?.year) || new Date().getFullYear();
+  const month = Number(monthNum) || Number(attendance?.month) || Number(adjustments?.month) || (new Date().getMonth() + 1);
+
+  const getYYYYMMDD = (dateVal) => {
+    const dateObj = new Date(dateVal);
+    if (isNaN(dateObj.getTime())) return '';
+    const y = dateObj.getUTCFullYear();
+    const m = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(dateObj.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
   };
 
-  const master = buildMasterSalaryStructure(mergedSource, config);
+  const getEmployeeParamsForDate = (dateStr) => {
+    const revisions = [...(employee.salaryRevisions || [])].sort((a, b) => new Date(a.effectiveDate) - new Date(b.effectiveDate));
+    if (revisions.length === 0) {
+      return employee;
+    }
+    const latestRevision = revisions[revisions.length - 1];
+    const latestRevDateStr = getYYYYMMDD(latestRevision.effectiveDate);
+    if (dateStr >= latestRevDateStr) {
+      return employee;
+    }
+    let activeRevision = null;
+    for (let i = revisions.length - 1; i >= 0; i--) {
+      const revDateStr = getYYYYMMDD(revisions[i].effectiveDate);
+      if (revDateStr && revDateStr <= dateStr) {
+        activeRevision = revisions[i];
+        break;
+      }
+    }
+    if (!activeRevision) {
+      activeRevision = revisions[0];
+    }
+
+    const getVal = (field, def) => {
+      if (activeRevision && activeRevision[field] !== undefined && activeRevision[field] !== null) {
+        return activeRevision[field];
+      }
+      if (employee[field] !== undefined && employee[field] !== null) {
+        return employee[field];
+      }
+      return def;
+    };
+
+    const getDeductionVal = (field, def) => {
+      if (activeRevision && activeRevision.deductions && activeRevision.deductions[field] !== undefined && activeRevision.deductions[field] !== null) {
+        return activeRevision.deductions[field];
+      }
+      if (employee.deductions && employee.deductions[field] !== undefined && employee.deductions[field] !== null) {
+        return employee.deductions[field];
+      }
+      return def;
+    };
+
+    const getStructureVal = (field, def) => {
+      if (activeRevision && activeRevision.salaryStructure && activeRevision.salaryStructure[field] !== undefined && activeRevision.salaryStructure[field] !== null) {
+        return activeRevision.salaryStructure[field];
+      }
+      if (employee.salaryStructure && employee.salaryStructure[field] !== undefined && employee.salaryStructure[field] !== null) {
+        return employee.salaryStructure[field];
+      }
+      return def;
+    };
+
+    let monthlyCTC = Number(activeRevision.newCTC) || Number(activeRevision.monthlyCTC) || 0;
+    if (!monthlyCTC && activeRevision === revisions[0]) {
+      monthlyCTC = Number(revisions[0].previousCTC) || Number(employee.monthlyCTC) || 0;
+    }
+
+    return {
+      monthlyCTC,
+      pfEnabled: getVal('pfEnabled', true),
+      esiEnabled: getVal('esiEnabled', true),
+      ptEnabled: getVal('ptEnabled', true),
+      lwfEnabled: getVal('lwfEnabled', true),
+      gratuityEnabled: getVal('gratuityEnabled', true),
+      includePfInCTC: getVal('includePfInCTC', true),
+      includeGratuityInCTC: getVal('includeGratuityInCTC', true),
+      basicPercent: getVal('basicPercent', null),
+      hraPercent: getVal('hraPercent', null),
+      joiningBonus: getVal('joiningBonus', 0),
+      flexiAmount: getVal('flexiAmount', 0),
+      broadband: getVal('broadband', 0),
+      petrol: getVal('petrol', 0),
+      lta: getVal('lta', 0),
+      employerNPS: getVal('employerNPS', 0),
+      insuranceAmount: getVal('insuranceAmount', 0),
+      deductions: {
+        tds: getDeductionVal('tds', 0),
+        professionalTax: getDeductionVal('professionalTax', 0),
+        otherDeductions: getDeductionVal('otherDeductions', []),
+      },
+      salaryStructure: {
+        conveyance: getStructureVal('conveyance', 0),
+        medicalAllowance: getStructureVal('medicalAllowance', 0),
+        otherAllowances: getStructureVal('otherAllowances', []),
+      },
+    };
+  };
+
+  const totalDaysInMonth = new Date(year, month, 0).getDate();
+  const dailyStructures = [];
+  const dailyOtherAllowances = [];
+  const dailyOtherDeductions = [];
+
+  for (let d = 1; d <= totalDaysInMonth; d++) {
+    const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const activeParams = getEmployeeParamsForDate(currentStr);
+    
+    const daySource = {
+      ...activeParams,
+      pfEnabled: adjustments.pfEnabled !== undefined ? adjustments.pfEnabled : activeParams.pfEnabled,
+      esiEnabled: adjustments.esiEnabled !== undefined ? adjustments.esiEnabled : activeParams.esiEnabled,
+      ptEnabled: adjustments.ptEnabled !== undefined ? adjustments.ptEnabled : activeParams.ptEnabled,
+      lwfEnabled: adjustments.lwfEnabled !== undefined ? adjustments.lwfEnabled : activeParams.lwfEnabled,
+      gratuityEnabled: adjustments.gratuityEnabled !== undefined ? adjustments.gratuityEnabled : activeParams.gratuityEnabled,
+      includePfInCTC: adjustments.includePfInCTC !== undefined ? adjustments.includePfInCTC : activeParams.includePfInCTC,
+      includeGratuityInCTC: adjustments.includeGratuityInCTC !== undefined ? adjustments.includeGratuityInCTC : activeParams.includeGratuityInCTC,
+      basicPercent: adjustments.basicPercent !== undefined && adjustments.basicPercent !== null ? adjustments.basicPercent : activeParams.basicPercent,
+      hraPercent: adjustments.hraPercent !== undefined && adjustments.hraPercent !== null ? adjustments.hraPercent : activeParams.hraPercent,
+    };
+
+    const dayMaster = buildMasterSalaryStructure(daySource, config);
+    dailyStructures.push(dayMaster);
+    dailyOtherAllowances.push(daySource.salaryStructure?.otherAllowances || []);
+    dailyOtherDeductions.push(daySource.deductions?.otherDeductions || []);
+  }
+
+  const master = {};
+  const sample = dailyStructures[0] || {};
+  for (const [key, val] of Object.entries(sample)) {
+    if (typeof val === 'number') {
+      let sum = 0;
+      for (const ds of dailyStructures) {
+        sum += ds[key] || 0;
+      }
+      master[key] = roundAmount(sum / totalDaysInMonth);
+    } else if (typeof val === 'boolean') {
+      master[key] = dailyStructures[dailyStructures.length - 1][key];
+    } else {
+      master[key] = val;
+    }
+  }
+
+  const averagedEarningsMap = {};
+  for (const ds of dailyStructures) {
+    if (ds.earningsMap) {
+      for (const [key, val] of Object.entries(ds.earningsMap)) {
+        averagedEarningsMap[key] = (averagedEarningsMap[key] || 0) + val;
+      }
+    }
+  }
+  for (const key of Object.keys(averagedEarningsMap)) {
+    averagedEarningsMap[key] = roundAmount(averagedEarningsMap[key] / totalDaysInMonth);
+  }
+  master.earningsMap = averagedEarningsMap;
+
+  const allowanceMap = {};
+  for (let i = 0; i < totalDaysInMonth; i++) {
+    const list = dailyOtherAllowances[i] || [];
+    for (const item of list) {
+      if (item.name) {
+        allowanceMap[item.name] = (allowanceMap[item.name] || 0) + (Number(item.amount) || 0) / totalDaysInMonth;
+      }
+    }
+  }
+  const averagedOtherAllowances = Object.entries(allowanceMap).map(([name, amount]) => ({
+    name,
+    amount: roundAmount(amount)
+  }));
+
+  const deductionMap = {};
+  for (let i = 0; i < totalDaysInMonth; i++) {
+    const list = dailyOtherDeductions[i] || [];
+    for (const item of list) {
+      if (item.name) {
+        deductionMap[item.name] = (deductionMap[item.name] || 0) + (Number(item.amount) || 0) / totalDaysInMonth;
+      }
+    }
+  }
+  const averagedOtherDeductions = Object.entries(deductionMap).map(([name, amount]) => ({
+    name,
+    amount: roundAmount(amount)
+  }));
+
   const requestedWorkingDays = Number(attendance?.workingDays);
   const workingDays = Math.max(requestedWorkingDays || config.defaultWorkingDays, 1);
   const rawPaidDays = Number(attendance?.paidDays ?? attendance?.presentDays ?? workingDays);
   const paidDays = roundAmount(clamp(rawPaidDays || workingDays, 0, workingDays));
   const prorate = Math.min(paidDays / workingDays, 1);
   const lop = roundAmount(Math.max(workingDays - paidDays, 0));
+
+  const segments = [];
+  let currentSegment = null;
+
+  for (let d = 1; d <= totalDaysInMonth; d++) {
+    const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const activeParams = getEmployeeParamsForDate(currentStr);
+    const key = `${activeParams.monthlyCTC}-${activeParams.pfEnabled}-${activeParams.esiEnabled}-${activeParams.gratuityEnabled}`;
+
+    if (!currentSegment || currentSegment.key !== key) {
+      if (currentSegment) {
+        segments.push(currentSegment);
+      }
+      currentSegment = {
+        key,
+        startDay: d,
+        endDay: d,
+        activeParams,
+        daysCount: 1
+      };
+    } else {
+      currentSegment.endDay = d;
+      currentSegment.daysCount += 1;
+    }
+  }
+  if (currentSegment) {
+    segments.push(currentSegment);
+  }
+
+  const lopStrategy = adjustments.lopStrategy || 'proportional';
+  const customSegmentLops = adjustments.segmentLops || [];
+  const segmentLops = getSegmentLops(workingDays - paidDays, workingDays, totalDaysInMonth, lopStrategy, segments, customSegmentLops);
+  const dayProrate = getDayProrateArray(totalDaysInMonth, workingDays, paidDays, lopStrategy, customSegmentLops, segments);
 
   let otherEarnings = [];
   if (Array.isArray(adjustments.otherEarnings) && adjustments.otherEarnings.length > 0) {
@@ -495,10 +765,18 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       amount: roundAmount(item.amount)
     }));
   } else {
-    const profileAllowances = employee.salaryStructure?.otherAllowances || [];
-    otherEarnings = profileAllowances.map(item => ({
-      name: item.name,
-      amount: roundAmount((Number(item.amount) || 0) * prorate)
+    const otherEarningsMap = {};
+    for (let d = 0; d < totalDaysInMonth; d++) {
+      const list = dailyOtherAllowances[d] || [];
+      for (const item of list) {
+        if (item.name) {
+          otherEarningsMap[item.name] = (otherEarningsMap[item.name] || 0) + (Number(item.amount) || 0) * dayProrate[d] / totalDaysInMonth;
+        }
+      }
+    }
+    otherEarnings = Object.entries(otherEarningsMap).map(([name, amount]) => ({
+      name,
+      amount: roundAmount(amount)
     }));
   }
 
@@ -509,8 +787,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       amount: roundAmount(item.amount)
     }));
   } else {
-    const profileDeductions = employee.deductions?.otherDeductions || [];
-    otherDeductions = profileDeductions.map(item => ({
+    otherDeductions = averagedOtherDeductions.map(item => ({
       name: item.name,
       amount: roundAmount(Number(item.amount) || 0)
     }));
@@ -535,8 +812,13 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     };
     config.salaryComponents.forEach(c => {
       if (c.type === 'earning') {
-        const masterVal = master.earningsMap?.[c.id] ?? master[c.id] ?? 0;
-        let proratedVal = roundAmount(masterVal * prorate);
+        let sumEarningVal = 0;
+        for (let d = 0; d < totalDaysInMonth; d++) {
+          const ds = dailyStructures[d];
+          const dailyVal = ds.earningsMap?.[c.id] ?? ds[c.id] ?? 0;
+          sumEarningVal += (dailyVal / totalDaysInMonth) * dayProrate[d];
+        }
+        let proratedVal = roundAmount(sumEarningVal);
         if (!isMatchingFrequency(c.frequency, monthNum)) {
           proratedVal = 0;
         }
@@ -573,17 +855,25 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       sumNamedAmounts(earnings.otherEarnings)
     );
   } else {
+    const sumDailyComponent = (compField) => {
+      let sum = 0;
+      for (let d = 0; d < totalDaysInMonth; d++) {
+        sum += (dailyStructures[d][compField] / totalDaysInMonth) * dayProrate[d];
+      }
+      return roundAmount(sum);
+    };
+
     earnings = {
-      basic: roundAmount(master.basicMaster * prorate),
-      hra: roundAmount(master.hraMaster * prorate),
-      flexiAmount: roundAmount(master.flexi * prorate),
-      broadband: roundAmount(master.broadband * prorate),
-      petrol: roundAmount(master.petrol * prorate),
-      lta: roundAmount(master.lta * prorate),
-      specialAllowance: roundAmount(master.specialAllowance * prorate),
+      basic: sumDailyComponent('basicMaster'),
+      hra: sumDailyComponent('hraMaster'),
+      flexiAmount: sumDailyComponent('flexi'),
+      broadband: sumDailyComponent('broadband'),
+      petrol: sumDailyComponent('petrol'),
+      lta: sumDailyComponent('lta'),
+      specialAllowance: sumDailyComponent('specialAllowance'),
       overtime: roundAmount(adjustments.overtime),
-      conveyance: roundAmount(master.conveyance * prorate),
-      medicalAllowance: roundAmount(master.medicalAllowance * prorate),
+      conveyance: sumDailyComponent('conveyance'),
+      medicalAllowance: sumDailyComponent('medicalAllowance'),
       otherEarnings,
     };
     earnings.totalEarnings = roundAmount(
@@ -592,7 +882,19 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     );
   }
 
-  const esiEmployer = roundAmount(master.esiApplicable ? earnings.basic * config.esiEmployerRate : 0);
+  let sumEsiEmployee = 0;
+  let sumEsiEmployer = 0;
+  for (let d = 0; d < totalDaysInMonth; d++) {
+    const ds = dailyStructures[d];
+    const dailyBasic = (ds.basicMaster / totalDaysInMonth) * dayProrate[d];
+    const dailyEsiEmployee = ds.esiApplicable ? dailyBasic * config.esiEmployeeRate : 0;
+    const dailyEsiEmployer = ds.esiApplicable ? dailyBasic * config.esiEmployerRate : 0;
+    sumEsiEmployee += dailyEsiEmployee;
+    sumEsiEmployer += dailyEsiEmployer;
+  }
+  const esiEmployee = roundAmount(sumEsiEmployee);
+  const esiEmployer = roundAmount(sumEsiEmployer);
+
   const employerContributions = {
     pfEmployer: master.pfEmployer,
     esiEmployer,
@@ -628,7 +930,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
 
   const deductions = {
     pfEmployee: master.pfEmployee,
-    esiEmployee: roundAmount(master.esiApplicable ? earnings.basic * config.esiEmployeeRate : 0),
+    esiEmployee,
     professionalTax: master.ptEnabled ? roundAmount(employee.deductions?.professionalTax) : 0,
     tds: roundAmount(adjustments.tds ?? (Number(employee.deductions?.tds) > 0 ? employee.deductions.tds : master.tds)),
     insuranceEmployee: roundAmount(adjustments.insuranceEmployee),
@@ -664,7 +966,240 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     unpaidLeaves: roundAmount(attendance?.unpaidLeaves),
     prorate: roundAmount(prorate),
     master,
+    lopStrategy,
+    segmentLops,
   };
+};
+
+const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDaysCount, workingDaysCount, adjustments = {}) => {
+  const employee = (employeeInput && typeof employeeInput.toObject === 'function')
+    ? employeeInput.toObject()
+    : employeeInput;
+  const config = normalizeConfig(configInput);
+  
+  const year = Number(yearNum) || new Date().getFullYear();
+  const month = Number(monthNum) || (new Date().getMonth() + 1);
+  const totalDaysInMonth = new Date(year, month, 0).getDate();
+  
+  const getYYYYMMDD = (dateVal) => {
+    const dateObj = new Date(dateVal);
+    if (isNaN(dateObj.getTime())) return '';
+    const y = dateObj.getUTCFullYear();
+    const m = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(dateObj.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const getEmployeeParamsForDate = (dateStr) => {
+    const revisions = [...(employee.salaryRevisions || [])].sort((a, b) => new Date(a.effectiveDate) - new Date(b.effectiveDate));
+    if (revisions.length === 0) {
+      return employee;
+    }
+    const latestRevision = revisions[revisions.length - 1];
+    const latestRevDateStr = getYYYYMMDD(latestRevision.effectiveDate);
+    if (dateStr >= latestRevDateStr) {
+      return employee;
+    }
+    let activeRevision = null;
+    for (let i = revisions.length - 1; i >= 0; i--) {
+      const revDateStr = getYYYYMMDD(revisions[i].effectiveDate);
+      if (revDateStr && revDateStr <= dateStr) {
+        activeRevision = revisions[i];
+        break;
+      }
+    }
+    if (!activeRevision) {
+      activeRevision = revisions[0];
+    }
+
+    const getVal = (field, def) => {
+      if (activeRevision && activeRevision[field] !== undefined && activeRevision[field] !== null) {
+        return activeRevision[field];
+      }
+      if (employee[field] !== undefined && employee[field] !== null) {
+        return employee[field];
+      }
+      return def;
+    };
+
+    const getDeductionVal = (field, def) => {
+      if (activeRevision && activeRevision.deductions && activeRevision.deductions[field] !== undefined && activeRevision.deductions[field] !== null) {
+        return activeRevision.deductions[field];
+      }
+      if (employee.deductions && employee.deductions[field] !== undefined && employee.deductions[field] !== null) {
+        return employee.deductions[field];
+      }
+      return def;
+    };
+
+    const getStructureVal = (field, def) => {
+      if (activeRevision && activeRevision.salaryStructure && activeRevision.salaryStructure[field] !== undefined && activeRevision.salaryStructure[field] !== null) {
+        return activeRevision.salaryStructure[field];
+      }
+      if (employee.salaryStructure && employee.salaryStructure[field] !== undefined && employee.salaryStructure[field] !== null) {
+        return employee.salaryStructure[field];
+      }
+      return def;
+    };
+
+    let monthlyCTC = Number(activeRevision.newCTC) || Number(activeRevision.monthlyCTC) || 0;
+    if (!monthlyCTC && activeRevision === revisions[0]) {
+      monthlyCTC = Number(revisions[0].previousCTC) || Number(employee.monthlyCTC) || 0;
+    }
+
+    return {
+      monthlyCTC,
+      pfEnabled: getVal('pfEnabled', true),
+      esiEnabled: getVal('esiEnabled', true),
+      ptEnabled: getVal('ptEnabled', true),
+      lwfEnabled: getVal('lwfEnabled', true),
+      gratuityEnabled: getVal('gratuityEnabled', true),
+      includePfInCTC: getVal('includePfInCTC', true),
+      includeGratuityInCTC: getVal('includeGratuityInCTC', true),
+      basicPercent: getVal('basicPercent', null),
+      hraPercent: getVal('hraPercent', null),
+      flexiAmount: getVal('flexiAmount', 0),
+      broadband: getVal('broadband', 0),
+      petrol: getVal('petrol', 0),
+      lta: getVal('lta', 0),
+      employerNPS: getVal('employerNPS', 0),
+      insuranceAmount: getVal('insuranceAmount', 0),
+      deductions: {
+        tds: getDeductionVal('tds', 0),
+        professionalTax: getDeductionVal('professionalTax', 0),
+        otherDeductions: getDeductionVal('otherDeductions', []),
+      },
+      salaryStructure: {
+        conveyance: getStructureVal('conveyance', 0),
+        medicalAllowance: getStructureVal('medicalAllowance', 0),
+        otherAllowances: getStructureVal('otherAllowances', []),
+      },
+    };
+  };
+
+  const segments = [];
+  let currentSegment = null;
+
+  for (let d = 1; d <= totalDaysInMonth; d++) {
+    const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const activeParams = getEmployeeParamsForDate(currentStr);
+    const key = `${activeParams.monthlyCTC}-${activeParams.pfEnabled}-${activeParams.esiEnabled}-${activeParams.gratuityEnabled}`;
+
+    if (!currentSegment || currentSegment.key !== key) {
+      if (currentSegment) {
+        segments.push(currentSegment);
+      }
+      currentSegment = {
+        key,
+        startDay: d,
+        endDay: d,
+        activeParams,
+        daysCount: 1
+      };
+    } else {
+      currentSegment.endDay = d;
+      currentSegment.daysCount += 1;
+    }
+  }
+  if (currentSegment) {
+    segments.push(currentSegment);
+  }
+
+  const workingDays = Math.max(Number(workingDaysCount) || config.defaultWorkingDays, 1);
+  const paidDays = Math.max(Math.min(Number(paidDaysCount) ?? workingDays, workingDays), 0);
+  const prorate = workingDays > 0 ? paidDays / workingDays : 1;
+
+  const lopStrategy = adjustments.lopStrategy || 'proportional';
+  const customSegmentLops = adjustments.segmentLops || [];
+  const dayProrate = getDayProrateArray(totalDaysInMonth, workingDays, paidDays, lopStrategy, customSegmentLops, segments);
+
+  return segments.map((seg) => {
+    const daySource = {
+      ...seg.activeParams,
+      pfEnabled: adjustments.pfEnabled !== undefined ? adjustments.pfEnabled : seg.activeParams.pfEnabled,
+      esiEnabled: adjustments.esiEnabled !== undefined ? adjustments.esiEnabled : seg.activeParams.esiEnabled,
+      ptEnabled: adjustments.ptEnabled !== undefined ? adjustments.ptEnabled : seg.activeParams.ptEnabled,
+      lwfEnabled: adjustments.lwfEnabled !== undefined ? adjustments.lwfEnabled : seg.activeParams.lwfEnabled,
+      gratuityEnabled: adjustments.gratuityEnabled !== undefined ? adjustments.gratuityEnabled : seg.activeParams.gratuityEnabled,
+      includePfInCTC: adjustments.includePfInCTC !== undefined ? adjustments.includePfInCTC : seg.activeParams.includePfInCTC,
+      includeGratuityInCTC: adjustments.includeGratuityInCTC !== undefined ? adjustments.includeGratuityInCTC : seg.activeParams.includeGratuityInCTC,
+      basicPercent: adjustments.basicPercent !== undefined && adjustments.basicPercent !== null ? adjustments.basicPercent : seg.activeParams.basicPercent,
+      hraPercent: adjustments.hraPercent !== undefined && adjustments.hraPercent !== null ? adjustments.hraPercent : seg.activeParams.hraPercent,
+    };
+    
+    const dayMaster = buildMasterSalaryStructure(daySource, config);
+    const segmentRatio = seg.daysCount / totalDaysInMonth;
+
+    let segmentBasicSum = 0;
+    let segmentEsiEmployeeSum = 0;
+    let segmentEsiEmployerSum = 0;
+    let segmentProrateSum = 0;
+
+    for (let day = seg.startDay; day <= seg.endDay; day++) {
+      const dP = dayProrate[day - 1];
+      segmentProrateSum += dP;
+      
+      const dailyBasic = (dayMaster.basicMaster / totalDaysInMonth) * dP;
+      segmentBasicSum += dailyBasic;
+      
+      const dailyEsiEmployee = dayMaster.esiApplicable ? dailyBasic * config.esiEmployeeRate : 0;
+      const dailyEsiEmployer = dayMaster.esiApplicable ? dailyBasic * config.esiEmployerRate : 0;
+      segmentEsiEmployeeSum += dailyEsiEmployee;
+      segmentEsiEmployerSum += dailyEsiEmployer;
+    }
+
+    const segmentProrateRatio = segmentProrateSum / totalDaysInMonth;
+
+    const basic = roundAmount(segmentBasicSum);
+    const hra = roundAmount(dayMaster.hraMaster * segmentProrateRatio);
+    const flexi = roundAmount(dayMaster.flexi * segmentProrateRatio);
+    const broadband = roundAmount(dayMaster.broadband * segmentProrateRatio);
+    const petrol = roundAmount(dayMaster.petrol * segmentProrateRatio);
+    const lta = roundAmount(dayMaster.lta * segmentProrateRatio);
+    const specialAllowance = roundAmount(dayMaster.specialAllowance * segmentProrateRatio);
+    const conveyance = roundAmount(dayMaster.conveyance * segmentProrateRatio);
+    const medicalAllowance = roundAmount(dayMaster.medicalAllowance * segmentProrateRatio);
+
+    const pfEmployee = roundAmount(dayMaster.pfEmployee * segmentRatio);
+    const pfEmployer = roundAmount(dayMaster.pfEmployer * segmentRatio);
+    
+    const esiEmployee = roundAmount(segmentEsiEmployeeSum);
+    const esiEmployer = roundAmount(segmentEsiEmployerSum);
+
+    const gratuity = roundAmount(dayMaster.gratuity * segmentRatio);
+    const lwfEmployee = roundAmount(dayMaster.lwfEmployee * segmentRatio);
+    const lwfEmployer = roundAmount(dayMaster.lwfEmployer * segmentRatio);
+    const insurance = roundAmount(dayMaster.insurance * segmentRatio);
+    const nps = roundAmount(dayMaster.employerNPS * segmentRatio);
+    
+    const totalEarnings = roundAmount(basic + hra + flexi + broadband + petrol + lta + specialAllowance + conveyance + medicalAllowance);
+
+    return {
+      startDate: new Date(Date.UTC(year, month - 1, seg.startDay)),
+      endDate: new Date(Date.UTC(year, month - 1, seg.endDay)),
+      daysCount: seg.daysCount,
+      monthlyCTC: dayMaster.monthlyCTC,
+      basic,
+      hra,
+      flexi,
+      broadband,
+      petrol,
+      lta,
+      specialAllowance,
+      conveyance,
+      medicalAllowance,
+      pfEmployee,
+      pfEmployer,
+      esiEmployee,
+      esiEmployer,
+      gratuity,
+      lwfEmployee,
+      lwfEmployer,
+      insurance,
+      nps,
+      totalEarnings,
+    };
+  });
 };
 
 module.exports = {
@@ -678,4 +1213,5 @@ module.exports = {
   calculateTaxDetails,
   buildMasterSalaryStructure,
   buildPayrollSnapshot,
+  getSalarySplits,
 };
