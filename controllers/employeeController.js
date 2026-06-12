@@ -1302,6 +1302,7 @@ exports.exportEmployeesExcel = async (req, res) => {
     const worksheet = XLSX.utils.aoa_to_sheet(rows);
     worksheet['!merges'] = merges;
     const workbook = XLSX.utils.book_new();
+    workbook.Workbook = { WBProps: { fullCalcOnLoad: true } };
 
     columns.forEach((col, colIdx) => {
       const grp = col.group;
@@ -1391,6 +1392,7 @@ exports.downloadImportTemplateExcel = async (req, res) => {
     const worksheet = XLSX.utils.aoa_to_sheet(rows);
     worksheet['!merges'] = merges;
     const workbook = XLSX.utils.book_new();
+    workbook.Workbook = { WBProps: { fullCalcOnLoad: true } };
 
     columns.forEach((col, colIdx) => {
       const grp = col.group;
