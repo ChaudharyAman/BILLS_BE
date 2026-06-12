@@ -864,6 +864,8 @@ exports.markPayrollAsPaid = async (req, res) => {
         subTotal: payroll.netSalary,
         taxTotal: 0,
         grandTotal: payroll.netSalary,
+        amountPaid: payroll.netSalary,
+        balanceDue: 0,
         status: 'PAID',
         privateNotes: `Payroll ID: ${payroll._id}`,
       });
