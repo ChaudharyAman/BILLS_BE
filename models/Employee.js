@@ -120,6 +120,35 @@ const EmployeeSchema = new mongoose.Schema({
     reason: { type: String },
     revisedBy: { type: String },
     createdAt: { type: Date, default: Date.now },
+
+    // Configuration snapshot fields
+    monthlyCTC: { type: Number },
+    pfEnabled: { type: Boolean },
+    esiEnabled: { type: Boolean },
+    ptEnabled: { type: Boolean },
+    lwfEnabled: { type: Boolean },
+    gratuityEnabled: { type: Boolean },
+    includePfInCTC: { type: Boolean },
+    includeGratuityInCTC: { type: Boolean },
+    basicPercent: { type: Number },
+    hraPercent: { type: Number },
+    joiningBonus: { type: Number },
+    flexiAmount: { type: Number },
+    broadband: { type: Number },
+    petrol: { type: Number },
+    lta: { type: Number },
+    employerNPS: { type: Number },
+    insuranceAmount: { type: Number },
+    deductions: {
+      tds: { type: Number },
+      professionalTax: { type: Number },
+      otherDeductions: [AllowanceSchema],
+    },
+    salaryStructure: {
+      conveyance: { type: Number },
+      medicalAllowance: { type: Number },
+      otherAllowances: [AllowanceSchema],
+    },
   }],
 }, { timestamps: true, strict: false });
 

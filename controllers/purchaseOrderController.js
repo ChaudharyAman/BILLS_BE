@@ -342,6 +342,9 @@ exports.updatePurchaseOrder = async (req, res) => {
 
     const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: req.user._id });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
+    if (purchaseOrder.status === 'BILLED') {
+      return res.status(400).json({ message: 'Billed purchase orders cannot be edited.' });
+    }
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(req.user._id);
@@ -603,7 +606,7 @@ exports.updatePurchaseOrderStatus = async (req, res) => {
     }
     const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: req.user._id });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
-    if (purchaseOrder.status === 'BILLED' || purchaseOrder.convertedToInvoice) {
+    if (purchaseOrder.status === 'BILLED') {
       return res.status(400).json({ message: 'Billed purchase orders cannot be updated.' });
     }
 

@@ -14,6 +14,7 @@ const {
   roundAmount,
   buildMasterSalaryStructure,
   buildPayrollSnapshot,
+  getSalarySplits,
 } = require('../utils/payrollMath');
 const { XLSX, setHeaderStyle, applyNumberFormat, sendWorkbook } = require('../utils/excel');
 
@@ -295,7 +296,7 @@ exports.processPayroll = async (req, res) => {
           adjustments.loanDeduction = activeLoans.reduce((sum, loan) => sum + Math.min(loan.emiAmount, loan.remainingBalance), 0);
         }
 
-        const snapshot = buildPayrollSnapshot(employee, config, attendance, adjustments, month);
+        const snapshot = buildPayrollSnapshot(employee, config, attendance, adjustments, month, year);
         const statusVal = saveAsDraft ? 'draft' : 'processed';
         const payroll = await Payroll.create({
           user: req.user._id,
@@ -315,6 +316,8 @@ exports.processPayroll = async (req, res) => {
           deductions: snapshot.deductions,
           netSalary: snapshot.netSalary,
           status: statusVal,
+          lopStrategy: adjustments.lopStrategy || 'proportional',
+          segmentLops: snapshot.segmentLops || adjustments.segmentLops || [],
           approvalWorkflow: [{
             status: statusVal,
             actor: req.user._id,
@@ -327,7 +330,7 @@ exports.processPayroll = async (req, res) => {
             email: employee.email,
             designation: employee.designation,
             joiningDate: employee.joiningDate,
-            monthlyCTC: employee.monthlyCTC,
+            monthlyCTC: snapshot.master.monthlyCTC,
             pfEnabled: snapshot.master.pfEnabled !== false,
             esiEnabled: snapshot.master.esiEnabled !== false,
             ptEnabled: snapshot.master.ptEnabled !== false,
@@ -571,6 +574,7 @@ exports.calculateSalary = async (req, res) => {
 
     const master = buildMasterSalaryStructure(previewSource, config);
     const month = Number(req.body.month) || (new Date().getMonth() + 1);
+    const year = Number(req.body.year) || new Date().getFullYear();
     const snapshot = buildPayrollSnapshot(
       previewSource,
       config,
@@ -587,7 +591,8 @@ exports.calculateSalary = async (req, res) => {
         arrear: Number(req.body.arrear) || 0,
         referralBonus: Number(req.body.referralBonus) || 0,
       },
-      month
+      month,
+      year
     );
 
     res.json({
@@ -658,6 +663,27 @@ exports.getPayrolls = async (req, res) => {
       }
       query.employee = employeeId;
     }
+    if (req.query.search) {
+      const escapeRegex = require('../utils/escapeRegex');
+      const safeSearch = escapeRegex(req.query.search);
+      const matchedEmployees = await Employee.find({
+        user: req.user._id,
+        $or: [
+          { firstName: { $regex: safeSearch, $options: 'i' } },
+          { lastName: { $regex: safeSearch, $options: 'i' } },
+          { employeeId: { $regex: safeSearch, $options: 'i' } }
+        ]
+      }).select('_id').lean();
+      
+      const matchedIds = matchedEmployees.map(e => e._id);
+      if (query.employee) {
+        if (!matchedIds.map(id => String(id)).includes(String(query.employee))) {
+          query.employee = null;
+        }
+      } else {
+        query.employee = { $in: matchedIds };
+      }
+    }
 
     const total = await Payroll.countDocuments(query);
     const payrolls = await Payroll.find(query)
@@ -693,7 +719,33 @@ exports.getPayrollById = async (req, res) => {
       .populate('expenseRef', 'expenseNumber date grandTotal');
 
     if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
-    res.json(payroll);
+
+    const config = await getOrCreateConfig(req.user._id);
+    const adjustments = {
+      pfEnabled: payroll.employeeSnapshot?.pfEnabled,
+      esiEnabled: payroll.employeeSnapshot?.esiEnabled,
+      ptEnabled: payroll.employeeSnapshot?.ptEnabled,
+      lwfEnabled: payroll.employeeSnapshot?.lwfEnabled,
+      gratuityEnabled: payroll.employeeSnapshot?.gratuityEnabled,
+      includePfInCTC: payroll.employeeSnapshot?.includePfInCTC,
+      includeGratuityInCTC: payroll.employeeSnapshot?.includeGratuityInCTC,
+      lopStrategy: payroll.lopStrategy || 'proportional',
+      segmentLops: payroll.segmentLops || [],
+    };
+    const splits = getSalarySplits(
+      payroll.employee,
+      config,
+      payroll.month,
+      payroll.year,
+      payroll.paidDays,
+      payroll.workingDays,
+      adjustments
+    );
+
+    const payrollObj = payroll.toObject();
+    payrollObj.salarySplits = splits;
+
+    res.json(payrollObj);
   } catch (error) {
     console.error('Error fetching payroll:', error);
     res.status(500).json({ message: 'Server error fetching payroll' });
@@ -812,6 +864,8 @@ exports.markPayrollAsPaid = async (req, res) => {
         subTotal: payroll.netSalary,
         taxTotal: 0,
         grandTotal: payroll.netSalary,
+        amountPaid: payroll.netSalary,
+        balanceDue: 0,
         status: 'PAID',
         privateNotes: `Payroll ID: ${payroll._id}`,
       });
@@ -909,6 +963,28 @@ exports.generatePayslip = async (req, res) => {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
+    const config = await getOrCreateConfig(req.user._id);
+    const adjustments = {
+      pfEnabled: payroll.employeeSnapshot?.pfEnabled,
+      esiEnabled: payroll.employeeSnapshot?.esiEnabled,
+      ptEnabled: payroll.employeeSnapshot?.ptEnabled,
+      lwfEnabled: payroll.employeeSnapshot?.lwfEnabled,
+      gratuityEnabled: payroll.employeeSnapshot?.gratuityEnabled,
+      includePfInCTC: payroll.employeeSnapshot?.includePfInCTC,
+      includeGratuityInCTC: payroll.employeeSnapshot?.includeGratuityInCTC,
+      lopStrategy: payroll.lopStrategy || 'proportional',
+      segmentLops: payroll.segmentLops || [],
+    };
+    const splits = getSalarySplits(
+      payroll.employee,
+      config,
+      payroll.month,
+      payroll.year,
+      payroll.paidDays,
+      payroll.workingDays,
+      adjustments
+    );
+
     res.json({
       payslip: {
         employee: payroll.employee,
@@ -917,6 +993,7 @@ exports.generatePayslip = async (req, res) => {
           year: payroll.year,
           monthName: monthName(payroll.month),
         },
+        salarySplits: splits,
         earnings: payroll.earnings,
         employerContributions: payroll.employerContributions,
         variablePay: payroll.variablePay,

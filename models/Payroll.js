@@ -70,6 +70,15 @@ const PayrollSchema = new mongoose.Schema({
     totalDeductions: { type: Number, required: true },
   },
 
+  lopStrategy: {
+    type: String,
+    enum: ['proportional', 'older_first', 'newer_first', 'custom'],
+    default: 'proportional',
+  },
+  segmentLops: {
+    type: [Number],
+    default: [],
+  },
   netSalary: { type: Number, required: true },
   status: {
     type: String,
