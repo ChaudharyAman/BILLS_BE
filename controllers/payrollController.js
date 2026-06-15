@@ -540,6 +540,7 @@ exports.calculateSalary = async (req, res) => {
 
     const previewSource = {
       monthlyCTC,
+      employmentType: req.body.employmentType,
       basicPercent: req.body.basicPercent !== undefined && req.body.basicPercent !== null ? Number(req.body.basicPercent) : null,
       hraPercent: req.body.hraPercent !== undefined && req.body.hraPercent !== null ? Number(req.body.hraPercent) : null,
       basic: req.body.basic !== undefined ? Number(req.body.basic) : undefined,

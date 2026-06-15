@@ -265,22 +265,24 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const config = normalizeConfig(configInput);
   const monthlyCTC = roundAmount(getMonthlyCTCValue(source));
 
-  // Toggles integration
-  const pfEnabled = source.pfEnabled !== false;
-  const esiEnabled = source.esiEnabled !== false;
-  const ptEnabled = source.ptEnabled !== false;
-  const lwfEnabled = source.lwfEnabled !== false;
-  const gratuityEnabled = source.gratuityEnabled !== false;
-  const includePfInCTC = source.includePfInCTC !== false;
-  const includeGratuityInCTC = source.includeGratuityInCTC !== false;
+  const isIntern = source.employmentType === 'intern';
 
-  let basicPercent = config.basicPercent;
-  if (source.basicPercent !== undefined && source.basicPercent !== null && Number(source.basicPercent) > 0) {
+  // Toggles integration
+  const pfEnabled = !isIntern && source.pfEnabled !== false;
+  const esiEnabled = !isIntern && source.esiEnabled !== false;
+  const ptEnabled = !isIntern && source.ptEnabled !== false;
+  const lwfEnabled = !isIntern && source.lwfEnabled !== false;
+  const gratuityEnabled = !isIntern && source.gratuityEnabled !== false;
+  const includePfInCTC = !isIntern && source.includePfInCTC !== false;
+  const includeGratuityInCTC = !isIntern && source.includeGratuityInCTC !== false;
+
+  let basicPercent = isIntern ? 1.0 : config.basicPercent;
+  if (!isIntern && source.basicPercent !== undefined && source.basicPercent !== null && Number(source.basicPercent) > 0) {
     basicPercent = Number(source.basicPercent) > 1 ? Number(source.basicPercent) / 100 : Number(source.basicPercent);
   }
 
-  let hraPercent = config.hraPercent;
-  if (source.hraPercent !== undefined && source.hraPercent !== null && Number(source.hraPercent) > 0) {
+  let hraPercent = isIntern ? 0 : config.hraPercent;
+  if (!isIntern && source.hraPercent !== undefined && source.hraPercent !== null && Number(source.hraPercent) > 0) {
     hraPercent = Number(source.hraPercent) > 1 ? Number(source.hraPercent) / 100 : Number(source.hraPercent);
   }
 
@@ -289,13 +291,13 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
 
   let basicMaster = roundAmount(monthlyCTC * basicPercent);
   const sourceBasic = source.basic !== undefined ? source.basic : source.salaryStructure?.basic;
-  if (sourceBasic !== undefined && sourceBasic !== null && Number(sourceBasic) > 0) {
+  if (!isIntern && sourceBasic !== undefined && sourceBasic !== null && Number(sourceBasic) > 0) {
     basicMaster = roundAmount(sourceBasic);
   }
 
   let hraMaster = roundAmount(basicMaster * hraPercent);
   const sourceHra = source.hra !== undefined ? source.hra : source.salaryStructure?.hra;
-  if (sourceHra !== undefined && sourceHra !== null && Number(sourceHra) > 0) {
+  if (!isIntern && sourceHra !== undefined && sourceHra !== null && Number(sourceHra) > 0) {
     hraMaster = roundAmount(sourceHra);
   }
 
@@ -428,6 +430,21 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
       monthlyCTC - basicMaster - hraMaster - flexi - broadband - petrol - lta - pfEmployerInCTC - gratuityInCTC - lwfEmployer - insurance - esiEmployer - employerNPS - conveyance - medicalAllowance - otherAllowancesSum,
       0
     ));
+  }
+
+  if (isIntern) {
+    flexi = 0;
+    broadband = 0;
+    petrol = 0;
+    lta = 0;
+    conveyance = 0;
+    medicalAllowance = 0;
+    specialAllowance = 0;
+    if (hasDynamicComponents) {
+      Object.keys(earningsMap).forEach(k => {
+        earningsMap[k] = k === 'basic' ? monthlyCTC : 0;
+      });
+    }
   }
 
   const totalEarnings = hasDynamicComponents
@@ -604,6 +621,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
 
     return {
       monthlyCTC,
+      employmentType: getVal('employmentType', 'full-time'),
       pfEnabled: getVal('pfEnabled', true),
       esiEnabled: getVal('esiEnabled', true),
       ptEnabled: getVal('ptEnabled', true),
