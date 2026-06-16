@@ -540,16 +540,26 @@ exports.updatePayrollConfig = async (req, res) => {
 exports.calculateSalary = async (req, res) => {
   try {
     const config = await getOrCreateConfig(req.user._id);
-    const monthlyCTC = Number(req.body.monthlyCTC) || (Number(req.body.annualCTC) ? Number(req.body.annualCTC) / 12 : 0);
+    let monthlyCTC = Number(req.body.monthlyCTC) || (Number(req.body.annualCTC) ? Number(req.body.annualCTC) / 12 : 0);
+    const payType = req.body.payType || 'salaried';
+    const hourlyRate = Number(req.body.hourlyRate) || 0;
+    const hoursWorked = req.body.hoursWorked !== undefined ? Number(req.body.hoursWorked) : 160;
 
-    if (!monthlyCTC || monthlyCTC < 0) {
+    if (payType === 'hourly') {
+      monthlyCTC = hourlyRate * hoursWorked;
+    }
+
+    if (payType !== 'hourly' && (!monthlyCTC || monthlyCTC < 0)) {
       return res.status(400).json({ message: 'Monthly CTC or Annual CTC is required' });
     }
 
     const previewSource = {
       monthlyCTC,
+      payType,
+      hourlyRate,
+      hoursWorked,
       employmentType: req.body.employmentType,
-      useSalaryComponents: req.body.useSalaryComponents !== false,
+      useSalaryComponents: req.body.useSalaryComponents !== false && payType !== 'hourly',
       basicPercent: req.body.basicPercent !== undefined && req.body.basicPercent !== null ? Number(req.body.basicPercent) : null,
       hraPercent: req.body.hraPercent !== undefined && req.body.hraPercent !== null ? Number(req.body.hraPercent) : null,
       basic: req.body.basic !== undefined ? Number(req.body.basic) : undefined,
@@ -562,16 +572,16 @@ exports.calculateSalary = async (req, res) => {
       employerNPS: Number(req.body.employerNPS) || 0,
       insuranceAmount: req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : config.defaultInsurance,
       taxRegime: req.body.taxRegime || 'new',
-      pfEnabled: req.body.pfEnabled !== false,
-      esiEnabled: req.body.esiEnabled !== false,
-      ptEnabled: req.body.ptEnabled !== false,
-      lwfEnabled: req.body.lwfEnabled !== false,
-      gratuityEnabled: req.body.gratuityEnabled !== false,
-      includePfInCTC: req.body.includePfInCTC !== false,
-      includeGratuityInCTC: req.body.includeGratuityInCTC !== false,
+      pfEnabled: payType === 'hourly' ? false : req.body.pfEnabled !== false,
+      esiEnabled: payType === 'hourly' ? false : req.body.esiEnabled !== false,
+      ptEnabled: payType === 'hourly' ? false : req.body.ptEnabled !== false,
+      lwfEnabled: payType === 'hourly' ? false : req.body.lwfEnabled !== false,
+      gratuityEnabled: payType === 'hourly' ? false : req.body.gratuityEnabled !== false,
+      includePfInCTC: payType === 'hourly' ? false : req.body.includePfInCTC !== false,
+      includeGratuityInCTC: payType === 'hourly' ? false : req.body.includeGratuityInCTC !== false,
       declarations: req.body.declarations || {},
       deductions: {
-        professionalTax: Number(req.body.professionalTax) || 0,
+        professionalTax: payType === 'hourly' ? 0 : (Number(req.body.professionalTax) || 0),
         tds: Number(req.body.tds) || 0,
         otherDeductions: Array.isArray(req.body.otherDeductions) ? req.body.otherDeductions : (Array.isArray(req.body.deductions?.otherDeductions) ? req.body.deductions.otherDeductions : []),
       },
@@ -635,7 +645,7 @@ exports.exportPayrollExcel = async (req, res) => {
     const payrolls = await Payroll.find({ user: req.user._id, month, year })
       .populate({
         path: 'employee',
-        select: '+bankDetails.accountNumber +panNumber +aadharNumber firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode',
+        select: '+bankDetails.accountNumber +panNumber +aadharNumber firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode payType hourlyRate',
       })
       .sort({ createdAt: 1 })
       .lean();
@@ -699,7 +709,7 @@ exports.getPayrolls = async (req, res) => {
     const payrolls = await Payroll.find(query)
       .populate({
         path: 'employee',
-        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled basicPercent hraPercent',
+        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled basicPercent hraPercent payType hourlyRate',
         populate: { path: 'department', select: 'name code' },
       })
       .populate('expenseRef', 'expenseNumber date grandTotal')

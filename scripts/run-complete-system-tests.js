@@ -1516,6 +1516,87 @@ async function payrollAndEmployeeCases() {
     ok(approve.data.status === 'approved', 'Reimbursement claim was not approved');
     return 'Reimbursement verified';
   });
+
+  await run('Hourly contractor employee lifecycle and payroll processing', async () => {
+    // 1. Create hourly contractor employee
+    const employeeId = unique('EMP-HOURLY');
+    const create = await api('POST', '/api/employees', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        employeeId,
+        firstName: 'Hourly',
+        lastName: 'Contractor',
+        email: `${employeeId}@test.com`,
+        joiningDate: '2026-06-01',
+        payType: 'hourly',
+        hourlyRate: 25,
+        pfEnabled: false,
+        esiEnabled: false,
+        ptEnabled: false,
+        lwfEnabled: false,
+        gratuityEnabled: false,
+        includePfInCTC: false,
+        includeGratuityInCTC: false
+      }
+    });
+    const targetEmpId = create.data._id;
+    ok(create.data.payType === 'hourly', 'Pay type should be hourly');
+    ok(create.data.hourlyRate === 25, 'Hourly rate should be 25');
+
+    // 2. Revise hourly rate
+    const revise = await api('POST', `/api/employees/${targetEmpId}/salary-revision`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        newHourlyRate: 30,
+        effectiveDate: '2026-06-16',
+        reason: 'Rate adjustment'
+      }
+    });
+    ok(revise.data.hourlyRate === 30, 'Revised hourly rate should be 30');
+
+    // 3. Process payroll for June 2026
+    const process = await api('POST', '/api/payroll/process', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        month: 6,
+        year: 2026,
+        saveAsDraft: true,
+        employees: [{
+          employeeId: targetEmpId,
+          workingDays: 30,
+          paidDays: 30,
+          paidLeaves: 0,
+          unpaidLeaves: 0,
+          hoursWorked: 160,
+          adjustments: {
+            hoursWorked: 160,
+            esiEnabled: false,
+            ptEnabled: false,
+            lwfEnabled: false,
+            gratuityEnabled: false,
+            includePfInCTC: false,
+            includeGratuityInCTC: false,
+            tds: 0
+          }
+        }]
+      }
+    });
+    ok(process.data.success.length === 1, 'Payroll process bulk run failed');
+    const payrollId = process.data.success[0].payrollId;
+
+    // 4. Fetch processed payroll draft and assert details
+    const getPayroll = await api('GET', `/api/payroll/${payrollId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+
+    const netSalary = getPayroll.data.netSalary;
+    ok(Math.abs(netSalary - 4400) < 0.1, `Expected net salary ~4400, got: ${netSalary}`);
+    return `Hourly rate: 30, Hours worked: 160, Net Salary: ${netSalary}`;
+  });
 }
 
 async function writeReportAndClose(exitCode) {

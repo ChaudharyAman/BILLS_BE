@@ -726,7 +726,7 @@ exports.getActiveEmployees = async (req, res) => {
 
     const employees = await Employee.find(query)
       .populate('department', 'name code')
-      .select('employeeId firstName lastName email designation department salaryStructure deductions monthlyCTC flexiAmount broadband petrol lta employerNPS insuranceAmount joiningBonus joiningDate location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled includePfInCTC includeGratuityInCTC basicPercent hraPercent useSalaryComponents salaryRevisions')
+      .select('employeeId firstName lastName email designation department salaryStructure deductions monthlyCTC flexiAmount broadband petrol lta employerNPS insuranceAmount joiningBonus joiningDate location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled includePfInCTC includeGratuityInCTC basicPercent hraPercent useSalaryComponents salaryRevisions payType hourlyRate')
       .sort({ firstName: 1, lastName: 1 })
       .lean();
 
@@ -1440,85 +1440,100 @@ exports.addSalaryRevision = async (req, res) => {
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const effectiveDate = parsePossibleDate(req.body.effectiveDate);
-    const newCTC = Number(req.body.newCTC);
-    if (!effectiveDate || !newCTC || newCTC < 0) {
-      return res.status(400).json({ message: 'Effective date and new monthly CTC are required' });
+    const isHourly = employee.payType === 'hourly';
+    let newCTC = Number(req.body.newCTC);
+    let newHourlyRate = Number(req.body.newHourlyRate);
+
+    if (isHourly) {
+      if (!effectiveDate || !newHourlyRate || newHourlyRate < 0) {
+        return res.status(400).json({ message: 'Effective date and new hourly rate are required' });
+      }
+      newCTC = 0;
+    } else {
+      if (!effectiveDate || !newCTC || newCTC < 0) {
+        return res.status(400).json({ message: 'Effective date and new monthly CTC are required' });
+      }
     }
 
     const config = await getOrCreateConfig(req.user._id);
     const previousCTC = Number(employee.monthlyCTC) || Number(employee.salaryStructure?.ctc) || 0;
+    const previousHourlyRate = Number(employee.hourlyRate) || 0;
     
     const getVal = (field) => req.body[field] !== undefined ? req.body[field] : employee[field];
 
     const nextPayload = {
       ...employee.toObject(),
-      monthlyCTC: newCTC,
-      pfEnabled: getVal('pfEnabled'),
-      esiEnabled: getVal('esiEnabled'),
-      ptEnabled: getVal('ptEnabled'),
-      lwfEnabled: getVal('lwfEnabled'),
-      gratuityEnabled: getVal('gratuityEnabled'),
-      includePfInCTC: getVal('includePfInCTC'),
-      includeGratuityInCTC: getVal('includeGratuityInCTC'),
-      basicPercent: getVal('basicPercent'),
-      hraPercent: getVal('hraPercent'),
-      joiningBonus: req.body.joiningBonus !== undefined ? Number(req.body.joiningBonus) : (Number(employee.joiningBonus) || 0),
-      flexiAmount: req.body.flexiAmount !== undefined ? Number(req.body.flexiAmount) : (Number(employee.flexiAmount) || 0),
-      broadband: req.body.broadband !== undefined ? Number(req.body.broadband) : (Number(employee.broadband) || 0),
-      petrol: req.body.petrol !== undefined ? Number(req.body.petrol) : (Number(employee.petrol) || 0),
-      lta: req.body.lta !== undefined ? Number(req.body.lta) : (Number(employee.lta) || 0),
-      employerNPS: req.body.employerNPS !== undefined ? Number(req.body.employerNPS) : (Number(employee.employerNPS) || 0),
-      insuranceAmount: req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : (Number(employee.insuranceAmount) || 0),
+      monthlyCTC: isHourly ? 0 : newCTC,
+      hourlyRate: isHourly ? newHourlyRate : 0,
+      pfEnabled: isHourly ? false : getVal('pfEnabled'),
+      esiEnabled: isHourly ? false : getVal('esiEnabled'),
+      ptEnabled: isHourly ? false : getVal('ptEnabled'),
+      lwfEnabled: isHourly ? false : getVal('lwfEnabled'),
+      gratuityEnabled: isHourly ? false : getVal('gratuityEnabled'),
+      includePfInCTC: isHourly ? false : getVal('includePfInCTC'),
+      includeGratuityInCTC: isHourly ? false : getVal('includeGratuityInCTC'),
+      basicPercent: isHourly ? null : getVal('basicPercent'),
+      hraPercent: isHourly ? null : getVal('hraPercent'),
+      joiningBonus: isHourly ? 0 : (req.body.joiningBonus !== undefined ? Number(req.body.joiningBonus) : (Number(employee.joiningBonus) || 0)),
+      flexiAmount: isHourly ? 0 : (req.body.flexiAmount !== undefined ? Number(req.body.flexiAmount) : (Number(employee.flexiAmount) || 0)),
+      broadband: isHourly ? 0 : (req.body.broadband !== undefined ? Number(req.body.broadband) : (Number(employee.broadband) || 0)),
+      petrol: isHourly ? 0 : (req.body.petrol !== undefined ? Number(req.body.petrol) : (Number(employee.petrol) || 0)),
+      lta: isHourly ? 0 : (req.body.lta !== undefined ? Number(req.body.lta) : (Number(employee.lta) || 0)),
+      employerNPS: isHourly ? 0 : (req.body.employerNPS !== undefined ? Number(req.body.employerNPS) : (Number(employee.employerNPS) || 0)),
+      insuranceAmount: isHourly ? 0 : (req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : (Number(employee.insuranceAmount) || 0)),
       deductions: {
         ...(employee.deductions || {}),
         tds: req.body.tds !== undefined ? Number(req.body.tds) : (employee.deductions?.tds || 0),
-        professionalTax: req.body.professionalTax !== undefined ? Number(req.body.professionalTax) : (employee.deductions?.professionalTax || 0),
-        otherDeductions: req.body.otherDeductions !== undefined ? req.body.otherDeductions : (employee.deductions?.otherDeductions || []),
+        professionalTax: isHourly ? 0 : (req.body.professionalTax !== undefined ? Number(req.body.professionalTax) : (employee.deductions?.professionalTax || 0)),
+        otherDeductions: isHourly ? [] : (req.body.otherDeductions !== undefined ? req.body.otherDeductions : (employee.deductions?.otherDeductions || [])),
       },
       salaryStructure: {
-        conveyance: req.body.conveyance !== undefined ? Number(req.body.conveyance) : (Number(employee.salaryStructure?.conveyance) || 0),
-        medicalAllowance: req.body.medicalAllowance !== undefined ? Number(req.body.medicalAllowance) : (Number(employee.salaryStructure?.medicalAllowance) || 0),
-        otherAllowances: req.body.otherAllowances !== undefined ? req.body.otherAllowances : (employee.salaryStructure?.otherAllowances || []),
+        conveyance: isHourly ? 0 : (req.body.conveyance !== undefined ? Number(req.body.conveyance) : (Number(employee.salaryStructure?.conveyance) || 0)),
+        medicalAllowance: isHourly ? 0 : (req.body.medicalAllowance !== undefined ? Number(req.body.medicalAllowance) : (Number(employee.salaryStructure?.medicalAllowance) || 0)),
+        otherAllowances: isHourly ? [] : (req.body.otherAllowances !== undefined ? req.body.otherAllowances : (employee.salaryStructure?.otherAllowances || [])),
       },
     };
-    
+
     const salaryStructure = buildSalaryStructureFromCTC(nextPayload, config);
 
     if (!employee.salaryRevisions || employee.salaryRevisions.length === 0) {
       employee.salaryRevisions.push({
         effectiveDate: employee.joiningDate || new Date(0),
-        previousCTC: 0,
-        newCTC: previousCTC,
+        previousCTC: isHourly ? 0 : 0,
+        newCTC: isHourly ? 0 : previousCTC,
+        previousHourlyRate: isHourly ? 0 : undefined,
+        newHourlyRate: isHourly ? previousHourlyRate : undefined,
+        hourlyRate: isHourly ? previousHourlyRate : undefined,
         reason: 'Initial Salary Setup',
         revisedBy: 'System',
         createdAt: employee.createdAt || new Date(),
         
-        monthlyCTC: previousCTC,
-        pfEnabled: employee.pfEnabled !== false,
-        esiEnabled: employee.esiEnabled !== false,
-        ptEnabled: employee.ptEnabled !== false,
-        lwfEnabled: employee.lwfEnabled !== false,
-        gratuityEnabled: employee.gratuityEnabled !== false,
-        includePfInCTC: employee.includePfInCTC !== false,
-        includeGratuityInCTC: employee.includeGratuityInCTC !== false,
-        basicPercent: employee.basicPercent,
-        hraPercent: employee.hraPercent,
-        joiningBonus: Number(employee.joiningBonus) || 0,
-        flexiAmount: Number(employee.flexiAmount) || 0,
-        broadband: Number(employee.broadband) || 0,
-        petrol: Number(employee.petrol) || 0,
-        lta: Number(employee.lta) || 0,
-        employerNPS: Number(employee.employerNPS) || 0,
-        insuranceAmount: Number(employee.insuranceAmount) || 0,
+        monthlyCTC: isHourly ? 0 : previousCTC,
+        pfEnabled: isHourly ? false : employee.pfEnabled !== false,
+        esiEnabled: isHourly ? false : employee.esiEnabled !== false,
+        ptEnabled: isHourly ? false : employee.ptEnabled !== false,
+        lwfEnabled: isHourly ? false : employee.lwfEnabled !== false,
+        gratuityEnabled: isHourly ? false : employee.gratuityEnabled !== false,
+        includePfInCTC: isHourly ? false : employee.includePfInCTC !== false,
+        includeGratuityInCTC: isHourly ? false : employee.includeGratuityInCTC !== false,
+        basicPercent: isHourly ? null : employee.basicPercent,
+        hraPercent: isHourly ? null : employee.hraPercent,
+        joiningBonus: isHourly ? 0 : (Number(employee.joiningBonus) || 0),
+        flexiAmount: isHourly ? 0 : (Number(employee.flexiAmount) || 0),
+        broadband: isHourly ? 0 : (Number(employee.broadband) || 0),
+        petrol: isHourly ? 0 : (Number(employee.petrol) || 0),
+        lta: isHourly ? 0 : (Number(employee.lta) || 0),
+        employerNPS: isHourly ? 0 : (Number(employee.employerNPS) || 0),
+        insuranceAmount: isHourly ? 0 : (Number(employee.insuranceAmount) || 0),
         deductions: {
           tds: employee.deductions?.tds || 0,
-          professionalTax: employee.deductions?.professionalTax || 0,
-          otherDeductions: employee.deductions?.otherDeductions || [],
+          professionalTax: isHourly ? 0 : (employee.deductions?.professionalTax || 0),
+          otherDeductions: isHourly ? [] : (employee.deductions?.otherDeductions || []),
         },
         salaryStructure: {
-          conveyance: Number(employee.salaryStructure?.conveyance) || 0,
-          medicalAllowance: Number(employee.salaryStructure?.medicalAllowance) || 0,
-          otherAllowances: employee.salaryStructure?.otherAllowances || [],
+          conveyance: isHourly ? 0 : (Number(employee.salaryStructure?.conveyance) || 0),
+          medicalAllowance: isHourly ? 0 : (Number(employee.salaryStructure?.medicalAllowance) || 0),
+          otherAllowances: isHourly ? [] : (employee.salaryStructure?.otherAllowances || []),
         },
       });
     } else {
@@ -1527,32 +1542,33 @@ exports.addSalaryRevision = async (req, res) => {
       const latestInDoc = employee.salaryRevisions.find(r => String(r._id) === String(latestExisting._id));
       if (latestInDoc) {
         if (latestInDoc.pfEnabled === undefined || latestInDoc.pfEnabled === null) {
-          latestInDoc.monthlyCTC = Number(latestInDoc.newCTC) || previousCTC;
-          latestInDoc.pfEnabled = employee.pfEnabled !== false;
-          latestInDoc.esiEnabled = employee.esiEnabled !== false;
-          latestInDoc.ptEnabled = employee.ptEnabled !== false;
-          latestInDoc.lwfEnabled = employee.lwfEnabled !== false;
-          latestInDoc.gratuityEnabled = employee.gratuityEnabled !== false;
-          latestInDoc.includePfInCTC = employee.includePfInCTC !== false;
-          latestInDoc.includeGratuityInCTC = employee.includeGratuityInCTC !== false;
-          latestInDoc.basicPercent = employee.basicPercent;
-          latestInDoc.hraPercent = employee.hraPercent;
-          latestInDoc.joiningBonus = Number(employee.joiningBonus) || 0;
-          latestInDoc.flexiAmount = Number(employee.flexiAmount) || 0;
-          latestInDoc.broadband = Number(employee.broadband) || 0;
-          latestInDoc.petrol = Number(employee.petrol) || 0;
-          latestInDoc.lta = Number(employee.lta) || 0;
-          latestInDoc.employerNPS = Number(employee.employerNPS) || 0;
-          latestInDoc.insuranceAmount = Number(employee.insuranceAmount) || 0;
+          latestInDoc.monthlyCTC = isHourly ? 0 : (Number(latestInDoc.newCTC) || previousCTC);
+          latestInDoc.hourlyRate = isHourly ? (Number(latestInDoc.newHourlyRate) || previousHourlyRate) : 0;
+          latestInDoc.pfEnabled = isHourly ? false : employee.pfEnabled !== false;
+          latestInDoc.esiEnabled = isHourly ? false : employee.esiEnabled !== false;
+          latestInDoc.ptEnabled = isHourly ? false : employee.ptEnabled !== false;
+          latestInDoc.lwfEnabled = isHourly ? false : employee.lwfEnabled !== false;
+          latestInDoc.gratuityEnabled = isHourly ? false : employee.gratuityEnabled !== false;
+          latestInDoc.includePfInCTC = isHourly ? false : employee.includePfInCTC !== false;
+          latestInDoc.includeGratuityInCTC = isHourly ? false : employee.includeGratuityInCTC !== false;
+          latestInDoc.basicPercent = isHourly ? null : employee.basicPercent;
+          latestInDoc.hraPercent = isHourly ? null : employee.hraPercent;
+          latestInDoc.joiningBonus = isHourly ? 0 : (Number(employee.joiningBonus) || 0);
+          latestInDoc.flexiAmount = isHourly ? 0 : (Number(employee.flexiAmount) || 0);
+          latestInDoc.broadband = isHourly ? 0 : (Number(employee.broadband) || 0);
+          latestInDoc.petrol = isHourly ? 0 : (Number(employee.petrol) || 0);
+          latestInDoc.lta = isHourly ? 0 : (Number(employee.lta) || 0);
+          latestInDoc.employerNPS = isHourly ? 0 : (Number(employee.employerNPS) || 0);
+          latestInDoc.insuranceAmount = isHourly ? 0 : (Number(employee.insuranceAmount) || 0);
           latestInDoc.deductions = {
             tds: employee.deductions?.tds || 0,
-            professionalTax: employee.deductions?.professionalTax || 0,
-            otherDeductions: employee.deductions?.otherDeductions || [],
+            professionalTax: isHourly ? 0 : (employee.deductions?.professionalTax || 0),
+            otherDeductions: isHourly ? [] : (employee.deductions?.otherDeductions || []),
           };
           latestInDoc.salaryStructure = {
-            conveyance: Number(employee.salaryStructure?.conveyance) || 0,
-            medicalAllowance: Number(employee.salaryStructure?.medicalAllowance) || 0,
-            otherAllowances: employee.salaryStructure?.otherAllowances || [],
+            conveyance: isHourly ? 0 : (Number(employee.salaryStructure?.conveyance) || 0),
+            medicalAllowance: isHourly ? 0 : (Number(employee.salaryStructure?.medicalAllowance) || 0),
+            otherAllowances: isHourly ? [] : (employee.salaryStructure?.otherAllowances || []),
           };
         }
       }
@@ -1560,28 +1576,31 @@ exports.addSalaryRevision = async (req, res) => {
 
     employee.salaryRevisions.push({
       effectiveDate,
-      previousCTC,
-      newCTC,
+      previousCTC: isHourly ? 0 : previousCTC,
+      newCTC: isHourly ? 0 : newCTC,
+      previousHourlyRate: isHourly ? previousHourlyRate : undefined,
+      newHourlyRate: isHourly ? newHourlyRate : undefined,
       reason: req.body.reason || '',
       revisedBy: req.user?.email || req.user?.username || String(req.user?._id || ''),
 
-      monthlyCTC: newCTC,
-      pfEnabled: nextPayload.pfEnabled,
-      esiEnabled: nextPayload.esiEnabled,
-      ptEnabled: nextPayload.ptEnabled,
-      lwfEnabled: nextPayload.lwfEnabled,
-      gratuityEnabled: nextPayload.gratuityEnabled,
-      includePfInCTC: nextPayload.includePfInCTC,
-      includeGratuityInCTC: nextPayload.includeGratuityInCTC,
-      basicPercent: nextPayload.basicPercent,
-      hraPercent: nextPayload.hraPercent,
-      joiningBonus: nextPayload.joiningBonus,
-      flexiAmount: nextPayload.flexiAmount,
-      broadband: nextPayload.broadband,
-      petrol: nextPayload.petrol,
-      lta: nextPayload.lta,
-      employerNPS: nextPayload.employerNPS,
-      insuranceAmount: nextPayload.insuranceAmount,
+      monthlyCTC: isHourly ? 0 : newCTC,
+      hourlyRate: isHourly ? newHourlyRate : 0,
+      pfEnabled: isHourly ? false : nextPayload.pfEnabled,
+      esiEnabled: isHourly ? false : nextPayload.esiEnabled,
+      ptEnabled: isHourly ? false : nextPayload.ptEnabled,
+      lwfEnabled: isHourly ? false : nextPayload.lwfEnabled,
+      gratuityEnabled: isHourly ? false : nextPayload.gratuityEnabled,
+      includePfInCTC: isHourly ? false : nextPayload.includePfInCTC,
+      includeGratuityInCTC: isHourly ? false : nextPayload.includeGratuityInCTC,
+      basicPercent: isHourly ? null : nextPayload.basicPercent,
+      hraPercent: isHourly ? null : nextPayload.hraPercent,
+      joiningBonus: isHourly ? 0 : nextPayload.joiningBonus,
+      flexiAmount: isHourly ? 0 : nextPayload.flexiAmount,
+      broadband: isHourly ? 0 : nextPayload.broadband,
+      petrol: isHourly ? 0 : nextPayload.petrol,
+      lta: isHourly ? 0 : nextPayload.lta,
+      employerNPS: isHourly ? 0 : nextPayload.employerNPS,
+      insuranceAmount: isHourly ? 0 : nextPayload.insuranceAmount,
       deductions: nextPayload.deductions,
       salaryStructure: {
         conveyance: nextPayload.salaryStructure?.conveyance || 0,
@@ -1590,23 +1609,24 @@ exports.addSalaryRevision = async (req, res) => {
       },
     });
 
-    employee.monthlyCTC = newCTC;
-    employee.pfEnabled = nextPayload.pfEnabled;
-    employee.esiEnabled = nextPayload.esiEnabled;
-    employee.ptEnabled = nextPayload.ptEnabled;
-    employee.lwfEnabled = nextPayload.lwfEnabled;
-    employee.gratuityEnabled = nextPayload.gratuityEnabled;
-    employee.includePfInCTC = nextPayload.includePfInCTC;
-    employee.includeGratuityInCTC = nextPayload.includeGratuityInCTC;
-    employee.basicPercent = nextPayload.basicPercent;
-    employee.hraPercent = nextPayload.hraPercent;
-    employee.joiningBonus = nextPayload.joiningBonus;
-    employee.flexiAmount = nextPayload.flexiAmount;
-    employee.broadband = nextPayload.broadband;
-    employee.petrol = nextPayload.petrol;
-    employee.lta = nextPayload.lta;
-    employee.employerNPS = nextPayload.employerNPS;
-    employee.insuranceAmount = nextPayload.insuranceAmount;
+    employee.monthlyCTC = isHourly ? 0 : newCTC;
+    employee.hourlyRate = isHourly ? newHourlyRate : 0;
+    employee.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
+    employee.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
+    employee.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
+    employee.lwfEnabled = isHourly ? false : nextPayload.lwfEnabled;
+    employee.gratuityEnabled = isHourly ? false : nextPayload.gratuityEnabled;
+    employee.includePfInCTC = isHourly ? false : nextPayload.includePfInCTC;
+    employee.includeGratuityInCTC = isHourly ? false : nextPayload.includeGratuityInCTC;
+    employee.basicPercent = isHourly ? null : nextPayload.basicPercent;
+    employee.hraPercent = isHourly ? null : nextPayload.hraPercent;
+    employee.joiningBonus = isHourly ? 0 : nextPayload.joiningBonus;
+    employee.flexiAmount = isHourly ? 0 : nextPayload.flexiAmount;
+    employee.broadband = isHourly ? 0 : nextPayload.broadband;
+    employee.petrol = isHourly ? 0 : nextPayload.petrol;
+    employee.lta = isHourly ? 0 : nextPayload.lta;
+    employee.employerNPS = isHourly ? 0 : nextPayload.employerNPS;
+    employee.insuranceAmount = isHourly ? 0 : nextPayload.insuranceAmount;
     employee.deductions = nextPayload.deductions;
     employee.salaryStructure = salaryStructure;
 

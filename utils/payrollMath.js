@@ -271,16 +271,17 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   }
 
   const isIntern = source.employmentType === 'intern';
-  const useComponents = source.useSalaryComponents !== false && !isIntern;
+  const isHourly = source.payType === 'hourly';
+  const useComponents = source.useSalaryComponents !== false && !isIntern && !isHourly;
 
   // Toggles integration
-  const pfEnabled = !isIntern && source.pfEnabled !== false;
-  const esiEnabled = !isIntern && source.esiEnabled !== false;
-  const ptEnabled = !isIntern && source.ptEnabled !== false;
-  const lwfEnabled = !isIntern && source.lwfEnabled !== false;
-  const gratuityEnabled = !isIntern && source.gratuityEnabled !== false;
-  const includePfInCTC = !isIntern && source.includePfInCTC !== false;
-  const includeGratuityInCTC = !isIntern && source.includeGratuityInCTC !== false;
+  const pfEnabled = !isIntern && !isHourly && source.pfEnabled !== false;
+  const esiEnabled = !isIntern && !isHourly && source.esiEnabled !== false;
+  const ptEnabled = !isIntern && !isHourly && source.ptEnabled !== false;
+  const lwfEnabled = !isIntern && !isHourly && source.lwfEnabled !== false;
+  const gratuityEnabled = !isIntern && !isHourly && source.gratuityEnabled !== false;
+  const includePfInCTC = !isIntern && !isHourly && source.includePfInCTC !== false;
+  const includeGratuityInCTC = !isIntern && !isHourly && source.includeGratuityInCTC !== false;
 
   let basicPercent = !useComponents ? 1.0 : config.basicPercent;
   if (useComponents && source.basicPercent !== undefined && source.basicPercent !== null && Number(source.basicPercent) > 0) {
