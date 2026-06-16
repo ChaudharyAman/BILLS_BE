@@ -19,6 +19,9 @@ const PayrollSchema = new mongoose.Schema({
   paidLeaves: { type: Number, default: 0 },
   unpaidLeaves: { type: Number, default: 0 },
   lop: { type: Number, default: 0 },
+  hoursWorked: { type: Number, default: 0 },
+  payType: { type: String, enum: ['salaried', 'hourly'], default: 'salaried' },
+  hourlyRate: { type: Number, default: 0 },
 
   earnings: {
     basic: { type: Number, default: 0 },
@@ -107,6 +110,7 @@ const PayrollSchema = new mongoose.Schema({
     gratuityEnabled: Boolean,
     includePfInCTC: Boolean,
     includeGratuityInCTC: Boolean,
+    useSalaryComponents: Boolean,
     taxRegime: String,
     declarations: mongoose.Schema.Types.Mixed,
   },

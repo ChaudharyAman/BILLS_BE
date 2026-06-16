@@ -261,6 +261,7 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
   columns.push({ header: 'Gratuity Enabled', group: 'Statutory Toggles', key: 'gratuityEnabled', sample: 'No' });
   columns.push({ header: 'Include PF in CTC', group: 'Statutory Toggles', key: 'includePfInCTC', sample: 'No' });
   columns.push({ header: 'Include Gratuity in CTC', group: 'Statutory Toggles', key: 'includeGratuityInCTC', sample: 'No' });
+  columns.push({ header: 'Use Salary Components', group: 'Statutory Toggles', key: 'useSalaryComponents', sample: 'Yes', getValue: (employee) => employee?.useSalaryComponents !== false ? 'Yes' : 'No' });
 
   // Helper to find dynamic column letters
   const getColLetter = (k) => {
@@ -725,7 +726,7 @@ exports.getActiveEmployees = async (req, res) => {
 
     const employees = await Employee.find(query)
       .populate('department', 'name code')
-      .select('employeeId firstName lastName email designation department salaryStructure deductions monthlyCTC flexiAmount broadband petrol lta employerNPS insuranceAmount joiningBonus joiningDate location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled includePfInCTC includeGratuityInCTC basicPercent hraPercent salaryRevisions')
+      .select('employeeId firstName lastName email designation department salaryStructure deductions monthlyCTC flexiAmount broadband petrol lta employerNPS insuranceAmount joiningBonus joiningDate location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled includePfInCTC includeGratuityInCTC basicPercent hraPercent useSalaryComponents salaryRevisions')
       .sort({ firstName: 1, lastName: 1 })
       .lean();
 
@@ -973,6 +974,7 @@ exports.importEmployees = async (req, res) => {
       const gratuityEnabled = parseYesNo(getCellValue(rawRow, ['GRATUITY ENABLED']));
       const includePfInCTC = parseYesNo(getCellValue(rawRow, ['INCLUDE PF IN CTC']));
       const includeGratuityInCTC = parseYesNo(getCellValue(rawRow, ['INCLUDE GRATUITY IN CTC']));
+      const useSalaryComponents = parseYesNo(getCellValue(rawRow, ['USE SALARY COMPONENTS', 'USE_SALARY_COMPONENTS']));
 
       // Address
       const addressLine1 = String(getCellValue(rawRow, ['ADDRESS LINE 1']) || '').trim();
@@ -1056,6 +1058,7 @@ exports.importEmployees = async (req, res) => {
         gratuityEnabled: gratuityEnabled !== undefined ? gratuityEnabled : true,
         includePfInCTC: includePfInCTC !== undefined ? includePfInCTC : true,
         includeGratuityInCTC: includeGratuityInCTC !== undefined ? includeGratuityInCTC : true,
+        useSalaryComponents: useSalaryComponents !== undefined ? useSalaryComponents : true,
         address: {
           line1: addressLine1,
           line2: addressLine2,

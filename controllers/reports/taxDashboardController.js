@@ -465,7 +465,12 @@ exports.getTaxDashboard = async (req, res) => {
     const netTaxPayable = roundTwo(netPayable + tdsPayable);
     
     const gstDueDate = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 20));
-    const tdsDueDate = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 7));
+    // TDS due date: 7th of next month for all months EXCEPT March (month=2), where it is April 30th
+    const isMarch = endDate.getUTCMonth() === 2;
+    const tdsDueDate = isMarch
+      ? new Date(Date.UTC(endDate.getUTCFullYear(), 3, 30))  // April 30 for March quarter
+      : new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 7));
+
 
     res.json({
       period: { startDate, endDate, month: MONTHS[startDate.getUTCMonth()], year: startDate.getUTCFullYear() },

@@ -2,6 +2,20 @@ const cloudinary = require('../config/cloudinary');
 const fs = require('fs');
 const Settings = require('../models/Settings');
 
+// Placeholder shown to the frontend in place of real secret values
+const SECRET_MASK = '••••••••';
+
+// Mask secret integration fields so they are never sent to the client
+const maskIntegrationSecrets = (settingsDoc) => {
+  const obj = settingsDoc.toObject ? settingsDoc.toObject() : { ...settingsDoc };
+  if (obj.integration) {
+    if (obj.integration.apiKey)           obj.integration.apiKey           = SECRET_MASK;
+    if (obj.integration.encryptionSecret) obj.integration.encryptionSecret = SECRET_MASK;
+    if (obj.integration.webhookSecret)    obj.integration.webhookSecret    = SECRET_MASK;
+  }
+  return obj;
+};
+
 // Get Settings (Create default if not exists)
 exports.getSettings = async (req, res) => {
   try {
@@ -15,7 +29,8 @@ exports.getSettings = async (req, res) => {
       // Re-fetch to populate after creation
       settings = await Settings.findById(settings._id).populate('user', 'username email phone');
     }
-    res.json(settings);
+    // Return masked secrets — these are write-only fields
+    res.json(maskIntegrationSecrets(settings));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -73,11 +88,24 @@ exports.updateSettings = async (req, res) => {
       defaultCurrency, timezone, dateFormat, integration
     } = req.body;
 
+    // Strip write-only secret placeholders so they are not overwritten with the mask value
+    let safeIntegration = integration;
+    if (integration && typeof integration === 'object') {
+      safeIntegration = { ...integration };
+      const secretFields = ['apiKey', 'encryptionSecret', 'webhookSecret'];
+      for (const field of secretFields) {
+        if (safeIntegration[field] === SECRET_MASK || safeIntegration[field] === '') {
+          delete safeIntegration[field]; // leave DB value unchanged
+        }
+      }
+    }
+
     const settingsUpdate = {
       companyName, contactName, website, email, phone, gstin, pan,
       address, defaultTerms, defaultNotes, bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
-      defaultCurrency, timezone, dateFormat, integration
+      defaultCurrency, timezone, dateFormat,
+      ...(safeIntegration !== undefined ? { integration: safeIntegration } : {})
     };
 
     // Remove undefined fields and invalid "[object Object]" strings (common in multipart/form-data submissions)
@@ -138,9 +166,9 @@ exports.updateSettings = async (req, res) => {
     }
     
     await settings.save();
-    // Return populated settings
+    // Return populated settings with secrets masked
     const populatedSettings = await Settings.findById(settings._id).populate('user', 'username email phone');
-    res.json(populatedSettings);
+    res.json(maskIntegrationSecrets(populatedSettings));
   } catch (error) {
     // Cleanup local files if error
     if (req.files) {

@@ -43,6 +43,9 @@ const EmployeeSchema = new mongoose.Schema({
   },
 
   monthlyCTC: { type: Number, default: 0, min: 0 },
+  role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null },
+  payType: { type: String, enum: ['salaried', 'hourly'], default: 'salaried' },
+  hourlyRate: { type: Number, default: 0, min: 0 },
   flexiAmount: { type: Number, default: 0, min: 0 },
   broadband: { type: Number, default: 0, min: 0 },
   petrol: { type: Number, default: 0, min: 0 },
@@ -52,6 +55,7 @@ const EmployeeSchema = new mongoose.Schema({
   joiningBonus: { type: Number, default: 0, min: 0 },
   basicPercent: { type: Number, default: null },
   hraPercent: { type: Number, default: null },
+  useSalaryComponents: { type: Boolean, default: true },
 
   pfEnabled: { type: Boolean, default: true },
   esiEnabled: { type: Boolean, default: true },
@@ -99,6 +103,12 @@ const EmployeeSchema = new mongoose.Schema({
   },
   declarations: {
     section80C: { type: Number, default: 0, min: 0 },
+    // 80C breakdown sub-fields (UI convenience — capped total stored in section80C)
+    epf:             { type: Number, default: 0, min: 0 },
+    ppf:             { type: Number, default: 0, min: 0 },
+    elss:            { type: Number, default: 0, min: 0 },
+    lic:             { type: Number, default: 0, min: 0 },
+    homeLoanPrincipal: { type: Number, default: 0, min: 0 },
     section80D: { type: Number, default: 0, min: 0 },
     section24b: { type: Number, default: 0, min: 0 },
     section80CCD1B: { type: Number, default: 0, min: 0 },
@@ -156,6 +166,31 @@ EmployeeSchema.index({ user: 1, employeeId: 1 }, { unique: true });
 EmployeeSchema.index({ user: 1, email: 1 });
 
 EmployeeSchema.pre('save', async function() {
+  // Guard: cannot compute salary without a user reference
+  if (!this.user) return;
+
+  if (this.role) {
+    const Role = mongoose.model('Role');
+    const roleDoc = await Role.findOne({ _id: this.role, user: this.user }).lean();
+    if (roleDoc) {
+      if (this.isNew) {
+        this.payType = this.payType || roleDoc.payType;
+        this.monthlyCTC = this.monthlyCTC || roleDoc.monthlyCTC;
+        this.hourlyRate = this.hourlyRate || roleDoc.hourlyRate;
+        this.pfEnabled = this.pfEnabled !== undefined ? this.pfEnabled : roleDoc.pfEnabled;
+        this.esiEnabled = this.esiEnabled !== undefined ? this.esiEnabled : roleDoc.esiEnabled;
+        this.ptEnabled = this.ptEnabled !== undefined ? this.ptEnabled : roleDoc.ptEnabled;
+        this.lwfEnabled = this.lwfEnabled !== undefined ? this.lwfEnabled : roleDoc.lwfEnabled;
+        this.gratuityEnabled = this.gratuityEnabled !== undefined ? this.gratuityEnabled : roleDoc.gratuityEnabled;
+        this.includePfInCTC = this.includePfInCTC !== undefined ? this.includePfInCTC : roleDoc.includePfInCTC;
+        this.includeGratuityInCTC = this.includeGratuityInCTC !== undefined ? this.includeGratuityInCTC : roleDoc.includeGratuityInCTC;
+        this.basicPercent = this.basicPercent || roleDoc.basicPercent;
+        this.hraPercent = this.hraPercent || roleDoc.hraPercent;
+        this.useSalaryComponents = this.useSalaryComponents !== undefined ? this.useSalaryComponents : roleDoc.useSalaryComponents;
+      }
+    }
+  }
+
   const PayrollConfig = mongoose.model('PayrollConfig');
   let config = {};
   if (this.user) {
@@ -189,6 +224,9 @@ const applySalaryStructureUpdate = async function() {
     set.salaryStructure ||
     Object.keys(set).some((key) => key.startsWith('salaryStructure.')) ||
     set.monthlyCTC !== undefined ||
+    set.role !== undefined ||
+    set.payType !== undefined ||
+    set.hourlyRate !== undefined ||
     set.pfEnabled !== undefined ||
     set.esiEnabled !== undefined ||
     set.ptEnabled !== undefined ||
@@ -198,6 +236,42 @@ const applySalaryStructureUpdate = async function() {
     set.includeGratuityInCTC !== undefined
   );
   if (!hasSalaryUpdate) return;
+
+  const docId = this.getQuery()._id;
+  let currentDoc = {};
+  if (mongoose.Types.ObjectId.isValid(String(docId))) {
+    currentDoc = await this.model.findOne({ _id: docId }).lean() || {};
+  }
+
+  // Load Role if role is set or changed
+  const newRole = set.role !== undefined ? set.role : currentDoc.role;
+  let roleDoc = null;
+  if (newRole) {
+    const Role = mongoose.model('Role');
+    const userId = set.user || currentDoc.user;
+    roleDoc = await Role.findOne({ _id: newRole, user: userId }).lean();
+  }
+
+  const getField = (field, def) => {
+    if (set[field] !== undefined) return set[field];
+    if (roleDoc && roleDoc[field] !== undefined && roleDoc[field] !== null) return roleDoc[field];
+    if (currentDoc[field] !== undefined && currentDoc[field] !== null) return currentDoc[field];
+    return def;
+  };
+
+  if (roleDoc) {
+    const fieldsToSync = [
+      'payType', 'monthlyCTC', 'hourlyRate', 'pfEnabled', 'esiEnabled',
+      'ptEnabled', 'lwfEnabled', 'gratuityEnabled', 'includePfInCTC',
+      'includeGratuityInCTC', 'basicPercent', 'hraPercent', 'useSalaryComponents'
+    ];
+    if (!update.$set) update.$set = {};
+    for (const f of fieldsToSync) {
+      if (update.$set[f] === undefined && set[f] === undefined) {
+        update.$set[f] = roleDoc[f];
+      }
+    }
+  }
 
   let mergedSalary = {};
   if (set.salaryStructure && typeof set.salaryStructure === 'object') {
@@ -210,15 +284,22 @@ const applySalaryStructureUpdate = async function() {
     }
   }
 
-  const docId = this.getQuery()._id;
-  let currentDoc = {};
-  if (mongoose.Types.ObjectId.isValid(String(docId))) {
-    currentDoc = await this.model.findOne({ _id: docId }).lean() || {};
-  }
-
   const mergedEmployee = {
     ...currentDoc,
     ...set,
+    payType: getField('payType', 'salaried'),
+    monthlyCTC: getField('monthlyCTC', 0),
+    hourlyRate: getField('hourlyRate', 0),
+    pfEnabled: getField('pfEnabled', true),
+    esiEnabled: getField('esiEnabled', true),
+    ptEnabled: getField('ptEnabled', true),
+    lwfEnabled: getField('lwfEnabled', true),
+    gratuityEnabled: getField('gratuityEnabled', true),
+    includePfInCTC: getField('includePfInCTC', true),
+    includeGratuityInCTC: getField('includeGratuityInCTC', true),
+    basicPercent: getField('basicPercent', null),
+    hraPercent: getField('hraPercent', null),
+    useSalaryComponents: getField('useSalaryComponents', true),
     salaryStructure: {
       ...(currentDoc.salaryStructure || {}),
       ...mergedSalary
@@ -287,6 +368,16 @@ EmployeeSchema.pre('updateMany', async function() {
 });
 
 const removeEmployeePII = (doc, ret) => {
+  // Strip sensitive fields that should never be serialised in API responses.
+  // Note: panNumber, uanNumber, aadharNumber and bankDetails.accountNumber
+  // already use `select: false` in the schema — this transform provides a
+  // second layer of protection in case a query explicitly projects them in.
+  delete ret.panNumber;
+  delete ret.uanNumber;
+  delete ret.aadharNumber;
+  if (ret.bankDetails) {
+    delete ret.bankDetails.accountNumber;
+  }
   return ret;
 };
 EmployeeSchema.set('toJSON', { transform: removeEmployeePII });
