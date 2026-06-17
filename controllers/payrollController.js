@@ -59,12 +59,14 @@ const buildAttendancePayload = (payload = {}, defaultWorkingDays = 26) => {
   const unpaidLeaves = Math.max(Number(payload.unpaidLeaves) || 0, 0);
   const paidDaysInput = payload.paidDays ?? payload.presentDays ?? workingDays - unpaidLeaves;
   const paidDays = Math.max(Math.min(Number(paidDaysInput) || 0, workingDays), 0);
+  const hoursWorked = Number(payload.hoursWorked) || 0;
 
   return {
     workingDays,
     paidDays,
     paidLeaves,
     unpaidLeaves,
+    hoursWorked,
   };
 };
 
@@ -87,7 +89,7 @@ const buildPayrollWorkbook = (payrolls) => {
   const columns = [
     'Sr No', 'Name', 'DOJ', 'DOL', 'Gender', 'Emp No', 'Email', 'Bank A/C', 'IFSC', 'PAN', 'Aadhar', 'Location', 'Designation',
     'Monthly CTC', 'BASIC(master)', 'HRA(master)', 'Meal+Broadband', 'PF Employer', 'Special Allowance', 'DIFF',
-    'Working Days', 'Paid Days', 'BASIC(paid)', 'HRA(paid)', 'Flexi', 'Broadband', 'Petrol', 'LTA', 'Employer NPS', 'Insurance',
+    'Working Days', 'Paid Days', 'Hours Worked', 'Hourly Rate', 'BASIC(paid)', 'HRA(paid)', 'Flexi', 'Broadband', 'Petrol', 'LTA', 'Employer NPS', 'Insurance',
     'PF(Emp Contrib)', 'Gratuity', 'LWF', 'GROSS TOTAL', 'Joining Bonus', 'Loyalty Bonus', 'Incentive', 'Other Allowance', 'Special Bonus', 'Total Payable',
     'PF Deduction', 'Insurance(ded)', 'Gratuity(ded)', 'LWF(ded)', 'Other Deduction', 'Income Tax', 'TOTAL DEDUCTION', 'NET TAKE HOME', 'Remarks',
   ];
@@ -137,6 +139,8 @@ const buildPayrollWorkbook = (payrolls) => {
       diff,
       Number(payroll.workingDays) || 0,
       Number(payroll.paidDays) || 0,
+      payroll.payType === 'hourly' ? (Number(payroll.hoursWorked) || 0) : 0,
+      payroll.payType === 'hourly' ? (Number(payroll.hourlyRate) || 0) : 0,
       Number(payroll.earnings?.basic) || 0,
       Number(payroll.earnings?.hra) || 0,
       Number(payroll.earnings?.flexiAmount) || 0,
@@ -183,16 +187,16 @@ const buildPayrollWorkbook = (payrolls) => {
 
   sheet['!merges'] = [
     XLSX.utils.decode_range('A1:M1'),
-    XLSX.utils.decode_range('N1:AH1'),
-    XLSX.utils.decode_range('AI1:AN1'),
-    XLSX.utils.decode_range('AO1:AW1'),
+    XLSX.utils.decode_range('N1:AJ1'),
+    XLSX.utils.decode_range('AK1:AP1'),
+    XLSX.utils.decode_range('AQ1:AY1'),
   ];
 
   const headerCells = [];
   for (let i = 0; i < columns.length; i += 1) {
     headerCells.push(`${XLSX.utils.encode_col(i)}2`);
   }
-  ['A1', 'N1', 'AI1', 'AO1'].forEach((cell) => {
+  ['A1', 'N1', 'AK1', 'AQ1'].forEach((cell) => {
     if (sheet[cell]) {
       sheet[cell].s = {
         font: { bold: true, color: { rgb: 'FFFFFF' } },
@@ -309,6 +313,9 @@ exports.processPayroll = async (req, res) => {
           paidLeaves: snapshot.paidLeaves,
           unpaidLeaves: snapshot.unpaidLeaves,
           lop: snapshot.lop,
+          hoursWorked: employee.payType === 'hourly' ? attendance.hoursWorked : 0,
+          payType: employee.payType,
+          hourlyRate: employee.payType === 'hourly' ? employee.hourlyRate : 0,
           earnings: snapshot.earnings,
           employerContributions: snapshot.employerContributions,
           variablePay: snapshot.variablePay,
@@ -338,6 +345,7 @@ exports.processPayroll = async (req, res) => {
             gratuityEnabled: snapshot.master.gratuityEnabled !== false,
             includePfInCTC: snapshot.master.includePfInCTC !== false,
             includeGratuityInCTC: snapshot.master.includeGratuityInCTC !== false,
+            useSalaryComponents: snapshot.master.useSalaryComponents !== false,
             taxRegime: employee.taxRegime,
             declarations: employee.declarations,
           },
@@ -532,14 +540,26 @@ exports.updatePayrollConfig = async (req, res) => {
 exports.calculateSalary = async (req, res) => {
   try {
     const config = await getOrCreateConfig(req.user._id);
-    const monthlyCTC = Number(req.body.monthlyCTC) || (Number(req.body.annualCTC) ? Number(req.body.annualCTC) / 12 : 0);
+    let monthlyCTC = Number(req.body.monthlyCTC) || (Number(req.body.annualCTC) ? Number(req.body.annualCTC) / 12 : 0);
+    const payType = req.body.payType || 'salaried';
+    const hourlyRate = Number(req.body.hourlyRate) || 0;
+    const hoursWorked = req.body.hoursWorked !== undefined ? Number(req.body.hoursWorked) : 160;
 
-    if (!monthlyCTC || monthlyCTC < 0) {
+    if (payType === 'hourly') {
+      monthlyCTC = hourlyRate * hoursWorked;
+    }
+
+    if (payType !== 'hourly' && (!monthlyCTC || monthlyCTC < 0)) {
       return res.status(400).json({ message: 'Monthly CTC or Annual CTC is required' });
     }
 
     const previewSource = {
       monthlyCTC,
+      payType,
+      hourlyRate,
+      hoursWorked,
+      employmentType: req.body.employmentType,
+      useSalaryComponents: req.body.useSalaryComponents !== false && payType !== 'hourly',
       basicPercent: req.body.basicPercent !== undefined && req.body.basicPercent !== null ? Number(req.body.basicPercent) : null,
       hraPercent: req.body.hraPercent !== undefined && req.body.hraPercent !== null ? Number(req.body.hraPercent) : null,
       basic: req.body.basic !== undefined ? Number(req.body.basic) : undefined,
@@ -552,16 +572,16 @@ exports.calculateSalary = async (req, res) => {
       employerNPS: Number(req.body.employerNPS) || 0,
       insuranceAmount: req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : config.defaultInsurance,
       taxRegime: req.body.taxRegime || 'new',
-      pfEnabled: req.body.pfEnabled !== false,
-      esiEnabled: req.body.esiEnabled !== false,
-      ptEnabled: req.body.ptEnabled !== false,
-      lwfEnabled: req.body.lwfEnabled !== false,
-      gratuityEnabled: req.body.gratuityEnabled !== false,
-      includePfInCTC: req.body.includePfInCTC !== false,
-      includeGratuityInCTC: req.body.includeGratuityInCTC !== false,
+      pfEnabled: payType === 'hourly' ? false : req.body.pfEnabled !== false,
+      esiEnabled: payType === 'hourly' ? false : req.body.esiEnabled !== false,
+      ptEnabled: payType === 'hourly' ? false : req.body.ptEnabled !== false,
+      lwfEnabled: payType === 'hourly' ? false : req.body.lwfEnabled !== false,
+      gratuityEnabled: payType === 'hourly' ? false : req.body.gratuityEnabled !== false,
+      includePfInCTC: payType === 'hourly' ? false : req.body.includePfInCTC !== false,
+      includeGratuityInCTC: payType === 'hourly' ? false : req.body.includeGratuityInCTC !== false,
       declarations: req.body.declarations || {},
       deductions: {
-        professionalTax: Number(req.body.professionalTax) || 0,
+        professionalTax: payType === 'hourly' ? 0 : (Number(req.body.professionalTax) || 0),
         tds: Number(req.body.tds) || 0,
         otherDeductions: Array.isArray(req.body.otherDeductions) ? req.body.otherDeductions : (Array.isArray(req.body.deductions?.otherDeductions) ? req.body.deductions.otherDeductions : []),
       },
@@ -625,7 +645,7 @@ exports.exportPayrollExcel = async (req, res) => {
     const payrolls = await Payroll.find({ user: req.user._id, month, year })
       .populate({
         path: 'employee',
-        select: '+bankDetails.accountNumber +panNumber +aadharNumber firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode',
+        select: '+bankDetails.accountNumber +panNumber +aadharNumber firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode payType hourlyRate',
       })
       .sort({ createdAt: 1 })
       .lean();
@@ -689,7 +709,7 @@ exports.getPayrolls = async (req, res) => {
     const payrolls = await Payroll.find(query)
       .populate({
         path: 'employee',
-        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled basicPercent hraPercent',
+        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled basicPercent hraPercent payType hourlyRate',
         populate: { path: 'department', select: 'name code' },
       })
       .populate('expenseRef', 'expenseNumber date grandTotal')
@@ -963,8 +983,14 @@ exports.generatePayslip = async (req, res) => {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
+    // Guard: employee may have been deleted after payroll was created
+    if (!payroll.employee) {
+      return res.status(404).json({ message: 'Employee record no longer exists for this payroll' });
+    }
+
     const config = await getOrCreateConfig(req.user._id);
     const adjustments = {
+
       pfEnabled: payroll.employeeSnapshot?.pfEnabled,
       esiEnabled: payroll.employeeSnapshot?.esiEnabled,
       ptEnabled: payroll.employeeSnapshot?.ptEnabled,
@@ -1005,6 +1031,9 @@ exports.generatePayslip = async (req, res) => {
         paidLeaves: payroll.paidLeaves,
         unpaidLeaves: payroll.unpaidLeaves,
         lop: payroll.lop,
+        payType: payroll.payType,
+        hoursWorked: payroll.hoursWorked,
+        hourlyRate: payroll.hourlyRate,
         paymentMethod: payroll.paymentMethod,
         transactionId: payroll.transactionId,
         paymentDate: payroll.paymentDate,

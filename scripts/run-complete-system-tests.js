@@ -15,6 +15,7 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 const Expense = require('../models/Expense');
 const Settings = require('../models/Settings');
 const SubscriptionOrder = require('../models/SubscriptionOrder');
+const BankStatement = require('../models/BankStatement');
 
 const EXTERNAL_BASE_URL = process.env.SYSTEM_TEST_BASE_URL || '';
 const PORT = Number(process.env.SYSTEM_TEST_PORT || 5051);
@@ -145,6 +146,7 @@ async function cleanup() {
 
   await Promise.all([
     Client.deleteMany({ user: { $in: ids } }),
+    BankStatement.deleteMany({ user: { $in: ids } }),
     Item.deleteMany({ user: { $in: ids } }),
     Invoice.deleteMany({ user: { $in: ids } }),
     Quote.deleteMany({ user: { $in: ids } }),
@@ -1516,6 +1518,217 @@ async function payrollAndEmployeeCases() {
     ok(approve.data.status === 'approved', 'Reimbursement claim was not approved');
     return 'Reimbursement verified';
   });
+
+  await run('Hourly contractor employee lifecycle and payroll processing', async () => {
+    // 1. Create hourly contractor employee
+    const employeeId = unique('EMP-HOURLY');
+    const create = await api('POST', '/api/employees', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        employeeId,
+        firstName: 'Hourly',
+        lastName: 'Contractor',
+        email: `${employeeId}@test.com`,
+        joiningDate: '2026-06-01',
+        payType: 'hourly',
+        hourlyRate: 25,
+        pfEnabled: false,
+        esiEnabled: false,
+        ptEnabled: false,
+        lwfEnabled: false,
+        gratuityEnabled: false,
+        includePfInCTC: false,
+        includeGratuityInCTC: false
+      }
+    });
+    const targetEmpId = create.data._id;
+    ok(create.data.payType === 'hourly', 'Pay type should be hourly');
+    ok(create.data.hourlyRate === 25, 'Hourly rate should be 25');
+
+    // 2. Revise hourly rate
+    const revise = await api('POST', `/api/employees/${targetEmpId}/salary-revision`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        newHourlyRate: 30,
+        effectiveDate: '2026-06-16',
+        reason: 'Rate adjustment'
+      }
+    });
+    ok(revise.data.hourlyRate === 30, 'Revised hourly rate should be 30');
+
+    // 3. Process payroll for June 2026
+    const process = await api('POST', '/api/payroll/process', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        month: 6,
+        year: 2026,
+        saveAsDraft: true,
+        employees: [{
+          employeeId: targetEmpId,
+          workingDays: 30,
+          paidDays: 30,
+          paidLeaves: 0,
+          unpaidLeaves: 0,
+          hoursWorked: 160,
+          adjustments: {
+            hoursWorked: 160,
+            esiEnabled: false,
+            ptEnabled: false,
+            lwfEnabled: false,
+            gratuityEnabled: false,
+            includePfInCTC: false,
+            includeGratuityInCTC: false,
+            tds: 0
+          }
+        }]
+      }
+    });
+    ok(process.data.success.length === 1, 'Payroll process bulk run failed');
+    const payrollId = process.data.success[0].payrollId;
+
+    // 4. Fetch processed payroll draft and assert details
+    const getPayroll = await api('GET', `/api/payroll/${payrollId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+
+    const netSalary = getPayroll.data.netSalary;
+    ok(Math.abs(netSalary - 4400) < 0.1, `Expected net salary ~4400, got: ${netSalary}`);
+    return `Hourly rate: 30, Hours worked: 160, Net Salary: ${netSalary}`;
+  });
+}
+
+async function bankStatementCases() {
+  await run('Bank statement CRUD lifecycle', async () => {
+    // 1. Create a bank statement
+    const statementPayload = {
+      fileName: 'test_statement.xlsx',
+      label: 'Test Statement Label',
+      transactions: [
+        { date: '2026-04-01', description: 'UPI/Porter/Devendra', debit: 500, credit: 0, balance: 10000, category: 'Custom Test Category', subCategory: 'Custom Test Subcategory', txnId: 'T1' },
+        { date: '2026-04-02', description: 'Salary credit', debit: 0, credit: 25000, balance: 35000, category: 'Salary', txnId: 'T2' }
+      ]
+    };
+
+    const createRes = await api('POST', '/api/bank-statements', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: statementPayload
+    });
+
+    const statementId = createRes.data._id;
+    ok(statementId, 'Bank statement ID should be generated');
+
+    // Verify auto-created category and sub-category
+    const Category = require('../models/Category');
+    const autoCat = await Category.findOne({ name: 'Custom Test Category', type: 'expense' });
+    ok(autoCat, 'Auto-created category "Custom Test Category" should exist');
+    const autoSub = await Category.findOne({ name: 'Custom Test Subcategory', parent: autoCat._id, type: 'expense' });
+    ok(autoSub, 'Auto-created subcategory "Custom Test Subcategory" should exist and link to parent');
+
+    ok(createRes.data.totalCredits === 25000, 'Total credits should match');
+    ok(createRes.data.totalDebits === 500, 'Total debits should match');
+    ok(createRes.data.netFlow === 24500, 'Net flow should match');
+    ok(createRes.data.txnCount === 2, 'Txn count should match');
+
+    // 2. Fetch list of statements and verify transactions array is excluded
+    const listRes = await api('GET', '/api/bank-statements', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+
+    const found = listRes.data.data.find(s => s._id === statementId);
+    ok(found, 'Created statement should be in the list');
+    ok(!found.transactions, 'List endpoint should not return transactions array');
+    ok(found.label === 'Test Statement Label', 'Label should match');
+
+    // 2b. Fetch list of statements WITH transactions and verify they are populated
+    const listWithTxnsRes = await api('GET', '/api/bank-statements?includeTransactions=true', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    const foundWithTxns = listWithTxnsRes.data.data.find(s => s._id === statementId);
+    ok(foundWithTxns && foundWithTxns.transactions && foundWithTxns.transactions.length === 2, 'List endpoint with includeTransactions=true should return transactions');
+
+    // 3. Fetch single statement and verify transactions are populated
+    const getRes = await api('GET', `/api/bank-statements/${statementId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+
+    ok(getRes.data.transactions && getRes.data.transactions.length === 2, 'Single get should return all transactions');
+    ok(getRes.data.transactions[0].description === 'UPI/Porter/Devendra', 'Transaction description should match');
+
+    // 3b. Verify Duplicate Transaction Checking
+    // Upload a new statement containing T1 (which already exists in the statement we just created above)
+    // and a new transaction T3.
+    const dupStatementPayload = {
+      fileName: 'another_statement.xlsx',
+      label: 'Duplicate Check Statement',
+      syncToLedgers: false,
+      transactions: [
+        { date: '2026-04-01', description: 'UPI/Porter/Devendra (dup)', debit: 500, credit: 0, balance: 10000, category: 'UPI', txnId: 'T1' },
+        { date: '2026-04-03', description: 'New unique txn', debit: 1200, credit: 0, balance: 8800, category: 'UPI', txnId: 'T3' }
+      ]
+    };
+
+    const BankStatement = require('../models/BankStatement');
+
+    const dupCreateRes = await api('POST', '/api/bank-statements', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: dupStatementPayload
+    });
+
+    const dupStatementId = dupCreateRes.data._id;
+    ok(dupStatementId, 'Should successfully create statement with filtered transactions');
+    ok(dupCreateRes.data.txnCount === 1, `Expected only 1 transaction to be saved (unique), but got ${dupCreateRes.data.txnCount}`);
+
+    // Verify in DB that only T3 was saved for this second statement
+    const checkDupStmt = await BankStatement.findById(dupStatementId);
+    ok(checkDupStmt.transactions.length === 1, 'Transaction list should only contain 1 item');
+    ok(checkDupStmt.transactions[0].txnId === 'T3', 'The saved transaction should be T3');
+
+    // Clean up dup statement
+    await api('DELETE', `/api/bank-statements/${dupStatementId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+
+    // Attempt to save a statement containing ONLY duplicate transaction IDs (T1 and T2)
+    const allDupPayload = {
+      fileName: 'all_duplicates.xlsx',
+      label: 'All Duplicates',
+      syncToLedgers: false,
+      transactions: [
+        { date: '2026-04-01', description: 'UPI/Porter/Devendra (dup)', debit: 500, credit: 0, balance: 10000, category: 'UPI', txnId: 'T1' },
+        { date: '2026-04-02', description: 'Salary credit (dup)', debit: 0, credit: 25000, balance: 35000, category: 'Salary', txnId: 'T2' }
+      ]
+    };
+
+    await api('POST', '/api/bank-statements', {
+      token: state.tokens.pro,
+      expectedStatus: 400,
+      body: allDupPayload
+    });
+
+    // 4. Delete the statement
+    await api('DELETE', `/api/bank-statements/${statementId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+
+    // 5. Subsequent fetch should return 404
+    await api('GET', `/api/bank-statements/${statementId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 404
+    });
+
+    return 'BankStatement CRUD & ledger sync verified successfully';
+  });
 }
 
 async function writeReportAndClose(exitCode) {
@@ -1558,6 +1771,7 @@ async function main() {
   await quoteLikeCases();
   await expenseAndBillingCases();
   await payrollAndEmployeeCases();
+  await bankStatementCases();
 
   await run('Logout endpoint responds', async () => {
     await api('POST', '/api/auth/logout', { expectedStatus: 200 });

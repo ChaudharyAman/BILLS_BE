@@ -263,39 +263,47 @@ const calculateTaxDetails = (employee, monthlyCTC, config, basicMaster, hraMaste
 
 const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const config = normalizeConfig(configInput);
-  const monthlyCTC = roundAmount(getMonthlyCTCValue(source));
+  let monthlyCTC = roundAmount(getMonthlyCTCValue(source));
+
+  if (source.payType === 'hourly') {
+    const hours = source.hoursWorked !== undefined ? Number(source.hoursWorked) : 160;
+    monthlyCTC = roundAmount((Number(source.hourlyRate) || 0) * hours);
+  }
+
+  const isIntern = source.employmentType === 'intern';
+  const isHourly = source.payType === 'hourly';
+  const useComponents = source.useSalaryComponents !== false && !isIntern && !isHourly;
 
   // Toggles integration
-  const pfEnabled = source.pfEnabled !== false;
-  const esiEnabled = source.esiEnabled !== false;
-  const ptEnabled = source.ptEnabled !== false;
-  const lwfEnabled = source.lwfEnabled !== false;
-  const gratuityEnabled = source.gratuityEnabled !== false;
-  const includePfInCTC = source.includePfInCTC !== false;
-  const includeGratuityInCTC = source.includeGratuityInCTC !== false;
+  const pfEnabled = !isIntern && !isHourly && source.pfEnabled !== false;
+  const esiEnabled = !isIntern && !isHourly && source.esiEnabled !== false;
+  const ptEnabled = !isIntern && !isHourly && source.ptEnabled !== false;
+  const lwfEnabled = !isIntern && !isHourly && source.lwfEnabled !== false;
+  const gratuityEnabled = !isIntern && !isHourly && source.gratuityEnabled !== false;
+  const includePfInCTC = !isIntern && !isHourly && source.includePfInCTC !== false;
+  const includeGratuityInCTC = !isIntern && !isHourly && source.includeGratuityInCTC !== false;
 
-  let basicPercent = config.basicPercent;
-  if (source.basicPercent !== undefined && source.basicPercent !== null && Number(source.basicPercent) > 0) {
+  let basicPercent = !useComponents ? 1.0 : config.basicPercent;
+  if (useComponents && source.basicPercent !== undefined && source.basicPercent !== null && Number(source.basicPercent) > 0) {
     basicPercent = Number(source.basicPercent) > 1 ? Number(source.basicPercent) / 100 : Number(source.basicPercent);
   }
 
-  let hraPercent = config.hraPercent;
-  if (source.hraPercent !== undefined && source.hraPercent !== null && Number(source.hraPercent) > 0) {
+  let hraPercent = !useComponents ? 0 : config.hraPercent;
+  if (useComponents && source.hraPercent !== undefined && source.hraPercent !== null && Number(source.hraPercent) > 0) {
     hraPercent = Number(source.hraPercent) > 1 ? Number(source.hraPercent) / 100 : Number(source.hraPercent);
   }
 
   const hasDynamicComponents = config.salaryComponents && config.salaryComponents.length > 0;
-  const earningsMap = {};
 
   let basicMaster = roundAmount(monthlyCTC * basicPercent);
   const sourceBasic = source.basic !== undefined ? source.basic : source.salaryStructure?.basic;
-  if (sourceBasic !== undefined && sourceBasic !== null && Number(sourceBasic) > 0) {
+  if (useComponents && sourceBasic !== undefined && sourceBasic !== null && Number(sourceBasic) > 0) {
     basicMaster = roundAmount(sourceBasic);
   }
 
   let hraMaster = roundAmount(basicMaster * hraPercent);
   const sourceHra = source.hra !== undefined ? source.hra : source.salaryStructure?.hra;
-  if (sourceHra !== undefined && sourceHra !== null && Number(sourceHra) > 0) {
+  if (useComponents && sourceHra !== undefined && sourceHra !== null && Number(sourceHra) > 0) {
     hraMaster = roundAmount(sourceHra);
   }
 
@@ -353,14 +361,12 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const lwfEmployer = (lwfEnabled && monthlyCTC > 0) ? roundAmount(config.lwfEmployer) : 0;
   const lwfEmployee = (lwfEnabled && monthlyCTC > 0) ? roundAmount(config.lwfEmployee) : 0;
 
+  // ESI Calculation — Two-pass to avoid circular dependency:
+  // Pass 1: compute allowances/earnings with ESI disabled to determine actual gross wages
+  // Pass 2: check if actualGrossWages <= esiBasicThreshold, then apply ESI
   const insurance = monthlyCTC > 0 ? roundAmount(source.insuranceAmount ?? config.defaultInsurance) : 0;
   const employerNPS = roundAmount(source.employerNPS);
 
-  // ESI Calculation based on estimated Gross Wages (avoiding circular dependency)
-  const estimatedGross = monthlyCTC - pfEmployer - lwfEmployer - insurance - gratuity;
-  const esiApplicable = esiEnabled && (estimatedGross <= config.esiBasicThreshold);
-  const esiEmployer = roundAmount(esiApplicable ? basicMaster * config.esiEmployerRate : 0);
-  const esiEmployee = roundAmount(esiApplicable ? basicMaster * config.esiEmployeeRate : 0);
 
   // CTC integration balancing special allowance
   const pfEmployerInCTC = (pfEnabled && includePfInCTC) ? pfEmployer : 0;
@@ -371,43 +377,48 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
 
   let flexi = 0, broadband = 0, petrol = 0, lta = 0, ltaCap = 0, conveyance = 0, medicalAllowance = 0, specialAllowance = 0;
 
+  // Helper: compute component earnings (pass 1 — esiEmployer placeholder = 0 for remainder calculation)
+  const computeEarnings = (esiEmployerPlaceholder) => {
+    const em = {};
+    if (hasDynamicComponents) {
+      ltaCap = roundAmount(basicMaster * config.ltaMaxPercent);
+      let sumOfAllNonRemainder = 0;
+      config.salaryComponents.forEach(c => {
+        if (c.type === 'earning' && c.linkedTo !== 'remainder') {
+          let amount = 0;
+          if (c.id === 'basic') {
+            amount = basicMaster;
+          } else if (c.id === 'hra') {
+            amount = hraMaster;
+          } else if (c.linkedTo === 'ctc_percent') {
+            amount = roundAmount(monthlyCTC * c.linkValue);
+          } else if (c.linkedTo === 'basic_percent') {
+            amount = roundAmount(basicMaster * c.linkValue);
+          } else if (c.linkedTo === 'fixed') {
+            const val = source[c.id] !== undefined ? source[c.id] : (source.salaryStructure?.[c.id] !== undefined ? source.salaryStructure[c.id] : 0);
+            amount = roundAmount(val);
+          }
+          if (c.id === 'lta') amount = roundAmount(Math.min(amount, ltaCap || amount));
+          em[c.id] = amount;
+          sumOfAllNonRemainder += amount;
+        }
+      });
+      config.salaryComponents.forEach(c => {
+        if (c.type === 'earning' && c.linkedTo === 'remainder') {
+          em[c.id] = roundAmount(Math.max(
+            monthlyCTC - sumOfAllNonRemainder - pfEmployerInCTC - gratuityInCTC - lwfEmployer - insurance - esiEmployerPlaceholder - employerNPS - otherAllowancesSum,
+            0
+          ));
+        }
+      });
+    }
+    return em;
+  };
+
+  // Pass 1 — no ESI cost in the remainder formula
+  let earningsMap = computeEarnings(0);
+
   if (hasDynamicComponents) {
-    ltaCap = roundAmount(basicMaster * config.ltaMaxPercent);
-    let sumOfAllNonRemainderComponents = 0;
-
-    config.salaryComponents.forEach(c => {
-      if (c.type === 'earning' && c.linkedTo !== 'remainder') {
-        let amount = 0;
-        if (c.id === 'basic') {
-          amount = basicMaster;
-        } else if (c.id === 'hra') {
-          amount = hraMaster;
-        } else if (c.linkedTo === 'ctc_percent') {
-          amount = roundAmount(monthlyCTC * c.linkValue);
-        } else if (c.linkedTo === 'basic_percent') {
-          amount = roundAmount(basicMaster * c.linkValue);
-        } else if (c.linkedTo === 'fixed') {
-          const val = source[c.id] !== undefined ? source[c.id] : (source.salaryStructure?.[c.id] !== undefined ? source.salaryStructure[c.id] : 0);
-          amount = roundAmount(val);
-        }
-        if (c.id === 'lta') {
-          amount = roundAmount(Math.min(amount, ltaCap || amount));
-        }
-        earningsMap[c.id] = amount;
-        sumOfAllNonRemainderComponents += amount;
-      }
-    });
-
-    config.salaryComponents.forEach(c => {
-      if (c.type === 'earning' && c.linkedTo === 'remainder') {
-        const amount = roundAmount(Math.max(
-          monthlyCTC - sumOfAllNonRemainderComponents - pfEmployerInCTC - gratuityInCTC - lwfEmployer - insurance - esiEmployer - employerNPS - otherAllowancesSum,
-          0
-        ));
-        earningsMap[c.id] = amount;
-      }
-    });
-
     flexi = earningsMap['flexi'] || 0;
     broadband = earningsMap['broadband'] || 0;
     petrol = earningsMap['petrol'] || 0;
@@ -425,10 +436,44 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     conveyance = roundAmount(source.salaryStructure?.conveyance);
     medicalAllowance = roundAmount(source.salaryStructure?.medicalAllowance);
     specialAllowance = roundAmount(Math.max(
-      monthlyCTC - basicMaster - hraMaster - flexi - broadband - petrol - lta - pfEmployerInCTC - gratuityInCTC - lwfEmployer - insurance - esiEmployer - employerNPS - conveyance - medicalAllowance - otherAllowancesSum,
+      monthlyCTC - basicMaster - hraMaster - flexi - broadband - petrol - lta - pfEmployerInCTC - gratuityInCTC - lwfEmployer - insurance - employerNPS - conveyance - medicalAllowance - otherAllowancesSum,
       0
     ));
   }
+
+  if (!useComponents) {
+    flexi = 0; broadband = 0; petrol = 0; lta = 0; conveyance = 0; medicalAllowance = 0; specialAllowance = 0;
+    if (hasDynamicComponents) {
+      Object.keys(earningsMap).forEach(k => { earningsMap[k] = k === 'basic' ? monthlyCTC : 0; });
+    }
+  }
+
+  // Pass 1 total earnings — used to determine actual gross wages for ESI eligibility
+  const pass1TotalEarnings = hasDynamicComponents
+    ? roundAmount(Object.values(earningsMap).reduce((sum, v) => sum + v, 0) + otherAllowancesSum)
+    : roundAmount(basicMaster + hraMaster + flexi + broadband + petrol + lta + specialAllowance + conveyance + medicalAllowance + otherAllowancesSum);
+
+  // Pass 2 — ESI eligibility based on actual gross wages (not CTC proxy)
+  const esiApplicable = esiEnabled && (pass1TotalEarnings <= config.esiBasicThreshold);
+  const esiEmployer = roundAmount(esiApplicable ? basicMaster * config.esiEmployerRate : 0);
+  const esiEmployee = roundAmount(esiApplicable ? basicMaster * config.esiEmployeeRate : 0);
+
+  // Re-run earnings with correct ESI employer cost in remainder formula (only needed for dynamic components)
+  if (esiApplicable && hasDynamicComponents) {
+    earningsMap = computeEarnings(esiEmployer);
+    flexi = earningsMap['flexi'] || 0;
+    broadband = earningsMap['broadband'] || 0;
+    petrol = earningsMap['petrol'] || 0;
+    lta = earningsMap['lta'] || 0;
+    conveyance = earningsMap['conveyance'] || 0;
+    medicalAllowance = earningsMap['medical'] || 0;
+    specialAllowance = earningsMap['special'] || 0;
+    if (!useComponents) {
+      Object.keys(earningsMap).forEach(k => { earningsMap[k] = k === 'basic' ? monthlyCTC : 0; });
+    }
+  }
+
+
 
   const totalEarnings = hasDynamicComponents
     ? roundAmount(Object.values(earningsMap).reduce((sum, v) => sum + v, 0) + otherAllowancesSum)
@@ -438,9 +483,7 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     ? roundAmount(Object.entries(earningsMap).reduce((sum, [id, val]) => {
         const comp = config.salaryComponents?.find(c => c.id === id);
         if (comp) {
-          if (comp.taxable || comp.id === 'hra') {
-            return sum + val;
-          }
+          if (comp.taxable || comp.id === 'hra') return sum + val;
           return sum;
         }
         if (['flexi', 'broadband', 'petrol', 'lta'].includes(id)) return sum;
@@ -451,6 +494,7 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const totalEmployerContributions = roundAmount(
     pfEmployer + esiEmployer + gratuity + lwfEmployer + insurance + employerNPS
   );
+
 
   // Dynamic Tax Engine Calculations
   const taxRegime = source.taxRegime || 'new';
@@ -523,6 +567,7 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     gratuityEnabled,
     includePfInCTC,
     includeGratuityInCTC,
+    useSalaryComponents: source.useSalaryComponents !== false,
     earningsMap,
   };
 };
@@ -604,6 +649,9 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
 
     return {
       monthlyCTC,
+      employmentType: getVal('employmentType', 'full-time'),
+      payType: getVal('payType', 'salaried'),
+      hourlyRate: getVal('hourlyRate', 0),
       pfEnabled: getVal('pfEnabled', true),
       esiEnabled: getVal('esiEnabled', true),
       ptEnabled: getVal('ptEnabled', true),
@@ -613,6 +661,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       includeGratuityInCTC: getVal('includeGratuityInCTC', true),
       basicPercent: getVal('basicPercent', null),
       hraPercent: getVal('hraPercent', null),
+      useSalaryComponents: getVal('useSalaryComponents', true),
       joiningBonus: getVal('joiningBonus', 0),
       flexiAmount: getVal('flexiAmount', 0),
       broadband: getVal('broadband', 0),
@@ -638,12 +687,16 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
   const dailyOtherAllowances = [];
   const dailyOtherDeductions = [];
 
+  const isHourly = employee.payType === 'hourly';
+  const hoursWorked = isHourly ? (Number(attendance?.hoursWorked) || Number(adjustments?.hoursWorked) || 0) : 0;
+
   for (let d = 1; d <= totalDaysInMonth; d++) {
     const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const activeParams = getEmployeeParamsForDate(currentStr);
     
     const daySource = {
       ...activeParams,
+      hoursWorked: isHourly ? hoursWorked : undefined,
       pfEnabled: adjustments.pfEnabled !== undefined ? adjustments.pfEnabled : activeParams.pfEnabled,
       esiEnabled: adjustments.esiEnabled !== undefined ? adjustments.esiEnabled : activeParams.esiEnabled,
       ptEnabled: adjustments.ptEnabled !== undefined ? adjustments.ptEnabled : activeParams.ptEnabled,
@@ -720,10 +773,10 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
 
   const requestedWorkingDays = Number(attendance?.workingDays);
   const workingDays = Math.max(requestedWorkingDays || config.defaultWorkingDays, 1);
-  const rawPaidDays = Number(attendance?.paidDays ?? attendance?.presentDays ?? workingDays);
-  const paidDays = roundAmount(clamp(rawPaidDays || workingDays, 0, workingDays));
-  const prorate = Math.min(paidDays / workingDays, 1);
-  const lop = roundAmount(Math.max(workingDays - paidDays, 0));
+  const rawPaidDays = isHourly ? workingDays : Number(attendance?.paidDays ?? attendance?.presentDays ?? workingDays);
+  const paidDays = isHourly ? workingDays : roundAmount(clamp(rawPaidDays || workingDays, 0, workingDays));
+  const prorate = isHourly ? 1.0 : Math.min(paidDays / workingDays, 1);
+  const lop = isHourly ? 0 : roundAmount(Math.max(workingDays - paidDays, 0));
 
   const segments = [];
   let currentSegment = null;
@@ -755,8 +808,12 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
 
   const lopStrategy = adjustments.lopStrategy || 'proportional';
   const customSegmentLops = adjustments.segmentLops || [];
-  const segmentLops = getSegmentLops(workingDays - paidDays, workingDays, totalDaysInMonth, lopStrategy, segments, customSegmentLops);
-  const dayProrate = getDayProrateArray(totalDaysInMonth, workingDays, paidDays, lopStrategy, customSegmentLops, segments);
+  const segmentLops = isHourly
+    ? new Array(segments.length).fill(0)
+    : getSegmentLops(workingDays - paidDays, workingDays, totalDaysInMonth, lopStrategy, segments, customSegmentLops);
+  const dayProrate = isHourly
+    ? new Array(totalDaysInMonth).fill(1.0)
+    : getDayProrateArray(totalDaysInMonth, workingDays, paidDays, lopStrategy, customSegmentLops, segments);
 
   let otherEarnings = [];
   if (Array.isArray(adjustments.otherEarnings) && adjustments.otherEarnings.length > 0) {
@@ -1049,6 +1106,9 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
 
     return {
       monthlyCTC,
+      employmentType: getVal('employmentType', 'full-time'),
+      payType: getVal('payType', 'salaried'),
+      hourlyRate: getVal('hourlyRate', 0),
       pfEnabled: getVal('pfEnabled', true),
       esiEnabled: getVal('esiEnabled', true),
       ptEnabled: getVal('ptEnabled', true),
@@ -1058,6 +1118,7 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
       includeGratuityInCTC: getVal('includeGratuityInCTC', true),
       basicPercent: getVal('basicPercent', null),
       hraPercent: getVal('hraPercent', null),
+      useSalaryComponents: getVal('useSalaryComponents', true),
       flexiAmount: getVal('flexiAmount', 0),
       broadband: getVal('broadband', 0),
       petrol: getVal('petrol', 0),
@@ -1105,17 +1166,23 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
     segments.push(currentSegment);
   }
 
-  const workingDays = Math.max(Number(workingDaysCount) || config.defaultWorkingDays, 1);
-  const paidDays = Math.max(Math.min(Number(paidDaysCount) ?? workingDays, workingDays), 0);
-  const prorate = workingDays > 0 ? paidDays / workingDays : 1;
+  const isHourly = employee.payType === 'hourly';
+  const hoursWorked = isHourly ? (Number(adjustments?.hoursWorked) || 0) : 0;
+
+  const workingDays = isHourly ? totalDaysInMonth : Math.max(Number(workingDaysCount) || config.defaultWorkingDays, 1);
+  const paidDays = isHourly ? workingDays : Math.max(Math.min(Number(paidDaysCount) ?? workingDays, workingDays), 0);
+  const prorate = isHourly ? 1.0 : (workingDays > 0 ? paidDays / workingDays : 1);
 
   const lopStrategy = adjustments.lopStrategy || 'proportional';
   const customSegmentLops = adjustments.segmentLops || [];
-  const dayProrate = getDayProrateArray(totalDaysInMonth, workingDays, paidDays, lopStrategy, customSegmentLops, segments);
+  const dayProrate = isHourly
+    ? new Array(totalDaysInMonth).fill(1.0)
+    : getDayProrateArray(totalDaysInMonth, workingDays, paidDays, lopStrategy, customSegmentLops, segments);
 
   return segments.map((seg) => {
     const daySource = {
       ...seg.activeParams,
+      hoursWorked: isHourly ? hoursWorked : undefined,
       pfEnabled: adjustments.pfEnabled !== undefined ? adjustments.pfEnabled : seg.activeParams.pfEnabled,
       esiEnabled: adjustments.esiEnabled !== undefined ? adjustments.esiEnabled : seg.activeParams.esiEnabled,
       ptEnabled: adjustments.ptEnabled !== undefined ? adjustments.ptEnabled : seg.activeParams.ptEnabled,

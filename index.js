@@ -66,6 +66,7 @@ app.use('/api/loans', require('./routes/loanRoutes'));
 app.use('/api/reimbursements', require('./routes/reimbursementRoutes'));
 app.use('/api/payroll', require('./routes/payrollRoutes'));
 app.use('/api/payroll-components', require('./routes/payrollComponentRoutes'));
+app.use('/api/roles', require('./routes/roleRoutes'));
 app.use('/api/budgets', require('./routes/budgetRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/api/assets', require('./routes/assetRoutes'));
@@ -77,6 +78,7 @@ app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/pdf', require('./routes/pdfRoutes'));
+app.use('/api/bank-statements', require('./routes/bankStatementRoutes'));
 
 app.get('/', (req, res) => {
   res.send('API is working fine.');
