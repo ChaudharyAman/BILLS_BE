@@ -78,6 +78,7 @@ app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/pdf', require('./routes/pdfRoutes'));
+app.use('/api/bank-statements', require('./routes/bankStatementRoutes'));
 
 app.get('/', (req, res) => {
   res.send('API is working fine.');
