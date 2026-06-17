@@ -1608,7 +1608,7 @@ async function bankStatementCases() {
       fileName: 'test_statement.xlsx',
       label: 'Test Statement Label',
       transactions: [
-        { date: '2026-04-01', description: 'UPI/Porter/Devendra', debit: 500, credit: 0, balance: 10000, category: 'UPI', txnId: 'T1' },
+        { date: '2026-04-01', description: 'UPI/Porter/Devendra', debit: 500, credit: 0, balance: 10000, category: 'Custom Test Category', subCategory: 'Custom Test Subcategory', txnId: 'T1' },
         { date: '2026-04-02', description: 'Salary credit', debit: 0, credit: 25000, balance: 35000, category: 'Salary', txnId: 'T2' }
       ]
     };
@@ -1621,6 +1621,14 @@ async function bankStatementCases() {
 
     const statementId = createRes.data._id;
     ok(statementId, 'Bank statement ID should be generated');
+
+    // Verify auto-created category and sub-category
+    const Category = require('../models/Category');
+    const autoCat = await Category.findOne({ name: 'Custom Test Category', type: 'expense' });
+    ok(autoCat, 'Auto-created category "Custom Test Category" should exist');
+    const autoSub = await Category.findOne({ name: 'Custom Test Subcategory', parent: autoCat._id, type: 'expense' });
+    ok(autoSub, 'Auto-created subcategory "Custom Test Subcategory" should exist and link to parent');
+
     ok(createRes.data.totalCredits === 25000, 'Total credits should match');
     ok(createRes.data.totalDebits === 500, 'Total debits should match');
     ok(createRes.data.netFlow === 24500, 'Net flow should match');

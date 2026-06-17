@@ -127,7 +127,7 @@ exports.createBankStatement = async (req, res) => {
         debit: Number(t.debit) || 0,
         credit: Number(t.credit) || 0,
         balance: Number(t.balance) || 0,
-        category: t.category || 'Other',
+        category: (t.category === undefined || t.category === null) ? 'Other' : t.category,
         txnId: t.txnId || '',
       })),
     });

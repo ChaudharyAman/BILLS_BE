@@ -7,6 +7,9 @@ const BankTransactionSchema = new mongoose.Schema({
   credit:      { type: Number, default: 0 },
   balance:     { type: Number, default: 0 },
   category:    { type: String, default: 'Other' },
+  type:        { type: String, enum: ['Expense', 'Income'], default: 'Expense' },
+  subCategory: { type: String, default: '' },
+  remark:      { type: String, default: '' },
   txnId:       { type: String, default: '' },
 });
 
