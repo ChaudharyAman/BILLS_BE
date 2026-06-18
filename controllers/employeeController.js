@@ -1861,3 +1861,244 @@ exports.updateEmployeeDeclarations = async (req, res) => {
     res.status(500).json({ message: 'Server error updating declarations' });
   }
 };
+
+exports.updateSalaryRevision = async (req, res) => {
+  try {
+    const { id, revisionId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(String(id)) || !mongoose.Types.ObjectId.isValid(String(revisionId))) {
+      return res.status(404).json({ message: 'Invalid employee or revision ID' });
+    }
+
+    const employee = await Employee.findOne({ _id: id, user: req.user._id });
+    if (!employee) return res.status(404).json({ message: 'Employee not found' });
+
+    const revision = employee.salaryRevisions.id(revisionId);
+    if (!revision) return res.status(404).json({ message: 'Salary revision not found' });
+
+    const effectiveDate = parsePossibleDate(req.body.effectiveDate);
+    const isHourly = employee.payType === 'hourly';
+    let newCTC = Number(req.body.newCTC);
+    let newHourlyRate = Number(req.body.newHourlyRate);
+
+    if (isHourly) {
+      if (!effectiveDate || !newHourlyRate || newHourlyRate < 0) {
+        return res.status(400).json({ message: 'Effective date and new hourly rate are required' });
+      }
+      newCTC = 0;
+    } else {
+      if (!effectiveDate || !newCTC || newCTC < 0) {
+        return res.status(400).json({ message: 'Effective date and new monthly CTC are required' });
+      }
+    }
+
+    const config = await getOrCreateConfig(req.user._id);
+
+    let revisedRole = employee.role;
+    let roleDoc = null;
+    if (req.body.role !== undefined) {
+      const roleId = req.body.role;
+      if (roleId) {
+        if (!mongoose.Types.ObjectId.isValid(String(roleId))) {
+          return res.status(400).json({ message: 'Invalid Role ID format' });
+        }
+        const Role = mongoose.model('Role');
+        roleDoc = await Role.findOne({ _id: roleId, user: req.user._id });
+        if (!roleDoc) {
+          return res.status(400).json({ message: 'Job Role Template not found' });
+        }
+        revisedRole = roleDoc._id;
+      } else {
+        revisedRole = null;
+      }
+    }
+
+    const getVal = (field) => {
+      if (req.body[field] !== undefined) return req.body[field];
+      if (roleDoc && roleDoc[field] !== undefined && roleDoc[field] !== null) return roleDoc[field];
+      return revision[field] !== undefined ? revision[field] : employee[field];
+    };
+
+    const nextPayload = {
+      ...employee.toObject(),
+      role: revisedRole,
+      monthlyCTC: isHourly ? 0 : newCTC,
+      hourlyRate: isHourly ? newHourlyRate : 0,
+      useSalaryComponents: isHourly ? false : getVal('useSalaryComponents'),
+      employmentType: isHourly ? 'contract' : getVal('employmentType'),
+      pfEnabled: isHourly ? false : getVal('pfEnabled'),
+      esiEnabled: isHourly ? false : getVal('esiEnabled'),
+      ptEnabled: isHourly ? false : getVal('ptEnabled'),
+      lwfEnabled: isHourly ? false : getVal('lwfEnabled'),
+      gratuityEnabled: isHourly ? false : getVal('gratuityEnabled'),
+      includePfInCTC: isHourly ? false : getVal('includePfInCTC'),
+      includeGratuityInCTC: isHourly ? false : getVal('includeGratuityInCTC'),
+      basicPercent: isHourly ? null : getVal('basicPercent'),
+      hraPercent: isHourly ? null : getVal('hraPercent'),
+      joiningBonus: isHourly ? 0 : (req.body.joiningBonus !== undefined ? Number(req.body.joiningBonus) : (Number(revision.joiningBonus) || 0)),
+      flexiAmount: isHourly ? 0 : (req.body.flexiAmount !== undefined ? Number(req.body.flexiAmount) : (Number(revision.flexiAmount) || 0)),
+      broadband: isHourly ? 0 : (req.body.broadband !== undefined ? Number(req.body.broadband) : (Number(revision.broadband) || 0)),
+      petrol: isHourly ? 0 : (req.body.petrol !== undefined ? Number(req.body.petrol) : (Number(revision.petrol) || 0)),
+      lta: isHourly ? 0 : (req.body.lta !== undefined ? Number(req.body.lta) : (Number(revision.lta) || 0)),
+      employerNPS: isHourly ? 0 : (req.body.employerNPS !== undefined ? Number(req.body.employerNPS) : (Number(revision.employerNPS) || 0)),
+      insuranceAmount: isHourly ? 0 : (req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : (Number(revision.insuranceAmount) || 0)),
+      deductions: {
+        ...(revision.deductions || {}),
+        tds: req.body.tds !== undefined ? Number(req.body.tds) : (revision.deductions?.tds || 0),
+        professionalTax: isHourly ? 0 : (req.body.professionalTax !== undefined ? Number(req.body.professionalTax) : (revision.deductions?.professionalTax || 0)),
+        otherDeductions: isHourly ? [] : (req.body.otherDeductions !== undefined ? req.body.otherDeductions : (revision.deductions?.otherDeductions || [])),
+      },
+      salaryStructure: {
+        conveyance: isHourly ? 0 : (req.body.conveyance !== undefined ? Number(req.body.conveyance) : (Number(revision.salaryStructure?.conveyance) || 0)),
+        medicalAllowance: isHourly ? 0 : (req.body.medicalAllowance !== undefined ? Number(req.body.medicalAllowance) : (Number(revision.salaryStructure?.medicalAllowance) || 0)),
+        otherAllowances: isHourly ? [] : (req.body.otherAllowances !== undefined ? req.body.otherAllowances : (revision.salaryStructure?.otherAllowances || [])),
+        ...(req.body.basic !== undefined && { basic: Number(req.body.basic) }),
+        ...(req.body.hra !== undefined && { hra: Number(req.body.hra) }),
+      },
+    };
+
+    const salaryStructure = buildSalaryStructureFromCTC(nextPayload, config);
+
+    // Update revision fields
+    revision.effectiveDate = effectiveDate;
+    revision.newCTC = isHourly ? 0 : newCTC;
+    revision.newHourlyRate = isHourly ? newHourlyRate : undefined;
+    revision.reason = req.body.reason || '';
+    revision.role = revisedRole;
+    revision.useSalaryComponents = isHourly ? false : nextPayload.useSalaryComponents;
+    revision.employmentType = isHourly ? 'contract' : nextPayload.employmentType;
+    revision.monthlyCTC = isHourly ? 0 : newCTC;
+    revision.hourlyRate = isHourly ? newHourlyRate : 0;
+    revision.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
+    revision.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
+    revision.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
+    revision.lwfEnabled = isHourly ? false : nextPayload.lwfEnabled;
+    revision.gratuityEnabled = isHourly ? false : nextPayload.gratuityEnabled;
+    revision.includePfInCTC = isHourly ? false : nextPayload.includePfInCTC;
+    revision.includeGratuityInCTC = isHourly ? false : nextPayload.includeGratuityInCTC;
+    revision.basicPercent = isHourly ? null : nextPayload.basicPercent;
+    revision.hraPercent = isHourly ? null : nextPayload.hraPercent;
+    revision.joiningBonus = isHourly ? 0 : nextPayload.joiningBonus;
+    revision.flexiAmount = isHourly ? 0 : nextPayload.flexiAmount;
+    revision.broadband = isHourly ? 0 : nextPayload.broadband;
+    revision.petrol = isHourly ? 0 : nextPayload.petrol;
+    revision.lta = isHourly ? 0 : nextPayload.lta;
+    revision.employerNPS = isHourly ? 0 : nextPayload.employerNPS;
+    revision.insuranceAmount = isHourly ? 0 : nextPayload.insuranceAmount;
+    revision.deductions = nextPayload.deductions;
+    revision.salaryStructure = {
+      conveyance: nextPayload.salaryStructure?.conveyance || 0,
+      medicalAllowance: nextPayload.salaryStructure?.medicalAllowance || 0,
+      otherAllowances: nextPayload.salaryStructure?.otherAllowances || [],
+    };
+
+    // Sort revisions to find the latest one
+    const sorted = [...employee.salaryRevisions].sort((a, b) => new Date(a.effectiveDate) - new Date(b.effectiveDate));
+    const latest = sorted[sorted.length - 1];
+
+    // If we just edited the latest revision, sync employee's active salary settings
+    if (String(latest._id) === String(revisionId)) {
+      employee.monthlyCTC = isHourly ? 0 : newCTC;
+      employee.hourlyRate = isHourly ? newHourlyRate : 0;
+      employee.role = revisedRole;
+      employee.useSalaryComponents = isHourly ? false : nextPayload.useSalaryComponents;
+      employee.employmentType = isHourly ? 'contract' : nextPayload.employmentType;
+      employee.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
+      employee.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
+      employee.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
+      employee.lwfEnabled = isHourly ? false : nextPayload.lwfEnabled;
+      employee.gratuityEnabled = isHourly ? false : nextPayload.gratuityEnabled;
+      employee.includePfInCTC = isHourly ? false : nextPayload.includePfInCTC;
+      employee.includeGratuityInCTC = isHourly ? false : nextPayload.includeGratuityInCTC;
+      employee.basicPercent = isHourly ? null : nextPayload.basicPercent;
+      employee.hraPercent = isHourly ? null : nextPayload.hraPercent;
+      employee.joiningBonus = isHourly ? 0 : nextPayload.joiningBonus;
+      employee.flexiAmount = isHourly ? 0 : nextPayload.flexiAmount;
+      employee.broadband = isHourly ? 0 : nextPayload.broadband;
+      employee.petrol = isHourly ? 0 : nextPayload.petrol;
+      employee.lta = isHourly ? 0 : nextPayload.lta;
+      employee.employerNPS = isHourly ? 0 : nextPayload.employerNPS;
+      employee.insuranceAmount = isHourly ? 0 : nextPayload.insuranceAmount;
+      employee.deductions = nextPayload.deductions;
+      employee.salaryStructure = salaryStructure;
+    }
+
+    await employee.save();
+    res.json(employee);
+  } catch (error) {
+    console.error('Error updating salary revision:', error);
+    res.status(500).json({ message: 'Server error updating salary revision' });
+  }
+};
+
+exports.deleteSalaryRevision = async (req, res) => {
+  try {
+    const { id, revisionId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(String(id)) || !mongoose.Types.ObjectId.isValid(String(revisionId))) {
+      return res.status(404).json({ message: 'Invalid employee or revision ID' });
+    }
+
+    const employee = await Employee.findOne({ _id: id, user: req.user._id });
+    if (!employee) return res.status(404).json({ message: 'Employee not found' });
+
+    const revision = employee.salaryRevisions.id(revisionId);
+    if (!revision) return res.status(404).json({ message: 'Salary revision not found' });
+
+    // Determine if we are deleting the latest revision
+    const sortedBefore = [...employee.salaryRevisions].sort((a, b) => new Date(a.effectiveDate) - new Date(b.effectiveDate));
+    const latestBefore = sortedBefore[sortedBefore.length - 1];
+
+    employee.salaryRevisions.pull(revisionId);
+
+    // If we are deleting the latest revision, sync employee's active salary settings with the previous one
+    if (String(latestBefore._id) === String(revisionId)) {
+      const sortedAfter = [...employee.salaryRevisions].sort((a, b) => new Date(a.effectiveDate) - new Date(b.effectiveDate));
+      if (sortedAfter.length > 0) {
+        const newLatest = sortedAfter[sortedAfter.length - 1];
+        
+        employee.monthlyCTC = newLatest.monthlyCTC || 0;
+        employee.hourlyRate = newLatest.hourlyRate || 0;
+        employee.role = newLatest.role || null;
+        employee.useSalaryComponents = newLatest.useSalaryComponents !== false;
+        employee.employmentType = newLatest.employmentType || 'full-time';
+        employee.pfEnabled = newLatest.pfEnabled !== false;
+        employee.esiEnabled = newLatest.esiEnabled !== false;
+        employee.ptEnabled = newLatest.ptEnabled !== false;
+        employee.lwfEnabled = newLatest.lwfEnabled !== false;
+        employee.gratuityEnabled = newLatest.gratuityEnabled !== false;
+        employee.includePfInCTC = newLatest.includePfInCTC === true;
+        employee.includeGratuityInCTC = newLatest.includeGratuityInCTC !== false;
+        employee.basicPercent = newLatest.basicPercent;
+        employee.hraPercent = newLatest.hraPercent;
+        employee.joiningBonus = newLatest.joiningBonus || 0;
+        employee.flexiAmount = newLatest.flexiAmount || 0;
+        employee.broadband = newLatest.broadband || 0;
+        employee.petrol = newLatest.petrol || 0;
+        employee.lta = newLatest.lta || 0;
+        employee.employerNPS = newLatest.employerNPS || 0;
+        employee.insuranceAmount = newLatest.insuranceAmount || 0;
+        employee.deductions = {
+          pf: newLatest.deductions?.pf || 0,
+          esi: newLatest.deductions?.esi || 0,
+          professionalTax: newLatest.deductions?.professionalTax || 0,
+          tds: newLatest.deductions?.tds || 0,
+          otherDeductions: newLatest.deductions?.otherDeductions || [],
+        };
+        employee.salaryStructure = {
+          basic: newLatest.salaryStructure?.basic || 0,
+          hra: newLatest.salaryStructure?.hra || 0,
+          conveyance: newLatest.salaryStructure?.conveyance || 0,
+          medicalAllowance: newLatest.salaryStructure?.medicalAllowance || 0,
+          specialAllowance: newLatest.salaryStructure?.specialAllowance || 0,
+          otherAllowances: newLatest.salaryStructure?.otherAllowances || [],
+        };
+      }
+    }
+
+    await employee.save();
+    res.json(employee);
+  } catch (error) {
+    console.error('Error deleting salary revision:', error);
+    res.status(500).json({ message: 'Server error deleting salary revision' });
+  }
+};
+
