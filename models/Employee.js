@@ -62,7 +62,7 @@ const EmployeeSchema = new mongoose.Schema({
   ptEnabled: { type: Boolean, default: true },
   lwfEnabled: { type: Boolean, default: true },
   gratuityEnabled: { type: Boolean, default: true },
-  includePfInCTC: { type: Boolean, default: true },
+  includePfInCTC: { type: Boolean, default: false },
   includeGratuityInCTC: { type: Boolean, default: true },
 
   salaryStructure: {
@@ -133,6 +133,9 @@ const EmployeeSchema = new mongoose.Schema({
     reason: { type: String },
     revisedBy: { type: String },
     createdAt: { type: Date, default: Date.now },
+    role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null },
+    useSalaryComponents: { type: Boolean },
+    employmentType: { type: String },
 
     // Configuration snapshot fields
     monthlyCTC: { type: Number },
@@ -172,8 +175,40 @@ EmployeeSchema.pre('save', async function() {
   // Guard: cannot compute salary without a user reference
   if (!this.user) return;
 
+  if (!this.isNew && (this.isModified('monthlyCTC') || this.isModified('role') || this.isModified('basicPercent') || this.isModified('hraPercent') || this.isModified('useSalaryComponents') || this.isModified('payType') || this.isModified('employmentType'))) {
+    if (!this.isModified('salaryStructure.basic') && !this.isModified('basic')) {
+      if (this.salaryStructure) {
+        this.salaryStructure.basic = undefined;
+      }
+    }
+    if (!this.isModified('salaryStructure.hra') && !this.isModified('hra')) {
+      if (this.salaryStructure) {
+        this.salaryStructure.hra = undefined;
+      }
+    }
+  }
+
+  if (this.payType === 'hourly' || this.employmentType === 'intern') {
+    this.pfEnabled = false;
+    this.esiEnabled = false;
+    this.ptEnabled = false;
+    this.lwfEnabled = false;
+    this.gratuityEnabled = false;
+    this.includePfInCTC = false;
+    this.includeGratuityInCTC = false;
+    this.useSalaryComponents = false;
+    if (this.payType === 'hourly') {
+      this.monthlyCTC = 0;
+    }
+  }
+
   if (this.role) {
-    const Role = mongoose.model('Role');
+    let Role;
+    try {
+      Role = mongoose.model('Role');
+    } catch (e) {
+      Role = require('./Role');
+    }
     const roleDoc = await Role.findOne({ _id: this.role, user: this.user }).lean();
     if (roleDoc) {
       if (this.isNew) {
@@ -191,10 +226,30 @@ EmployeeSchema.pre('save', async function() {
         this.hraPercent = this.hraPercent || roleDoc.hraPercent;
         this.useSalaryComponents = this.useSalaryComponents !== undefined ? this.useSalaryComponents : roleDoc.useSalaryComponents;
       }
+      let cleanDesignation = String(this.designation || '').trim();
+      if ((cleanDesignation.startsWith('"') && cleanDesignation.endsWith('"')) || (cleanDesignation.startsWith("'") && cleanDesignation.endsWith("'"))) {
+        cleanDesignation = cleanDesignation.slice(1, -1).trim();
+      }
+      if (this.designation && mongoose.Types.ObjectId.isValid(cleanDesignation)) {
+        this.designation = roleDoc.name;
+      }
+    }
+  } else {
+    let cleanDesignation = String(this.designation || '').trim();
+    if ((cleanDesignation.startsWith('"') && cleanDesignation.endsWith('"')) || (cleanDesignation.startsWith("'") && cleanDesignation.endsWith("'"))) {
+      cleanDesignation = cleanDesignation.slice(1, -1).trim();
+    }
+    if (mongoose.Types.ObjectId.isValid(cleanDesignation)) {
+      this.designation = '';
     }
   }
 
-  const PayrollConfig = mongoose.model('PayrollConfig');
+  let PayrollConfig;
+  try {
+    PayrollConfig = mongoose.model('PayrollConfig');
+  } catch (e) {
+    PayrollConfig = require('./PayrollConfig');
+  }
   let config = {};
   if (this.user) {
     config = await PayrollConfig.findOne({ user: this.user }).lean() || {};
@@ -250,7 +305,12 @@ const applySalaryStructureUpdate = async function() {
   const newRole = set.role !== undefined ? set.role : currentDoc.role;
   let roleDoc = null;
   if (newRole) {
-    const Role = mongoose.model('Role');
+    let Role;
+    try {
+      Role = mongoose.model('Role');
+    } catch (e) {
+      Role = require('./Role');
+    }
     const userId = set.user || currentDoc.user;
     roleDoc = await Role.findOne({ _id: newRole, user: userId }).lean();
   }
@@ -262,6 +322,7 @@ const applySalaryStructureUpdate = async function() {
     return def;
   };
 
+  const currentDesignation = set.designation !== undefined ? set.designation : currentDoc.designation;
   if (roleDoc) {
     const fieldsToSync = [
       'payType', 'monthlyCTC', 'hourlyRate', 'pfEnabled', 'esiEnabled',
@@ -273,6 +334,42 @@ const applySalaryStructureUpdate = async function() {
       if (update.$set[f] === undefined && set[f] === undefined) {
         update.$set[f] = roleDoc[f];
       }
+    }
+    let cleanDesignation = String(currentDesignation || '').trim();
+    if ((cleanDesignation.startsWith('"') && cleanDesignation.endsWith('"')) || (cleanDesignation.startsWith("'") && cleanDesignation.endsWith("'"))) {
+      cleanDesignation = cleanDesignation.slice(1, -1).trim();
+    }
+    if (currentDesignation && mongoose.Types.ObjectId.isValid(cleanDesignation)) {
+      update.$set.designation = roleDoc.name;
+      set.designation = roleDoc.name;
+    }
+  } else {
+    let cleanDesignation = String(currentDesignation || '').trim();
+    if ((cleanDesignation.startsWith('"') && cleanDesignation.endsWith('"')) || (cleanDesignation.startsWith("'") && cleanDesignation.endsWith("'"))) {
+      cleanDesignation = cleanDesignation.slice(1, -1).trim();
+    }
+    if (mongoose.Types.ObjectId.isValid(cleanDesignation)) {
+      if (!update.$set) update.$set = {};
+      update.$set.designation = '';
+      set.designation = '';
+    }
+  }
+
+  const resolvedPayType = getField('payType', 'salaried');
+  const resolvedEmploymentType = getField('employmentType', 'full-time');
+  if (resolvedPayType === 'hourly' || resolvedEmploymentType === 'intern') {
+    const fieldsToForceFalse = [
+      'pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled', 'gratuityEnabled',
+      'includePfInCTC', 'includeGratuityInCTC', 'useSalaryComponents'
+    ];
+    if (!update.$set) update.$set = {};
+    fieldsToForceFalse.forEach(field => {
+      update.$set[field] = false;
+      set[field] = false;
+    });
+    if (resolvedPayType === 'hourly') {
+      update.$set.monthlyCTC = 0;
+      set.monthlyCTC = 0;
     }
   }
 
@@ -287,6 +384,16 @@ const applySalaryStructureUpdate = async function() {
     }
   }
 
+  const isCTCChanging = set.monthlyCTC !== undefined || set.role !== undefined || set.basicPercent !== undefined || set.hraPercent !== undefined || set.useSalaryComponents !== undefined || set.payType !== undefined || set.employmentType !== undefined;
+  if (isCTCChanging) {
+    if (set.basic === undefined && set['salaryStructure.basic'] === undefined && (set.salaryStructure === undefined || set.salaryStructure.basic === undefined)) {
+      delete mergedSalary.basic;
+    }
+    if (set.hra === undefined && set['salaryStructure.hra'] === undefined && (set.salaryStructure === undefined || set.salaryStructure.hra === undefined)) {
+      delete mergedSalary.hra;
+    }
+  }
+
   const mergedEmployee = {
     ...currentDoc,
     ...set,
@@ -298,7 +405,7 @@ const applySalaryStructureUpdate = async function() {
     ptEnabled: getField('ptEnabled', true),
     lwfEnabled: getField('lwfEnabled', true),
     gratuityEnabled: getField('gratuityEnabled', true),
-    includePfInCTC: getField('includePfInCTC', true),
+    includePfInCTC: getField('includePfInCTC', false),
     includeGratuityInCTC: getField('includeGratuityInCTC', true),
     basicPercent: getField('basicPercent', null),
     hraPercent: getField('hraPercent', null),
@@ -309,7 +416,12 @@ const applySalaryStructureUpdate = async function() {
     }
   };
 
-  const PayrollConfig = mongoose.model('PayrollConfig');
+  let PayrollConfig;
+  try {
+    PayrollConfig = mongoose.model('PayrollConfig');
+  } catch (e) {
+    PayrollConfig = require('./PayrollConfig');
+  }
   const userId = set.user || currentDoc.user;
   let config = {};
   if (userId) {

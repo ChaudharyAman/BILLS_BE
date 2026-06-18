@@ -577,7 +577,7 @@ exports.calculateSalary = async (req, res) => {
       ptEnabled: payType === 'hourly' ? false : req.body.ptEnabled !== false,
       lwfEnabled: payType === 'hourly' ? false : req.body.lwfEnabled !== false,
       gratuityEnabled: payType === 'hourly' ? false : req.body.gratuityEnabled !== false,
-      includePfInCTC: payType === 'hourly' ? false : req.body.includePfInCTC !== false,
+      includePfInCTC: payType === 'hourly' ? false : req.body.includePfInCTC === true,
       includeGratuityInCTC: payType === 'hourly' ? false : req.body.includeGratuityInCTC !== false,
       declarations: req.body.declarations || {},
       deductions: {
