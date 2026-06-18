@@ -280,7 +280,7 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const ptEnabled = !isIntern && !isHourly && source.ptEnabled !== false;
   const lwfEnabled = !isIntern && !isHourly && source.lwfEnabled !== false;
   const gratuityEnabled = !isIntern && !isHourly && source.gratuityEnabled !== false;
-  const includePfInCTC = !isIntern && !isHourly && source.includePfInCTC !== false;
+  const includePfInCTC = !isIntern && !isHourly && source.includePfInCTC === true;
   const includeGratuityInCTC = !isIntern && !isHourly && source.includeGratuityInCTC !== false;
 
   let basicPercent = !useComponents ? 1.0 : config.basicPercent;
@@ -310,30 +310,40 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   if (hasDynamicComponents) {
     const basicComp = config.salaryComponents.find(c => c.id === 'basic');
     if (basicComp) {
-      let bVal = basicComp.linkValue;
-      if (source.basicPercent !== undefined && source.basicPercent !== null && Number(source.basicPercent) > 0) {
-        bVal = Number(source.basicPercent) > 1 ? Number(source.basicPercent) / 100 : Number(source.basicPercent);
-      }
-      if (basicComp.linkedTo === 'ctc_percent') {
-        basicMaster = roundAmount(monthlyCTC * bVal);
-      } else if (basicComp.linkedTo === 'fixed') {
-        const val = source['basic'] !== undefined ? source['basic'] : (source.salaryStructure?.['basic'] !== undefined ? source.salaryStructure['basic'] : 0);
-        basicMaster = roundAmount(val);
+      const sourceBasic = source.basic !== undefined ? source.basic : source.salaryStructure?.basic;
+      if (useComponents && sourceBasic !== undefined && sourceBasic !== null && Number(sourceBasic) > 0) {
+        basicMaster = roundAmount(sourceBasic);
+      } else {
+        let bVal = basicComp.linkValue;
+        if (source.basicPercent !== undefined && source.basicPercent !== null && Number(source.basicPercent) > 0) {
+          bVal = Number(source.basicPercent) > 1 ? Number(source.basicPercent) / 100 : Number(source.basicPercent);
+        }
+        if (basicComp.linkedTo === 'ctc_percent') {
+          basicMaster = roundAmount(monthlyCTC * bVal);
+        } else if (basicComp.linkedTo === 'fixed') {
+          const val = source['basic'] !== undefined ? source['basic'] : (source.salaryStructure?.['basic'] !== undefined ? source.salaryStructure['basic'] : 0);
+          basicMaster = roundAmount(val);
+        }
       }
     }
     const hraComp = config.salaryComponents.find(c => c.id === 'hra');
     if (hraComp) {
-      let hVal = hraComp.linkValue;
-      if (source.hraPercent !== undefined && source.hraPercent !== null && Number(source.hraPercent) > 0) {
-        hVal = Number(source.hraPercent) > 1 ? Number(source.hraPercent) / 100 : Number(source.hraPercent);
-      }
-      if (hraComp.linkedTo === 'basic_percent') {
-        hraMaster = roundAmount(basicMaster * hVal);
-      } else if (hraComp.linkedTo === 'ctc_percent') {
-        hraMaster = roundAmount(monthlyCTC * hVal);
-      } else if (hraComp.linkedTo === 'fixed') {
-        const val = source['hra'] !== undefined ? source['hra'] : (source.salaryStructure?.['hra'] !== undefined ? source.salaryStructure['hra'] : 0);
-        hraMaster = roundAmount(val);
+      const sourceHra = source.hra !== undefined ? source.hra : source.salaryStructure?.hra;
+      if (useComponents && sourceHra !== undefined && sourceHra !== null && Number(sourceHra) > 0) {
+        hraMaster = roundAmount(sourceHra);
+      } else {
+        let hVal = hraComp.linkValue;
+        if (source.hraPercent !== undefined && source.hraPercent !== null && Number(source.hraPercent) > 0) {
+          hVal = Number(source.hraPercent) > 1 ? Number(source.hraPercent) / 100 : Number(source.hraPercent);
+        }
+        if (hraComp.linkedTo === 'basic_percent') {
+          hraMaster = roundAmount(basicMaster * hVal);
+        } else if (hraComp.linkedTo === 'ctc_percent') {
+          hraMaster = roundAmount(monthlyCTC * hVal);
+        } else if (hraComp.linkedTo === 'fixed') {
+          const val = source['hra'] !== undefined ? source['hra'] : (source.salaryStructure?.['hra'] !== undefined ? source.salaryStructure['hra'] : 0);
+          hraMaster = roundAmount(val);
+        }
       }
     }
   }
@@ -395,7 +405,10 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
           } else if (c.linkedTo === 'basic_percent') {
             amount = roundAmount(basicMaster * c.linkValue);
           } else if (c.linkedTo === 'fixed') {
-            const val = source[c.id] !== undefined ? source[c.id] : (source.salaryStructure?.[c.id] !== undefined ? source.salaryStructure[c.id] : 0);
+            let val = source[c.id] !== undefined ? source[c.id] : (source.salaryStructure?.[c.id] !== undefined ? source.salaryStructure[c.id] : 0);
+            if (c.id === 'medical' && val === 0) {
+              val = source.medicalAllowance !== undefined ? source.medicalAllowance : (source.salaryStructure?.medicalAllowance !== undefined ? source.salaryStructure.medicalAllowance : 0);
+            }
             amount = roundAmount(val);
           }
           if (c.id === 'lta') amount = roundAmount(Math.min(amount, ltaCap || amount));
@@ -657,7 +670,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       ptEnabled: getVal('ptEnabled', true),
       lwfEnabled: getVal('lwfEnabled', true),
       gratuityEnabled: getVal('gratuityEnabled', true),
-      includePfInCTC: getVal('includePfInCTC', true),
+      includePfInCTC: getVal('includePfInCTC', false),
       includeGratuityInCTC: getVal('includeGratuityInCTC', true),
       basicPercent: getVal('basicPercent', null),
       hraPercent: getVal('hraPercent', null),
@@ -1114,7 +1127,7 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
       ptEnabled: getVal('ptEnabled', true),
       lwfEnabled: getVal('lwfEnabled', true),
       gratuityEnabled: getVal('gratuityEnabled', true),
-      includePfInCTC: getVal('includePfInCTC', true),
+      includePfInCTC: getVal('includePfInCTC', false),
       includeGratuityInCTC: getVal('includeGratuityInCTC', true),
       basicPercent: getVal('basicPercent', null),
       hraPercent: getVal('hraPercent', null),

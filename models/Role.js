@@ -22,7 +22,7 @@ const RoleSchema = new mongoose.Schema({
   gratuityEnabled: { type: Boolean, default: true },
 
   // CTC Integration switches
-  includePfInCTC: { type: Boolean, default: true },
+  includePfInCTC: { type: Boolean, default: false },
   includeGratuityInCTC: { type: Boolean, default: true },
 
   // Custom salary component ratios (Overrides)

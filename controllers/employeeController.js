@@ -31,7 +31,7 @@ const standardAliases = new Set([
   'DOJ', 'JOINING DATE', 'DATE OF JOINING',
   'DOL', 'DATE OF LEAVING',
   'LOCATION', 'WORK LOCATION',
-  'DESIGNATION', 'ROLE',
+  'DESIGNATION', 'ROLE', 'JOB ROLE TEMPLATE', 'JOB_ROLE_TEMPLATE',
   'DEPARTMENT', 'DEPT',
   'EMPLOYMENT TYPE',
   'STATUS',
@@ -63,6 +63,13 @@ const standardAliases = new Set([
   'GRATUITY ENABLED',
   'INCLUDE PF IN CTC',
   'INCLUDE GRATUITY IN CTC',
+  'USE SALARY COMPONENTS', 'USE_SALARY_COMPONENTS',
+  'ANNUAL CTC', 'ANNUAL_CTC',
+  'GROSS SALARY', 'GROSS_SALARY',
+  'EMPLOYER PF', 'EMPLOYER_PF',
+  'EMPLOYER GRATUITY', 'EMPLOYER_GRATUITY',
+  'TOTAL DEDUCTIONS', 'TOTAL_DEDUCTIONS',
+  'NET TAKE HOME', 'NET_TAKE_HOME',
   'ADDRESS LINE 1',
   'ADDRESS LINE 2',
   'CITY',
@@ -75,7 +82,9 @@ const standardAliases = new Set([
   'SECTION 80CCD(1B)', 'SECTION 80CCD1B',
   'RENT PAID MONTHLY',
   'IS METRO CITY',
-  'OTHER EXEMPTIONS'
+  'OTHER EXEMPTIONS',
+  'PAY TYPE', 'PAYTYPE', 'PAY_TYPE',
+  'HOURLY RATE', 'HOURLYRATE', 'HOURLY_RATE'
 ]);
 
 const getOrCreateConfig = async (userId) => {
@@ -243,14 +252,47 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
   columns.push({ header: 'Joining Date', group: 'Employment Details', key: 'joiningDate', sample: '2026-06-01', type: 'date' });
   columns.push({ header: 'Date of Leaving', group: 'Employment Details', key: 'dateOfLeaving', sample: '', type: 'date' });
   columns.push({ header: 'Location', group: 'Employment Details', key: 'location', sample: 'Delhi' });
-  columns.push({ header: 'Designation', group: 'Employment Details', key: 'designation', sample: 'Software Engineer' });
+  columns.push({
+    header: 'Designation',
+    group: 'Employment Details',
+    key: 'designation',
+    sample: 'Software Engineer',
+    getValue: (employee) => {
+      const val = employee?.designation || '';
+      if (mongoose.Types.ObjectId.isValid(val)) {
+        if (employee.role && typeof employee.role === 'object' && employee.role.name) {
+          return employee.role.name;
+        }
+        return '';
+      }
+      return val;
+    }
+  });
   columns.push({ header: 'Department', group: 'Employment Details', key: 'department', sample: 'Engineering', getValue: (employee) => {
     if (!employee?.department) return '';
-    if (typeof employee.department === 'string') return employee.department;
-    return employee.department.name || '';
+    if (typeof employee.department === 'object' && employee.department.name) {
+      return employee.department.name;
+    }
+    const val = String(employee.department);
+    if (mongoose.Types.ObjectId.isValid(val)) {
+      return '';
+    }
+    return val;
   }});
   columns.push({ header: 'Employment Type', group: 'Employment Details', key: 'employmentType', sample: 'full-time' });
   columns.push({ header: 'Status', group: 'Employment Details', key: 'status', sample: 'active' });
+  columns.push({ header: 'Pay Type', group: 'Employment Details', key: 'payType', sample: 'salaried', getValue: (employee) => employee?.payType || 'salaried' });
+  columns.push({ header: 'Job Role Template', group: 'Employment Details', key: 'role', sample: 'EMPLOYEE', getValue: (employee) => {
+    if (!employee?.role) return '';
+    if (typeof employee.role === 'object' && employee.role.name) {
+      return employee.role.name;
+    }
+    const val = String(employee.role);
+    if (mongoose.Types.ObjectId.isValid(val)) {
+      return '';
+    }
+    return val;
+  }});
 
   // Group: Statutory Toggles
   columns.push({ header: 'Tax Regime', group: 'Statutory Toggles', key: 'taxRegime', sample: 'new' });
@@ -271,6 +313,15 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
 
   // Group: Salary Details
   columns.push({
+    header: 'Hourly Rate',
+    group: 'Salary Details',
+    key: 'hourlyRate',
+    isSummable: true,
+    sample: 0,
+    getValue: (employee) => Number(employee?.hourlyRate) || 0
+  });
+
+  columns.push({
     header: 'Annual CTC',
     group: 'Salary Details',
     key: 'annualCTC',
@@ -278,7 +329,14 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
     sample: 600000,
     getValue: (employee, rNum, mode) => {
       if (mode === 'template') return 600000;
-      return Number(employee?.monthlyCTC || 0) * 12;
+      const payTypeL = getColLetter('payType');
+      const hourlyRateL = getColLetter('hourlyRate');
+      const salariedVal = Number(employee?.monthlyCTC || 0) * 12;
+      const f = `IF(${payTypeL}${rNum}="hourly", ${hourlyRateL}${rNum} * 160 * 12, ${salariedVal})`;
+      const isHourly = employee?.payType === 'hourly';
+      const hourlyVal = (Number(employee?.hourlyRate) || 0) * 160 * 12;
+      const v = isHourly ? hourlyVal : salariedVal;
+      return { f, v };
     }
   });
 
@@ -289,10 +347,16 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
     isSummable: true,
     sample: 50000,
     getValue: (employee, rNum, mode) => {
+      const payTypeL = getColLetter('payType');
+      const hourlyRateL = getColLetter('hourlyRate');
       const annualCtcL = getColLetter('annualCTC');
-      const f = `${annualCtcL}${rNum} / 12`;
+      const f = `IF(${payTypeL}${rNum}="hourly", ${hourlyRateL}${rNum} * 160, ${annualCtcL}${rNum} / 12)`;
+      const isHourly = employee?.payType === 'hourly';
+      const hourlyVal = (Number(employee?.hourlyRate) || 0) * 160;
+      const salariedVal = Number(employee?.monthlyCTC || 0);
+      const v = isHourly ? hourlyVal : salariedVal;
       if (mode === 'template') return { f };
-      return { f, v: Number(employee?.monthlyCTC || 0) };
+      return { f, v };
     }
   });
 
@@ -322,7 +386,7 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
       colDef.getValue = (employee, rNum, mode) => {
         const ctcL = getColLetter('monthlyCTC');
         const basicPctL = getColLetter('basicPercent');
-        const f = `ROUND(${ctcL}${rNum} * IF(${basicPctL}${rNum}<>"", ${basicPctL}${rNum}/100, ${basicDef}), 2)`;
+        const f = `IF(${getColLetter('useSalaryComponents')}${rNum}="No", ${ctcL}${rNum}, ROUND(${ctcL}${rNum} * IF(${basicPctL}${rNum}<>"", ${basicPctL}${rNum}/100, ${basicDef}), 2))`;
         if (mode === 'template') return { f };
         return { f, v: Number(employee?.salaryStructure?.basic) || 0 };
       };
@@ -330,7 +394,7 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
       colDef.getValue = (employee, rNum, mode) => {
         const basicL = getColLetter('basic');
         const hraPctL = getColLetter('hraPercent');
-        const f = `ROUND(${basicL}${rNum} * IF(${hraPctL}${rNum}<>"", ${hraPctL}${rNum}/100, ${hraDef}), 2)`;
+        const f = `IF(${getColLetter('useSalaryComponents')}${rNum}="No", 0, ROUND(${basicL}${rNum} * IF(${hraPctL}${rNum}<>"", ${hraPctL}${rNum}/100, ${hraDef}), 2))`;
         if (mode === 'template') return { f };
         return { f, v: Number(employee?.salaryStructure?.hra) || 0 };
       };
@@ -349,7 +413,7 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
         const gratuityTerm = `IF(${getColLetter('includeGratuityInCTC')}${rNum}="Yes", ${getColLetter('employerGratuity')}${rNum}, 0)`;
         
         const subtractedTerms = terms.slice(1).join(' - ');
-        const f = `ROUND(MAX(${terms[0]}${subtractedTerms ? ' - ' + subtractedTerms : ''} - ${pfTerm} - ${gratuityTerm}, 0), 2)`;
+        const f = `IF(${getColLetter('useSalaryComponents')}${rNum}="No", 0, ROUND(MAX(${terms[0]}${subtractedTerms ? ' - ' + subtractedTerms : ''} - ${pfTerm} - ${gratuityTerm}, 0), 2))`;
         
         if (mode === 'template') return { f };
         const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
@@ -358,7 +422,7 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
     } else if (c.linkedTo === 'ctc_percent') {
       colDef.getValue = (employee, rNum, mode) => {
         const ctcL = getColLetter('monthlyCTC');
-        const f = `ROUND(${ctcL}${rNum} * ${c.linkValue}, 2)`;
+        const f = `IF(${getColLetter('useSalaryComponents')}${rNum}="No", 0, ROUND(${ctcL}${rNum} * ${c.linkValue}, 2))`;
         if (mode === 'template') return { f };
         const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
         return { f, v: Number(val) || 0 };
@@ -366,7 +430,7 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
     } else if (c.linkedTo === 'basic_percent') {
       colDef.getValue = (employee, rNum, mode) => {
         const basicL = getColLetter('basic');
-        const f = `ROUND(${basicL}${rNum} * ${c.linkValue}, 2)`;
+        const f = `IF(${getColLetter('useSalaryComponents')}${rNum}="No", 0, ROUND(${basicL}${rNum} * ${c.linkValue}, 2))`;
         if (mode === 'template') return { f };
         const val = employee?.salaryStructure?.[c.id] !== undefined ? employee.salaryStructure[c.id] : employee[c.id];
         return { f, v: Number(val) || 0 };
@@ -916,7 +980,7 @@ exports.importEmployees = async (req, res) => {
       const joiningDate = parsePossibleDate(getCellValue(rawRow, ['DOJ', 'JOINING DATE', 'DATE OF JOINING'])) || new Date();
       const dateOfLeaving = parsePossibleDate(getCellValue(rawRow, ['DOL', 'DATE OF LEAVING']));
       const dateOfBirth = parsePossibleDate(getCellValue(rawRow, ['DOB', 'DATE OF BIRTH']));
-      const designation = String(getCellValue(rawRow, ['DESIGNATION', 'ROLE']) || '').trim();
+      let designation = String(getCellValue(rawRow, ['DESIGNATION']) || '').trim();
       const gender = String(getCellValue(rawRow, ['GENDER']) || '').trim();
       const accountName = String(getCellValue(rawRow, ['ACCOUNT NAME', 'BANK ACCOUNT NAME']) || '').trim();
       const accountNumber = String(getCellValue(rawRow, ['BANK A/C', 'ACCOUNT NUMBER', 'BANK ACCOUNT', 'BANK ACCOUNT NUMBER']) || '').trim();
@@ -940,6 +1004,10 @@ exports.importEmployees = async (req, res) => {
       const broadband = getStandardOrConfigValue('broadband', ['BROADBAND']);
       const petrol = getStandardOrConfigValue('petrol', ['PETROL']);
       const lta = getStandardOrConfigValue('lta', ['LTA']);
+      const basicOverride = getStandardOrConfigValue('basic', ['BASIC SALARY', 'BASIC']);
+      const hraOverride = getStandardOrConfigValue('hra', ['HRA', 'HOUSE RENT ALLOWANCE']);
+      const conveyanceOverride = getStandardOrConfigValue('conveyance', ['CONVEYANCE', 'CONVEYANCE ALLOWANCE']);
+      const medicalOverride = getStandardOrConfigValue('medical', ['MEDICAL ALLOWANCE', 'MEDICAL']);
       const employerNPS = Number(getCellValue(rawRow, ['EMPLOYER NPS', 'NPS'])) || 0;
       const rawInsurance = getCellValue(rawRow, ['INSURANCE', 'INSURANCE AMOUNT']);
       const insuranceAmount = (rawInsurance !== '' && !isNaN(Number(rawInsurance))) ? Number(rawInsurance) : 0;
@@ -954,6 +1022,11 @@ exports.importEmployees = async (req, res) => {
       const statusRaw = String(getCellValue(rawRow, ['STATUS']) || '').trim().toLowerCase();
       let status = dateOfLeaving ? 'inactive' : 'active';
       if (['active', 'inactive', 'terminated'].includes(statusRaw)) status = statusRaw;
+
+      const payTypeRaw = String(getCellValue(rawRow, ['PAY TYPE', 'PAYTYPE', 'PAY_TYPE']) || '').trim().toLowerCase();
+      const payType = ['salaried', 'hourly'].includes(payTypeRaw) ? payTypeRaw : 'salaried';
+
+      const hourlyRate = Number(getCellValue(rawRow, ['HOURLY RATE', 'HOURLYRATE', 'HOURLY_RATE'])) || 0;
 
       // Salary ratio overrides
       const basicPercentRaw = getCellValue(rawRow, ['BASIC %', 'BASIC PERCENT']);
@@ -976,6 +1049,19 @@ exports.importEmployees = async (req, res) => {
       const includeGratuityInCTC = parseYesNo(getCellValue(rawRow, ['INCLUDE GRATUITY IN CTC']));
       const useSalaryComponents = parseYesNo(getCellValue(rawRow, ['USE SALARY COMPONENTS', 'USE_SALARY_COMPONENTS']));
 
+      const isIntern = employmentType === 'intern';
+      const isHourly = payType === 'hourly';
+      const defaultToggle = (!isIntern && !isHourly);
+
+      const pfEnabledVal = pfEnabled !== undefined ? pfEnabled : defaultToggle;
+      const esiEnabledVal = esiEnabled !== undefined ? esiEnabled : defaultToggle;
+      const ptEnabledVal = ptEnabled !== undefined ? ptEnabled : defaultToggle;
+      const lwfEnabledVal = lwfEnabled !== undefined ? lwfEnabled : defaultToggle;
+      const gratuityEnabledVal = gratuityEnabled !== undefined ? gratuityEnabled : defaultToggle;
+      const includePfInCTCVal = includePfInCTC !== undefined ? includePfInCTC : false;
+      const includeGratuityInCTCVal = includeGratuityInCTC !== undefined ? includeGratuityInCTC : defaultToggle;
+      const useSalaryComponentsVal = useSalaryComponents !== undefined ? useSalaryComponents : defaultToggle;
+
       // Address
       const addressLine1 = String(getCellValue(rawRow, ['ADDRESS LINE 1']) || '').trim();
       const addressLine2 = String(getCellValue(rawRow, ['ADDRESS LINE 2']) || '').trim();
@@ -994,7 +1080,10 @@ exports.importEmployees = async (req, res) => {
       const otherExemptions = Number(getCellValue(rawRow, ['OTHER EXEMPTIONS'])) || 0;
 
       // Department lookup or create by name
-      const departmentName = String(getCellValue(rawRow, ['DEPARTMENT', 'DEPT']) || '').trim();
+      let departmentName = String(getCellValue(rawRow, ['DEPARTMENT', 'DEPT']) || '').trim();
+      if ((departmentName.startsWith('"') && departmentName.endsWith('"')) || (departmentName.startsWith("'") && departmentName.endsWith("'"))) {
+        departmentName = departmentName.slice(1, -1).trim();
+      }
       let departmentId = null;
       if (departmentName) {
         let dept = await Department.findOne({
@@ -1024,6 +1113,43 @@ exports.importEmployees = async (req, res) => {
         if (dept) departmentId = dept._id;
       }
 
+      // Role lookup by name or ID
+      let roleName = String(getCellValue(rawRow, ['JOB ROLE TEMPLATE', 'ROLE', 'JOB_ROLE_TEMPLATE']) || '').trim();
+      if ((roleName.startsWith('"') && roleName.endsWith('"')) || (roleName.startsWith("'") && roleName.endsWith("'"))) {
+        roleName = roleName.slice(1, -1).trim();
+      }
+      if ((designation.startsWith('"') && designation.endsWith('"')) || (designation.startsWith("'") && designation.endsWith("'"))) {
+        designation = designation.slice(1, -1).trim();
+      }
+      let roleId = null;
+      let roleDoc = null;
+      if (roleName) {
+        const Role = mongoose.model('Role');
+        if (mongoose.Types.ObjectId.isValid(roleName)) {
+          roleDoc = await Role.findOne({ _id: roleName, user: req.user._id });
+        }
+        if (!roleDoc) {
+          roleDoc = await Role.findOne({
+            user: req.user._id,
+            name: { $regex: new RegExp(`^${escapeRegex(roleName)}$`, 'i') }
+          });
+        }
+        if (roleDoc) {
+          roleId = roleDoc._id;
+          if (designation && (designation === roleName || designation === String(roleDoc._id) || mongoose.Types.ObjectId.isValid(designation))) {
+            designation = roleDoc.name;
+          }
+        } else {
+          if (mongoose.Types.ObjectId.isValid(designation)) {
+            designation = '';
+          }
+        }
+      } else {
+        if (mongoose.Types.ObjectId.isValid(designation)) {
+          designation = '';
+        }
+      }
+
       const payload = {
         user: req.user._id,
         employeeId,
@@ -1038,9 +1164,12 @@ exports.importEmployees = async (req, res) => {
         dateOfLeaving,
         designation,
         ...(departmentId && { department: departmentId }),
+        ...(roleId && { role: roleId }),
         employmentType,
         status,
-        monthlyCTC,
+        monthlyCTC: isHourly ? 0 : monthlyCTC,
+        payType,
+        hourlyRate: isHourly ? hourlyRate : 0,
         flexiAmount,
         broadband,
         petrol,
@@ -1050,15 +1179,17 @@ exports.importEmployees = async (req, res) => {
         joiningBonus,
         basicPercent,
         hraPercent,
+        ...(basicOverride > 0 && { basic: basicOverride }),
+        ...(hraOverride > 0 && { hra: hraOverride }),
         taxRegime,
-        pfEnabled: pfEnabled !== undefined ? pfEnabled : true,
-        esiEnabled: esiEnabled !== undefined ? esiEnabled : true,
-        ptEnabled: ptEnabled !== undefined ? ptEnabled : true,
-        lwfEnabled: lwfEnabled !== undefined ? lwfEnabled : true,
-        gratuityEnabled: gratuityEnabled !== undefined ? gratuityEnabled : true,
-        includePfInCTC: includePfInCTC !== undefined ? includePfInCTC : true,
-        includeGratuityInCTC: includeGratuityInCTC !== undefined ? includeGratuityInCTC : true,
-        useSalaryComponents: useSalaryComponents !== undefined ? useSalaryComponents : true,
+        pfEnabled: pfEnabledVal,
+        esiEnabled: esiEnabledVal,
+        ptEnabled: ptEnabledVal,
+        lwfEnabled: lwfEnabledVal,
+        gratuityEnabled: gratuityEnabledVal,
+        includePfInCTC: includePfInCTCVal,
+        includeGratuityInCTC: includeGratuityInCTCVal,
+        useSalaryComponents: useSalaryComponentsVal,
         address: {
           line1: addressLine1,
           line2: addressLine2,
@@ -1068,9 +1199,11 @@ exports.importEmployees = async (req, res) => {
           country: country || 'India',
         },
         salaryStructure: {
-          conveyance: 0,
-          medicalAllowance: 0,
+          conveyance: conveyanceOverride,
+          medicalAllowance: medicalOverride,
           otherAllowances: [],
+          ...(basicOverride > 0 && { basic: basicOverride }),
+          ...(hraOverride > 0 && { hra: hraOverride }),
         },
         deductions: {
           professionalTax,
@@ -1145,7 +1278,17 @@ exports.importEmployees = async (req, res) => {
       if (!accountNumber) rowWarnings.push('Bank account missing');
 
       try {
-        const created = await Employee.create(payload);
+        let created;
+        const existing = await Employee.findOne({ user: req.user._id, employeeId });
+        if (existing) {
+          created = await Employee.findOneAndUpdate(
+            { _id: existing._id, user: req.user._id },
+            { $set: payload },
+            { returnDocument: 'after', runValidators: true }
+          );
+        } else {
+          created = await Employee.create(payload);
+        }
         imported += 1;
         const empSummary = {
           row: index + 2,
@@ -1210,8 +1353,20 @@ exports.importEmployees = async (req, res) => {
 
 exports.exportEmployeesExcel = async (req, res) => {
   try {
+    try {
+      mongoose.model('Role');
+    } catch (e) {
+      require('../models/Role');
+    }
+    try {
+      mongoose.model('Department');
+    } catch (e) {
+      require('../models/Department');
+    }
+
     const employees = await Employee.find({ user: req.user._id })
       .populate('department', 'name code')
+      .populate('role', 'name')
       .select('+panNumber +aadharNumber +uanNumber +bankDetails.accountNumber')
       .sort({ createdAt: -1 })
       .lean();
@@ -1225,7 +1380,7 @@ exports.exportEmployeesExcel = async (req, res) => {
       'joiningBonus', 'basicPercent', 'hraPercent', 'pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled',
       'gratuityEnabled', 'includePfInCTC', 'includeGratuityInCTC', 'salaryStructure', 'deductions',
       'bankDetails', 'panNumber', 'uanNumber', 'aadharNumber', 'taxRegime', 'declarations', 'documents',
-      'salaryRevisions', 'createdAt', 'updatedAt', '__v'
+      'salaryRevisions', 'createdAt', 'updatedAt', '__v', 'payType', 'hourlyRate', 'role'
     ]);
 
     const rootCustomKeysSet = new Set();
@@ -1279,6 +1434,11 @@ exports.exportEmployeesExcel = async (req, res) => {
         if (['pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled', 'gratuityEnabled', 'includePfInCTC', 'includeGratuityInCTC'].includes(col.key)) {
           if (val === true || val === 'true') return 'Yes';
           if (val === false || val === 'false') return 'No';
+          if (col.key === 'includePfInCTC') return 'No';
+          return 'Yes';
+        }
+        if (col.type === 'date') {
+          return formatDateOnly(val);
         }
         return val !== undefined && val !== null ? val : '';
       });
@@ -1459,12 +1619,38 @@ exports.addSalaryRevision = async (req, res) => {
     const previousCTC = Number(employee.monthlyCTC) || Number(employee.salaryStructure?.ctc) || 0;
     const previousHourlyRate = Number(employee.hourlyRate) || 0;
     
-    const getVal = (field) => req.body[field] !== undefined ? req.body[field] : employee[field];
+    let revisedRole = employee.role;
+    let roleDoc = null;
+    if (req.body.role !== undefined) {
+      const roleId = req.body.role;
+      if (roleId) {
+        if (!mongoose.Types.ObjectId.isValid(String(roleId))) {
+          return res.status(400).json({ message: 'Invalid Role ID format' });
+        }
+        const Role = mongoose.model('Role');
+        roleDoc = await Role.findOne({ _id: roleId, user: req.user._id });
+        if (!roleDoc) {
+          return res.status(400).json({ message: 'Job Role Template not found' });
+        }
+        revisedRole = roleDoc._id;
+      } else {
+        revisedRole = null;
+      }
+    }
+
+    const getVal = (field) => {
+      if (req.body[field] !== undefined) return req.body[field];
+      if (roleDoc && roleDoc[field] !== undefined && roleDoc[field] !== null) return roleDoc[field];
+      return employee[field];
+    };
 
     const nextPayload = {
       ...employee.toObject(),
+      role: revisedRole,
       monthlyCTC: isHourly ? 0 : newCTC,
       hourlyRate: isHourly ? newHourlyRate : 0,
+      useSalaryComponents: isHourly ? false : getVal('useSalaryComponents'),
+      employmentType: isHourly ? 'contract' : getVal('employmentType'),
       pfEnabled: isHourly ? false : getVal('pfEnabled'),
       esiEnabled: isHourly ? false : getVal('esiEnabled'),
       ptEnabled: isHourly ? false : getVal('ptEnabled'),
@@ -1491,6 +1677,8 @@ exports.addSalaryRevision = async (req, res) => {
         conveyance: isHourly ? 0 : (req.body.conveyance !== undefined ? Number(req.body.conveyance) : (Number(employee.salaryStructure?.conveyance) || 0)),
         medicalAllowance: isHourly ? 0 : (req.body.medicalAllowance !== undefined ? Number(req.body.medicalAllowance) : (Number(employee.salaryStructure?.medicalAllowance) || 0)),
         otherAllowances: isHourly ? [] : (req.body.otherAllowances !== undefined ? req.body.otherAllowances : (employee.salaryStructure?.otherAllowances || [])),
+        ...(req.body.basic !== undefined && { basic: Number(req.body.basic) }),
+        ...(req.body.hra !== undefined && { hra: Number(req.body.hra) }),
       },
     };
 
@@ -1507,6 +1695,9 @@ exports.addSalaryRevision = async (req, res) => {
         reason: 'Initial Salary Setup',
         revisedBy: 'System',
         createdAt: employee.createdAt || new Date(),
+        role: employee.role || null,
+        useSalaryComponents: isHourly ? false : employee.useSalaryComponents !== false,
+        employmentType: employee.employmentType || 'full-time',
         
         monthlyCTC: isHourly ? 0 : previousCTC,
         pfEnabled: isHourly ? false : employee.pfEnabled !== false,
@@ -1514,7 +1705,7 @@ exports.addSalaryRevision = async (req, res) => {
         ptEnabled: isHourly ? false : employee.ptEnabled !== false,
         lwfEnabled: isHourly ? false : employee.lwfEnabled !== false,
         gratuityEnabled: isHourly ? false : employee.gratuityEnabled !== false,
-        includePfInCTC: isHourly ? false : employee.includePfInCTC !== false,
+        includePfInCTC: isHourly ? false : employee.includePfInCTC === true,
         includeGratuityInCTC: isHourly ? false : employee.includeGratuityInCTC !== false,
         basicPercent: isHourly ? null : employee.basicPercent,
         hraPercent: isHourly ? null : employee.hraPercent,
@@ -1544,12 +1735,14 @@ exports.addSalaryRevision = async (req, res) => {
         if (latestInDoc.pfEnabled === undefined || latestInDoc.pfEnabled === null) {
           latestInDoc.monthlyCTC = isHourly ? 0 : (Number(latestInDoc.newCTC) || previousCTC);
           latestInDoc.hourlyRate = isHourly ? (Number(latestInDoc.newHourlyRate) || previousHourlyRate) : 0;
+          latestInDoc.useSalaryComponents = isHourly ? false : employee.useSalaryComponents !== false;
+          latestInDoc.employmentType = latestInDoc.employmentType || employee.employmentType || 'full-time';
           latestInDoc.pfEnabled = isHourly ? false : employee.pfEnabled !== false;
           latestInDoc.esiEnabled = isHourly ? false : employee.esiEnabled !== false;
           latestInDoc.ptEnabled = isHourly ? false : employee.ptEnabled !== false;
           latestInDoc.lwfEnabled = isHourly ? false : employee.lwfEnabled !== false;
           latestInDoc.gratuityEnabled = isHourly ? false : employee.gratuityEnabled !== false;
-          latestInDoc.includePfInCTC = isHourly ? false : employee.includePfInCTC !== false;
+          latestInDoc.includePfInCTC = isHourly ? false : employee.includePfInCTC === true;
           latestInDoc.includeGratuityInCTC = isHourly ? false : employee.includeGratuityInCTC !== false;
           latestInDoc.basicPercent = isHourly ? null : employee.basicPercent;
           latestInDoc.hraPercent = isHourly ? null : employee.hraPercent;
@@ -1582,6 +1775,9 @@ exports.addSalaryRevision = async (req, res) => {
       newHourlyRate: isHourly ? newHourlyRate : undefined,
       reason: req.body.reason || '',
       revisedBy: req.user?.email || req.user?.username || String(req.user?._id || ''),
+      role: revisedRole,
+      useSalaryComponents: isHourly ? false : nextPayload.useSalaryComponents,
+      employmentType: isHourly ? 'contract' : nextPayload.employmentType,
 
       monthlyCTC: isHourly ? 0 : newCTC,
       hourlyRate: isHourly ? newHourlyRate : 0,
@@ -1611,6 +1807,9 @@ exports.addSalaryRevision = async (req, res) => {
 
     employee.monthlyCTC = isHourly ? 0 : newCTC;
     employee.hourlyRate = isHourly ? newHourlyRate : 0;
+    employee.role = revisedRole;
+    employee.useSalaryComponents = isHourly ? false : nextPayload.useSalaryComponents;
+    employee.employmentType = isHourly ? 'contract' : nextPayload.employmentType;
     employee.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
     employee.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
     employee.ptEnabled = isHourly ? false : nextPayload.ptEnabled;

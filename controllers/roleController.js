@@ -54,7 +54,7 @@ exports.getRoles = async (req, res) => {
         ptEnabled: true,
         lwfEnabled: true,
         gratuityEnabled: true,
-        includePfInCTC: true,
+        includePfInCTC: false,
         includeGratuityInCTC: true,
       }
     ];

@@ -1036,6 +1036,9 @@ async function payrollAndEmployeeCases() {
     ok(employee.useSalaryComponents === true, 'Expected Employee to use salary components');
     ok(employee.monthlyCTC === 0, 'Expected Employee salary to be 0');
     ok(employee.pfEnabled && employee.esiEnabled && employee.ptEnabled && employee.lwfEnabled && employee.gratuityEnabled, 'Expected all statutory to be enabled for Employee');
+
+    state.ids.internRole = String(intern._id);
+    state.ids.employeeRole = String(employee._id);
     return `${res.data.length} roles found`;
   });
 
@@ -1064,17 +1067,21 @@ async function payrollAndEmployeeCases() {
         joiningDate: '2026-05-15', // Mid-month joining
         monthlyCTC: 10000,
         department: state.ids.department,
+        role: state.ids.internRole,
         pfEnabled: true,
         esiEnabled: true,
         ptEnabled: true,
         lwfEnabled: true,
         gratuityEnabled: true,
         includePfInCTC: true,
-        includeGratuityInCTC: true
+        includeGratuityInCTC: true,
+        employmentType: 'intern'
       }
     });
     state.ids.employee = create.data._id;
     ok(create.data._id, 'Employee create failed');
+    ok(String(create.data.role) === state.ids.internRole, 'Employee initial role should be INTERN');
+    ok(create.data.employmentType === 'intern', 'Employee initial employmentType should be intern');
 
     // Dynamic Active List Query Mid-month Join
     const list = await api('GET', `/api/employees/active?month=5&year=2026`, {
@@ -1090,10 +1097,26 @@ async function payrollAndEmployeeCases() {
       body: {
         newCTC: 12000,
         effectiveDate: '2026-06-01',
-        reason: 'Performance appraisal'
+        reason: 'Performance appraisal',
+        role: state.ids.employeeRole
       }
     });
     ok(revise.data.monthlyCTC === 12000, 'Salary revision new CTC mismatch');
+    ok(String(revise.data.role) === state.ids.employeeRole, 'Revised employee role mismatch');
+    ok(revise.data.employmentType === 'full-time', 'Revised employee employmentType mismatch');
+
+    // Verify historical snapshot role mapping
+    ok(Array.isArray(revise.data.salaryRevisions), 'Expected salaryRevisions to be an array');
+    ok(revise.data.salaryRevisions.length >= 2, 'Expected at least 2 revisions (initial + current)');
+
+    const initialRevision = revise.data.salaryRevisions[0];
+    ok(String(initialRevision.role) === state.ids.internRole, 'Initial revision snapshot role mismatch');
+    ok(initialRevision.employmentType === 'intern', 'Initial revision snapshot employmentType mismatch');
+
+    const latestRevision = revise.data.salaryRevisions[revise.data.salaryRevisions.length - 1];
+    ok(String(latestRevision.role) === state.ids.employeeRole, 'Latest revision snapshot role mismatch');
+    ok(latestRevision.employmentType === 'full-time', 'Latest revision snapshot employmentType mismatch');
+
     return employeeId;
   });
 
