@@ -3,7 +3,76 @@ const Role = require('../models/Role');
 
 exports.getRoles = async (req, res) => {
   try {
-    const data = await Role.find({ user: req.user._id }).sort({ name: 1 }).lean();
+    let data = await Role.find({ user: req.user._id }).sort({ name: 1 }).lean();
+    
+    const defaultRoleTemplates = [
+      {
+        user: req.user._id,
+        name: 'CONSULTANT',
+        description: 'Part-time hourly consultant',
+        employmentType: 'part-time',
+        payType: 'hourly',
+        useSalaryComponents: false,
+        monthlyCTC: 0,
+        hourlyRate: 20,
+        pfEnabled: true,
+        esiEnabled: true,
+        ptEnabled: true,
+        lwfEnabled: true,
+        gratuityEnabled: true,
+        includePfInCTC: false,
+        includeGratuityInCTC: false,
+      },
+      {
+        user: req.user._id,
+        name: 'INTERN',
+        description: 'Full-time intern with flat stipend',
+        employmentType: 'full-time',
+        payType: 'salaried',
+        useSalaryComponents: false,
+        monthlyCTC: 0,
+        hourlyRate: 0,
+        pfEnabled: false,
+        esiEnabled: false,
+        ptEnabled: false,
+        lwfEnabled: false,
+        gratuityEnabled: false,
+        includePfInCTC: false,
+        includeGratuityInCTC: false,
+      },
+      {
+        user: req.user._id,
+        name: 'EMPLOYEE',
+        description: 'Full-time salaried employee with statutory benefits',
+        employmentType: 'full-time',
+        payType: 'salaried',
+        useSalaryComponents: true,
+        monthlyCTC: 0,
+        hourlyRate: 0,
+        pfEnabled: true,
+        esiEnabled: true,
+        ptEnabled: true,
+        lwfEnabled: true,
+        gratuityEnabled: true,
+        includePfInCTC: true,
+        includeGratuityInCTC: true,
+      }
+    ];
+
+    const existingNames = new Set(data.map(r => r.name));
+    const missingRoles = defaultRoleTemplates.filter(r => !existingNames.has(r.name));
+
+    if (missingRoles.length > 0) {
+      try {
+        await Role.insertMany(missingRoles, { ordered: false });
+      } catch (insertError) {
+        // Ignore duplicate key errors from concurrent requests
+        if (insertError.code !== 11000 && !(insertError.writeErrors && insertError.writeErrors.some(e => e.code === 11000))) {
+          throw insertError;
+        }
+      }
+      data = await Role.find({ user: req.user._id }).sort({ name: 1 }).lean();
+    }
     res.json(data);
   } catch (error) {
     res.status(500).json({ message: 'Server error fetching roles' });

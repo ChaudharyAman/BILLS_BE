@@ -1010,6 +1010,35 @@ async function expenseAndBillingCases() {
 }
 
 async function payrollAndEmployeeCases() {
+  await run('Roles default seeding and fetch', async () => {
+    const res = await api('GET', '/api/roles', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(Array.isArray(res.data), 'Expected roles to be an array');
+    ok(res.data.length >= 3, `Expected at least 3 seeded roles, got: ${res.data.length}`);
+    const consultant = res.data.find(r => r.name === 'CONSULTANT');
+    const intern = res.data.find(r => r.name === 'INTERN');
+    const employee = res.data.find(r => r.name === 'EMPLOYEE');
+    ok(consultant, 'Consultant role template missing');
+    ok(intern, 'Intern role template missing');
+    ok(employee, 'Employee role template missing');
+    ok(consultant.employmentType === 'part-time', 'Expected Consultant to be part-time');
+    ok(consultant.payType === 'hourly', 'Expected Consultant to be hourly');
+    ok(consultant.hourlyRate === 20, 'Expected Consultant hourlyRate to be 20');
+    ok(consultant.pfEnabled && consultant.esiEnabled && consultant.ptEnabled && consultant.lwfEnabled && consultant.gratuityEnabled, 'Expected all statutory to be enabled for Consultant');
+    ok(intern.employmentType === 'full-time', 'Expected Intern to be full-time');
+    ok(intern.payType === 'salaried', 'Expected Intern to be salaried (flat)');
+    ok(intern.useSalaryComponents === false, 'Expected Intern to have salary components disabled');
+    ok(intern.monthlyCTC === 0, 'Expected Intern stipend to be 0');
+    ok(employee.employmentType === 'full-time', 'Expected Employee to be full-time');
+    ok(employee.payType === 'salaried', 'Expected Employee to be salaried');
+    ok(employee.useSalaryComponents === true, 'Expected Employee to use salary components');
+    ok(employee.monthlyCTC === 0, 'Expected Employee salary to be 0');
+    ok(employee.pfEnabled && employee.esiEnabled && employee.ptEnabled && employee.lwfEnabled && employee.gratuityEnabled, 'Expected all statutory to be enabled for Employee');
+    return `${res.data.length} roles found`;
+  });
+
   await run('Department create, fetch and delete', async () => {
     const deptName = unique('Engineering');
     const create = await api('POST', '/api/departments', {
