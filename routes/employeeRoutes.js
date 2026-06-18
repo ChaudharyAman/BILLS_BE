@@ -13,6 +13,8 @@ const {
   exportEmployeesExcel,
   downloadImportTemplateExcel,
   addSalaryRevision,
+  updateSalaryRevision,
+  deleteSalaryRevision,
   updateEmployeeDeclarations,
 } = require('../controllers/employeeController');
 
@@ -35,5 +37,8 @@ router.route('/:id')
   .delete(deleteEmployee);
 router.put('/:id/declarations', updateEmployeeDeclarations);
 router.post('/:id/salary-revision', addSalaryRevision);
+router.route('/:id/salary-revision/:revisionId')
+  .put(updateSalaryRevision)
+  .delete(deleteSalaryRevision);
 
 module.exports = router;
