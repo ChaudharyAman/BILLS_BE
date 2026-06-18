@@ -311,7 +311,9 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     const basicComp = config.salaryComponents.find(c => c.id === 'basic');
     if (basicComp) {
       const sourceBasic = source.basic !== undefined ? source.basic : source.salaryStructure?.basic;
-      if (useComponents && sourceBasic !== undefined && sourceBasic !== null && Number(sourceBasic) > 0) {
+      if (!useComponents) {
+        basicMaster = monthlyCTC;
+      } else if (useComponents && sourceBasic !== undefined && sourceBasic !== null && Number(sourceBasic) > 0) {
         basicMaster = roundAmount(sourceBasic);
       } else {
         let bVal = basicComp.linkValue;
@@ -329,7 +331,9 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     const hraComp = config.salaryComponents.find(c => c.id === 'hra');
     if (hraComp) {
       const sourceHra = source.hra !== undefined ? source.hra : source.salaryStructure?.hra;
-      if (useComponents && sourceHra !== undefined && sourceHra !== null && Number(sourceHra) > 0) {
+      if (!useComponents) {
+        hraMaster = 0;
+      } else if (useComponents && sourceHra !== undefined && sourceHra !== null && Number(sourceHra) > 0) {
         hraMaster = roundAmount(sourceHra);
       } else {
         let hVal = hraComp.linkValue;
@@ -455,6 +459,8 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   }
 
   if (!useComponents) {
+    basicMaster = monthlyCTC;
+    hraMaster = 0;
     flexi = 0; broadband = 0; petrol = 0; lta = 0; conveyance = 0; medicalAllowance = 0; specialAllowance = 0;
     if (hasDynamicComponents) {
       Object.keys(earningsMap).forEach(k => { earningsMap[k] = k === 'basic' ? monthlyCTC : 0; });
@@ -482,6 +488,8 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     medicalAllowance = earningsMap['medical'] || 0;
     specialAllowance = earningsMap['special'] || 0;
     if (!useComponents) {
+      basicMaster = monthlyCTC;
+      hraMaster = 0;
       Object.keys(earningsMap).forEach(k => { earningsMap[k] = k === 'basic' ? monthlyCTC : 0; });
     }
   }
