@@ -26,7 +26,7 @@ const EmployeeSchema = new mongoose.Schema({
   },
 
   designation: { type: String, default: '' },
-  department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
+  department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null, set: v => v === '' ? null : v },
   joiningDate: { type: Date, required: true },
   location: { type: String, default: '' },
   dateOfLeaving: { type: Date, default: null },
@@ -43,7 +43,7 @@ const EmployeeSchema = new mongoose.Schema({
   },
 
   monthlyCTC: { type: Number, default: 0, min: 0 },
-  role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null },
+  role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null, set: v => v === '' ? null : v },
   payType: { type: String, enum: ['salaried', 'hourly'], default: 'salaried' },
   hourlyRate: { type: Number, default: 0, min: 0 },
   flexiAmount: { type: Number, default: 0, min: 0 },
@@ -133,7 +133,7 @@ const EmployeeSchema = new mongoose.Schema({
     reason: { type: String },
     revisedBy: { type: String },
     createdAt: { type: Date, default: Date.now },
-    role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null },
+    role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null, set: v => v === '' ? null : v },
     useSalaryComponents: { type: Boolean },
     employmentType: { type: String },
 
