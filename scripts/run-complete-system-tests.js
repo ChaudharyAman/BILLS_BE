@@ -1651,6 +1651,184 @@ async function payrollAndEmployeeCases() {
     ok(Math.abs(netSalary - 4400) < 0.1, `Expected net salary ~4400, got: ${netSalary}`);
     return `Hourly rate: 30, Hours worked: 160, Net Salary: ${netSalary}`;
   });
+
+  await run('Deleted employee payroll lifecycle and reports fallback', async () => {
+    const Payroll = require('../models/Payroll');
+    const Expense = require('../models/Expense');
+
+    // 1. Create a dummy employee
+    const empId1 = unique('DEL-EMP-1');
+    const emp1 = await api('POST', '/api/employees', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        employeeId: empId1,
+        firstName: 'DeletedOne',
+        lastName: 'Employee',
+        email: `${empId1}@test.com`,
+        joiningDate: '2026-08-01',
+        monthlyCTC: 12000,
+        pfEnabled: true,
+        esiEnabled: false,
+        ptEnabled: false,
+        lwfEnabled: false,
+        gratuityEnabled: false,
+        includePfInCTC: false,
+        includeGratuityInCTC: false
+      }
+    });
+    const employeeId1 = emp1.data._id;
+
+    // 2. Process payroll draft for August 2026
+    const process1 = await api('POST', '/api/payroll/process', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        month: 8,
+        year: 2026,
+        saveAsDraft: true,
+        employees: [{
+          employeeId: employeeId1,
+          workingDays: 31,
+          paidDays: 31,
+          paidLeaves: 0,
+          unpaidLeaves: 0,
+          adjustments: {
+            basicPercent: 50,
+            hraPercent: 50,
+            tds: 0
+          }
+        }]
+      }
+    });
+    ok(process1.data.success.length === 1, 'Payroll process bulk run failed');
+    const payrollId1 = process1.data.success[0].payrollId;
+
+    // 3. Delete the employee document directly from DB (bypassing cascade)
+    const Employee = require('../models/Employee');
+    await Employee.deleteOne({ _id: employeeId1 });
+
+    // 4. Fetch payroll by ID
+    const getPayroll = await api('GET', `/api/payroll/${payrollId1}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(getPayroll.data.salarySplits.length === 1, 'getPayrollById splits should be resolved');
+    ok(getPayroll.data.employee.firstName === 'DeletedOne', 'getPayrollById employee name fallback should work');
+
+    // 5. Generate payslip
+    const getPayslip = await api('GET', `/api/payroll/${payrollId1}/generate-payslip`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(getPayslip.data.payslip?.salarySplits.length === 1, 'generatePayslip splits should be resolved');
+    ok(getPayslip.data.payslip?.employee.firstName === 'DeletedOne', 'generatePayslip employee name fallback should work');
+
+    // 6. Mark payroll as paid
+    const markPaid1 = await api('POST', `/api/payroll/${payrollId1}/mark-paid`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        paymentDate: '2026-08-31',
+        paymentMethod: 'Bank Transfer'
+      }
+    });
+    ok(markPaid1.data.expense.expenseNumber.includes(empId1) || markPaid1.data.expense.expenseNumber.includes(payrollId1), 'Expense number should be unique and contain identifiers');
+
+    // 7. Create second dummy employee and process payroll, then delete and mark paid
+    const empId2 = unique('DEL-EMP-2');
+    const emp2 = await api('POST', '/api/employees', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        employeeId: empId2,
+        firstName: 'DeletedTwo',
+        lastName: 'Employee',
+        email: `${empId2}@test.com`,
+        joiningDate: '2026-08-01',
+        monthlyCTC: 15000,
+        pfEnabled: true,
+        esiEnabled: false,
+        ptEnabled: false,
+        lwfEnabled: false,
+        gratuityEnabled: false,
+        includePfInCTC: false,
+        includeGratuityInCTC: false
+      }
+    });
+    const employeeId2 = emp2.data._id;
+
+    const process2 = await api('POST', '/api/payroll/process', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        month: 8,
+        year: 2026,
+        saveAsDraft: true,
+        employees: [{
+          employeeId: employeeId2,
+          workingDays: 31,
+          paidDays: 31,
+          paidLeaves: 0,
+          unpaidLeaves: 0,
+          adjustments: {
+            basicPercent: 50,
+            hraPercent: 50,
+            tds: 0
+          }
+        }]
+      }
+    });
+    const payrollId2 = process2.data.success[0].payrollId;
+
+    await Employee.deleteOne({ _id: employeeId2 });
+
+    // 8. Mark second payroll as paid (should succeed without duplicate key error)
+    const markPaid2 = await api('POST', `/api/payroll/${payrollId2}/mark-paid`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        paymentDate: '2026-08-31',
+        paymentMethod: 'Bank Transfer'
+      }
+    });
+    ok(markPaid2.data.expense.expenseNumber !== markPaid1.data.expense.expenseNumber, 'Expense numbers must be unique');
+
+    // 9. Run reports for August 2026 and verify no crashes, correct names
+    const bankTransfer = await api('GET', '/api/reports/payroll-summary/bank-transfer?month=8&year=2026', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(bankTransfer.data.data.some(x => x['Employee ID'] === empId1 && x['Employee Name'] === 'DeletedOne Employee'), 'Bank transfer report should contain DeletedOne');
+    ok(bankTransfer.data.data.some(x => x['Employee ID'] === empId2 && x['Employee Name'] === 'DeletedTwo Employee'), 'Bank transfer report should contain DeletedTwo');
+
+    const pfChallan = await api('GET', '/api/reports/payroll-summary/pf-challan?month=8&year=2026', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(pfChallan.data.data.some(x => x['Employee ID'] === empId1 && x['Employee Name'] === 'DeletedOne Employee'), 'PF challan report should contain DeletedOne');
+
+    const tdsSummary = await api('GET', `/api/reports/payroll-summary/tds-summary?year=2026`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(tdsSummary.data.data.some(x => x['Employee ID'] === empId1 && x['Employee Name'] === 'DeletedOne Employee'), 'TDS Summary report should contain DeletedOne');
+    ok(tdsSummary.data.data.some(x => x['Employee ID'] === empId2 && x['Employee Name'] === 'DeletedTwo Employee'), 'TDS Summary report should contain DeletedTwo');
+
+    const annualSummary = await api('GET', `/api/reports/payroll-summary/annual-employee-summary?year=2026&employeeId=${employeeId1}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(annualSummary.data.data.some(x => x['Month'] === 'Aug' && x['Monthly CTC'] === 12000), 'Annual employee summary report should contain DeletedOne details');
+
+    // Clean up
+    await Payroll.deleteOne({ _id: payrollId1 });
+    await Payroll.deleteOne({ _id: payrollId2 });
+    await Expense.deleteOne({ _id: markPaid1.data.expense._id });
+    await Expense.deleteOne({ _id: markPaid2.data.expense._id });
+
+    return 'Deleted employee payroll and report workflows resolved successfully';
+  });
 }
 
 async function bankStatementCases() {

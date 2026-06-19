@@ -95,15 +95,15 @@ exports.getBankTransferSheet = async (req, res) => {
     }
 
     const payrolls = await Payroll.find({ user: req.user._id, month, year })
-      .populate({ path: 'employee', select: '+bankDetails.accountNumber firstName lastName employeeId bankDetails' })
+      .populate({ path: 'employee', select: '+bankDetails.accountNumber firstName lastName employeeId bankDetails.ifscCode' })
       .sort({ createdAt: 1 })
       .lean();
 
     const rows = [
       ['Employee Name', 'Employee ID', 'Account Number', 'IFSC', 'Net Salary'],
       ...payrolls.map((payroll) => [
-        `${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim(),
-        payroll.employee?.employeeId || '',
+        `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
+        payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
         payroll.employee?.bankDetails?.accountNumber || '',
         payroll.employee?.bankDetails?.ifscCode || '',
         Number(payroll.netSalary) || 0,
@@ -135,8 +135,8 @@ exports.getPFChallan = async (req, res) => {
     const rows = [
       ['Employee Name', 'Employee ID', 'PF Employee', 'PF Employer', 'Total PF'],
       ...payrolls.map((payroll) => [
-        `${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim(),
-        payroll.employee?.employeeId || '',
+        `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
+        payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
         Number(payroll.deductions?.pfEmployee) || 0,
         Number(payroll.employerContributions?.pfEmployer) || 0,
         (Number(payroll.deductions?.pfEmployee) || 0) + (Number(payroll.employerContributions?.pfEmployer) || 0),
@@ -173,11 +173,11 @@ exports.getTDSSummary = async (req, res) => {
 
     const grouped = new Map();
     payrolls.forEach((payroll) => {
-      const employeeId = String(payroll.employee?._id || payroll.employee || '');
+      const employeeId = payroll.employee?._id ? String(payroll.employee._id) : (payroll.employeeSnapshot?.employeeId || '');
       if (!grouped.has(employeeId)) {
         grouped.set(employeeId, {
-          name: `${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim(),
-          employeeId: payroll.employee?.employeeId || '',
+          name: `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
+          employeeId: payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
           values: Object.fromEntries(['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'].map((m) => [m, 0])),
         });
       }
@@ -218,7 +218,19 @@ exports.getAnnualEmployeeSummary = async (req, res) => {
       return res.status(400).json({ message: 'Valid employeeId is required' });
     }
 
-    const employee = await Employee.findOne({ _id: employeeId, user: req.user._id }).select('firstName lastName employeeId monthlyCTC');
+    let employee = await Employee.findOne({ _id: employeeId, user: req.user._id }).select('firstName lastName employeeId monthlyCTC');
+    if (!employee) {
+      const pastPayroll = await Payroll.findOne({ employee: employeeId, user: req.user._id }).select('employeeSnapshot');
+      if (pastPayroll && pastPayroll.employeeSnapshot) {
+        employee = {
+          _id: employeeId,
+          firstName: pastPayroll.employeeSnapshot.firstName,
+          lastName: pastPayroll.employeeSnapshot.lastName,
+          employeeId: pastPayroll.employeeSnapshot.employeeId,
+          monthlyCTC: pastPayroll.employeeSnapshot.monthlyCTC,
+        };
+      }
+    }
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const payrolls = await Payroll.find({ user: req.user._id, employee: employeeId, year })

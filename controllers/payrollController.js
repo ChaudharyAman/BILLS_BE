@@ -19,7 +19,11 @@ const {
 const { XLSX, setHeaderStyle, applyNumberFormat, sendWorkbook } = require('../utils/excel');
 
 const monthName = (month) => new Date(0, Number(month) - 1).toLocaleString('en-US', { month: 'long' });
-const buildEmployeeName = (employee) => `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim() || 'Unknown Employee';
+const buildEmployeeName = (employee, snapshot) => {
+  const first = employee?.firstName || snapshot?.firstName || '';
+  const last = employee?.lastName || snapshot?.lastName || '';
+  return `${first} ${last}`.trim() || 'Unknown Employee';
+};
 const isValidMonth = (month) => Number.isInteger(month) && month >= 1 && month <= 12;
 const isValidYear = (year) => Number.isInteger(year) && year >= 1970 && year <= 3000;
 const sumNamedAmounts = (items = []) => items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
@@ -752,8 +756,14 @@ exports.getPayrollById = async (req, res) => {
       lopStrategy: payroll.lopStrategy || 'proportional',
       segmentLops: payroll.segmentLops || [],
     };
+    const employeeData = payroll.employee || {
+      ...payroll.employeeSnapshot,
+      payType: payroll.payType,
+      hourlyRate: payroll.hourlyRate,
+      _id: payroll.populated('employee') || payroll.employee
+    };
     const splits = getSalarySplits(
-      payroll.employee,
+      employeeData,
       config,
       payroll.month,
       payroll.year,
@@ -764,6 +774,9 @@ exports.getPayrollById = async (req, res) => {
 
     const payrollObj = payroll.toObject();
     payrollObj.salarySplits = splits;
+    if (!payrollObj.employee) {
+      payrollObj.employee = employeeData;
+    }
 
     res.json(payrollObj);
   } catch (error) {
@@ -857,7 +870,7 @@ exports.markPayrollAsPaid = async (req, res) => {
 
     const payrollCategory = await getPayrollCategory(req.user._id);
     const paymentDate = req.body.paymentDate || new Date();
-    const employeeIdentifier = payroll.employee?.employeeId || 'unknown';
+    const employeeIdentifier = payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || (payroll.populated('employee') || payroll._id).toString();
     const expenseNumber = `PAY-${payroll.year}-${String(payroll.month).padStart(2, '0')}-${employeeIdentifier}`;
     let expense = null;
     if (payroll.expenseRef) {
@@ -870,10 +883,10 @@ exports.markPayrollAsPaid = async (req, res) => {
         expenseNumber,
         category: payrollCategory._id,
         date: paymentDate,
-        vendor: { name: buildEmployeeName(payroll.employee) || 'Payroll Vendor' },
+        vendor: { name: buildEmployeeName(payroll.employee, payroll.employeeSnapshot) || 'Payroll Vendor' },
         paymentMethod: req.body.paymentMethod || 'Bank Transfer',
         items: [{
-          name: `Salary - ${buildEmployeeName(payroll.employee)}`.trim(),
+          name: `Salary - ${buildEmployeeName(payroll.employee, payroll.employeeSnapshot)}`.trim(),
           description: `${monthName(payroll.month)} ${payroll.year}`,
           qty: 1,
           rate: payroll.netSalary,
@@ -906,7 +919,7 @@ exports.markPayrollAsPaid = async (req, res) => {
     // Repay active loans if loanDeduction > 0
     if (payroll.deductions?.loanDeduction > 0) {
       const activeLoans = await Loan.find({
-        employee: payroll.employee._id || payroll.employee,
+        employee: payroll.employee?._id || payroll.populated('employee') || payroll.employee,
         user: req.user._id,
         status: 'active',
         remainingBalance: { $gt: 0 }
@@ -951,7 +964,7 @@ exports.markPayrollAsPaid = async (req, res) => {
       user: req.user._id,
       actor: req.user._id,
       action: 'PAYROLL_PAID',
-      targetEmployee: payroll.employee?._id || payroll.employee,
+      targetEmployee: payroll.employee?._id || payroll.populated('employee') || payroll.employee,
       targetPayroll: payroll._id,
       changes: { status: 'paid', paymentDate, expenseId: expense._id }
     });
@@ -984,13 +997,12 @@ exports.generatePayslip = async (req, res) => {
     }
 
     // Guard: employee may have been deleted after payroll was created
-    if (!payroll.employee) {
+    if (!payroll.employee && !payroll.employeeSnapshot) {
       return res.status(404).json({ message: 'Employee record no longer exists for this payroll' });
     }
 
     const config = await getOrCreateConfig(req.user._id);
     const adjustments = {
-
       pfEnabled: payroll.employeeSnapshot?.pfEnabled,
       esiEnabled: payroll.employeeSnapshot?.esiEnabled,
       ptEnabled: payroll.employeeSnapshot?.ptEnabled,
@@ -1001,8 +1013,14 @@ exports.generatePayslip = async (req, res) => {
       lopStrategy: payroll.lopStrategy || 'proportional',
       segmentLops: payroll.segmentLops || [],
     };
+    const employeeData = payroll.employee || {
+      ...payroll.employeeSnapshot,
+      payType: payroll.payType,
+      hourlyRate: payroll.hourlyRate,
+      _id: payroll.populated('employee') || payroll.employee
+    };
     const splits = getSalarySplits(
-      payroll.employee,
+      employeeData,
       config,
       payroll.month,
       payroll.year,
@@ -1013,7 +1031,7 @@ exports.generatePayslip = async (req, res) => {
 
     res.json({
       payslip: {
-        employee: payroll.employee,
+        employee: payroll.employee || employeeData,
         period: {
           month: payroll.month,
           year: payroll.year,
