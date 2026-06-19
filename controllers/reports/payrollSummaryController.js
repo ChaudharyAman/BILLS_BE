@@ -95,7 +95,7 @@ exports.getBankTransferSheet = async (req, res) => {
     }
 
     const payrolls = await Payroll.find({ user: req.user._id, month, year })
-      .populate({ path: 'employee', select: '+bankDetails.accountNumber firstName lastName employeeId bankDetails' })
+      .populate({ path: 'employee', select: '+bankDetails.accountNumber firstName lastName employeeId bankDetails.ifscCode' })
       .sort({ createdAt: 1 })
       .lean();
 
@@ -218,7 +218,19 @@ exports.getAnnualEmployeeSummary = async (req, res) => {
       return res.status(400).json({ message: 'Valid employeeId is required' });
     }
 
-    const employee = await Employee.findOne({ _id: employeeId, user: req.user._id }).select('firstName lastName employeeId monthlyCTC');
+    let employee = await Employee.findOne({ _id: employeeId, user: req.user._id }).select('firstName lastName employeeId monthlyCTC');
+    if (!employee) {
+      const pastPayroll = await Payroll.findOne({ employee: employeeId, user: req.user._id }).select('employeeSnapshot');
+      if (pastPayroll && pastPayroll.employeeSnapshot) {
+        employee = {
+          _id: employeeId,
+          firstName: pastPayroll.employeeSnapshot.firstName,
+          lastName: pastPayroll.employeeSnapshot.lastName,
+          employeeId: pastPayroll.employeeSnapshot.employeeId,
+          monthlyCTC: pastPayroll.employeeSnapshot.monthlyCTC,
+        };
+      }
+    }
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const payrolls = await Payroll.find({ user: req.user._id, employee: employeeId, year })

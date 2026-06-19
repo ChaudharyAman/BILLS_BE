@@ -1815,6 +1815,12 @@ async function payrollAndEmployeeCases() {
     ok(tdsSummary.data.data.some(x => x['Employee ID'] === empId1 && x['Employee Name'] === 'DeletedOne Employee'), 'TDS Summary report should contain DeletedOne');
     ok(tdsSummary.data.data.some(x => x['Employee ID'] === empId2 && x['Employee Name'] === 'DeletedTwo Employee'), 'TDS Summary report should contain DeletedTwo');
 
+    const annualSummary = await api('GET', `/api/reports/payroll-summary/annual-employee-summary?year=2026&employeeId=${employeeId1}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(annualSummary.data.data.some(x => x['Month'] === 'Aug' && x['Monthly CTC'] === 12000), 'Annual employee summary report should contain DeletedOne details');
+
     // Clean up
     await Payroll.deleteOne({ _id: payrollId1 });
     await Payroll.deleteOne({ _id: payrollId2 });
