@@ -877,6 +877,12 @@ exports.markPayrollAsPaid = async (req, res) => {
       expense = await Expense.findOne({ _id: payroll.expenseRef, user: req.user._id });
     }
 
+    // Fallback: if expenseRef was not saved (e.g. a previous attempt failed mid-way),
+    // look up by the deterministic expenseNumber to avoid a duplicate key error.
+    if (!expense) {
+      expense = await Expense.findOne({ user: req.user._id, expenseNumber });
+    }
+
     if (!expense) {
       expense = await Expense.create({
         user: req.user._id,
@@ -972,8 +978,32 @@ exports.markPayrollAsPaid = async (req, res) => {
     res.json({ payroll, expense });
   } catch (error) {
     console.error('Error marking payroll as paid:', error);
+    // Handle concurrent double-submit: if the expense was just created by a parallel
+    // request (race condition), re-fetch it and link it so the payroll is still saved.
     if (error.code === 11000) {
-      return res.status(400).json({ message: 'Payroll expense already exists' });
+      try {
+        const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id });
+        if (payroll && payroll.status !== 'paid') {
+          const employeeIdentifier =
+            payroll.employeeSnapshot?.employeeId ||
+            payroll.employee?.toString() ||
+            payroll._id.toString();
+          const expenseNumber = `PAY-${payroll.year}-${String(payroll.month).padStart(2, '0')}-${employeeIdentifier}`;
+          const expense = await Expense.findOne({ user: req.user._id, expenseNumber });
+          if (expense) {
+            payroll.status = 'paid';
+            payroll.expenseRef = expense._id;
+            payroll.paymentDate = req.body.paymentDate || new Date();
+            payroll.paymentMethod = req.body.paymentMethod || payroll.paymentMethod || 'Bank Transfer';
+            payroll.transactionId = req.body.transactionId || payroll.transactionId;
+            await payroll.save();
+            return res.json({ payroll, expense });
+          }
+        }
+      } catch (retryError) {
+        console.error('Error in 11000 recovery:', retryError);
+      }
+      return res.status(409).json({ message: 'Payroll payment is already being processed. Please refresh and check the status.' });
     }
     res.status(500).json({ message: 'Server error marking payroll as paid' });
   }
