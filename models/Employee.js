@@ -487,11 +487,19 @@ const removeEmployeePII = (doc, ret) => {
   // Note: panNumber, uanNumber, aadharNumber and bankDetails.accountNumber
   // already use `select: false` in the schema — this transform provides a
   // second layer of protection in case a query explicitly projects them in.
-  delete ret.panNumber;
-  delete ret.uanNumber;
-  delete ret.aadharNumber;
-  if (ret.bankDetails) {
-    delete ret.bankDetails.accountNumber;
+  if (doc.isSelected && !doc.isSelected('panNumber')) {
+    delete ret.panNumber;
+  }
+  if (doc.isSelected && !doc.isSelected('uanNumber')) {
+    delete ret.uanNumber;
+  }
+  if (doc.isSelected && !doc.isSelected('aadharNumber')) {
+    delete ret.aadharNumber;
+  }
+  if (doc.isSelected && !doc.isSelected('bankDetails.accountNumber')) {
+    if (ret.bankDetails) {
+      delete ret.bankDetails.accountNumber;
+    }
   }
   return ret;
 };
