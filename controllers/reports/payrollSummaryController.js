@@ -102,8 +102,8 @@ exports.getBankTransferSheet = async (req, res) => {
     const rows = [
       ['Employee Name', 'Employee ID', 'Account Number', 'IFSC', 'Net Salary'],
       ...payrolls.map((payroll) => [
-        `${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim(),
-        payroll.employee?.employeeId || '',
+        `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
+        payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
         payroll.employee?.bankDetails?.accountNumber || '',
         payroll.employee?.bankDetails?.ifscCode || '',
         Number(payroll.netSalary) || 0,
@@ -135,8 +135,8 @@ exports.getPFChallan = async (req, res) => {
     const rows = [
       ['Employee Name', 'Employee ID', 'PF Employee', 'PF Employer', 'Total PF'],
       ...payrolls.map((payroll) => [
-        `${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim(),
-        payroll.employee?.employeeId || '',
+        `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
+        payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
         Number(payroll.deductions?.pfEmployee) || 0,
         Number(payroll.employerContributions?.pfEmployer) || 0,
         (Number(payroll.deductions?.pfEmployee) || 0) + (Number(payroll.employerContributions?.pfEmployer) || 0),
@@ -173,11 +173,11 @@ exports.getTDSSummary = async (req, res) => {
 
     const grouped = new Map();
     payrolls.forEach((payroll) => {
-      const employeeId = String(payroll.employee?._id || payroll.employee || '');
+      const employeeId = payroll.employee?._id ? String(payroll.employee._id) : (payroll.employeeSnapshot?.employeeId || '');
       if (!grouped.has(employeeId)) {
         grouped.set(employeeId, {
-          name: `${payroll.employee?.firstName || ''} ${payroll.employee?.lastName || ''}`.trim(),
-          employeeId: payroll.employee?.employeeId || '',
+          name: `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
+          employeeId: payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
           values: Object.fromEntries(['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'].map((m) => [m, 0])),
         });
       }
