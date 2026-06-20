@@ -992,11 +992,70 @@ exports.markPayrollAsPaid = async (req, res) => {
           const expense = await Expense.findOne({ user: req.user._id, expenseNumber });
           if (expense) {
             payroll.status = 'paid';
-            payroll.expenseRef = expense._id;
             payroll.paymentDate = req.body.paymentDate || new Date();
             payroll.paymentMethod = req.body.paymentMethod || payroll.paymentMethod || 'Bank Transfer';
             payroll.transactionId = req.body.transactionId || payroll.transactionId;
+            payroll.expenseRef = expense._id;
+
+            payroll.approvalWorkflow.push({
+              status: 'paid',
+              actor: req.user._id,
+              remarks: req.body.remarks || 'Payroll marked as paid and expense generated (recovered)'
+            });
+
+            // Repay active loans if loanDeduction > 0
+            if (payroll.deductions?.loanDeduction > 0) {
+              const activeLoans = await Loan.find({
+                employee: payroll.employee?._id || payroll.populated('employee') || payroll.employee,
+                user: req.user._id,
+                status: 'active',
+                remainingBalance: { $gt: 0 }
+              });
+
+              let remainingDeduction = payroll.deductions.loanDeduction;
+              for (const loan of activeLoans) {
+                if (remainingDeduction <= 0) break;
+                const repaymentAmount = Math.min(loan.remainingBalance, loan.emiAmount, remainingDeduction);
+                if (repaymentAmount > 0) {
+                  loan.remainingBalance = Math.max(0, roundAmount(loan.remainingBalance - repaymentAmount));
+                  if (loan.remainingBalance === 0) {
+                    loan.status = 'closed';
+                  }
+                  loan.repaymentLedger.push({
+                    month: payroll.month,
+                    year: payroll.year,
+                    amountPaid: repaymentAmount,
+                    payrollRef: payroll._id
+                  });
+                  await loan.save();
+                  remainingDeduction = roundAmount(remainingDeduction - repaymentAmount);
+                }
+              }
+            }
+
             await payroll.save();
+
+            await Payroll.updateOne(
+              { _id: payroll._id },
+              { $push: { auditLog: {
+                status: 'paid',
+                changedBy: req.user.name,
+                changedById: req.user._id,
+                changedAt: new Date(),
+                netSalary: payroll.netSalary,
+                notes: req.body.remarks || 'Payroll marked as paid and expense generated (recovered)'
+              }}}
+            );
+
+            await AuditLog.create({
+              user: req.user._id,
+              actor: req.user._id,
+              action: 'PAYROLL_PAID',
+              targetEmployee: payroll.employee?._id || payroll.populated('employee') || payroll.employee,
+              targetPayroll: payroll._id,
+              changes: { status: 'paid', paymentDate: payroll.paymentDate, expenseId: expense._id }
+            });
+
             return res.json({ payroll, expense });
           }
         }
@@ -1563,6 +1622,38 @@ exports.receiveHrmsWebhook = async (req, res) => {
       bankName: employeeData.bankDetails?.bankName || employeeData.bank_name || ''
     };
 
+    // Department lookup or create by name
+    let departmentName = String(employeeData.department || employeeData.dept || '').trim();
+    if ((departmentName.startsWith('"') && departmentName.endsWith('"')) || (departmentName.startsWith("'") && departmentName.endsWith("'"))) {
+      departmentName = departmentName.slice(1, -1).trim();
+    }
+    let departmentId = null;
+    if (departmentName) {
+      const Department = require('../models/Department');
+      const escapeRegex = require('../utils/escapeRegex');
+      let dept = await Department.findOne({
+        user: userId,
+        name: { $regex: new RegExp(`^${escapeRegex(departmentName)}$`, 'i') },
+      });
+      if (!dept) {
+        let baseCode = departmentName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 5).toUpperCase();
+        if (!baseCode) baseCode = 'DEPT';
+        let code = baseCode;
+        let counter = 1;
+        while (await Department.exists({ user: userId, code })) {
+          code = `${baseCode}${counter}`;
+          counter += 1;
+        }
+        dept = await Department.create({
+          user: userId,
+          name: departmentName,
+          code,
+          description: 'Auto-created during webhook sync',
+        });
+      }
+      if (dept) departmentId = dept._id;
+    }
+
     const query = { user: userId, employeeId: empId };
     const updateData = {
       employeeId: empId,
@@ -1578,7 +1669,8 @@ exports.receiveHrmsWebhook = async (req, res) => {
       monthlyCTC,
       panNumber,
       aadharNumber,
-      bankDetails
+      bankDetails,
+      department: departmentId
     };
 
     const config = await PayrollConfig.findOne({ user: userId }) || {};
@@ -1608,7 +1700,43 @@ exports.receiveHrmsWebhook = async (req, res) => {
   }
 };
 
+exports.deletePayroll = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(String(id))) {
+      return res.status(404).json({ message: 'Payroll not found' });
+    }
+
+    const payroll = await Payroll.findOne({ _id: id, user: req.user._id });
+    if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
+
+    if (payroll.status === 'paid') {
+      return res.status(400).json({ message: 'Paid payroll is locked and cannot be deleted' });
+    }
+
+    if (payroll.expenseRef) {
+      await Expense.deleteOne({ _id: payroll.expenseRef, user: req.user._id });
+    }
+
+    await Payroll.deleteOne({ _id: id, user: req.user._id });
+
+    await AuditLog.create({
+      user: req.user._id,
+      actor: req.user._id,
+      action: 'PAYROLL_DELETED',
+      targetEmployee: payroll.employee,
+      changes: { month: payroll.month, year: payroll.year, netSalary: payroll.netSalary }
+    });
+
+    res.json({ message: 'Payroll deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting payroll:', error);
+    res.status(500).json({ message: 'Server error deleting payroll' });
+  }
+};
+
 exports.__private__ = {
   getOrCreateConfig,
   buildPayrollWorkbook,
 };
+

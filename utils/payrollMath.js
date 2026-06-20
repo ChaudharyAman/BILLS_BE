@@ -477,20 +477,27 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const esiEmployer = roundAmount(esiApplicable ? basicMaster * config.esiEmployerRate : 0);
   const esiEmployee = roundAmount(esiApplicable ? basicMaster * config.esiEmployeeRate : 0);
 
-  // Re-run earnings with correct ESI employer cost in remainder formula (only needed for dynamic components)
-  if (esiApplicable && hasDynamicComponents) {
-    earningsMap = computeEarnings(esiEmployer);
-    flexi = earningsMap['flexi'] || 0;
-    broadband = earningsMap['broadband'] || 0;
-    petrol = earningsMap['petrol'] || 0;
-    lta = earningsMap['lta'] || 0;
-    conveyance = earningsMap['conveyance'] || 0;
-    medicalAllowance = earningsMap['medical'] || 0;
-    specialAllowance = earningsMap['special'] || 0;
-    if (!useComponents) {
-      basicMaster = monthlyCTC;
-      hraMaster = 0;
-      Object.keys(earningsMap).forEach(k => { earningsMap[k] = k === 'basic' ? monthlyCTC : 0; });
+  // Re-run earnings with correct ESI employer cost in remainder formula
+  if (esiApplicable) {
+    if (hasDynamicComponents) {
+      earningsMap = computeEarnings(esiEmployer);
+      flexi = earningsMap['flexi'] || 0;
+      broadband = earningsMap['broadband'] || 0;
+      petrol = earningsMap['petrol'] || 0;
+      lta = earningsMap['lta'] || 0;
+      conveyance = earningsMap['conveyance'] || 0;
+      medicalAllowance = earningsMap['medical'] || 0;
+      specialAllowance = earningsMap['special'] || 0;
+      if (!useComponents) {
+        basicMaster = monthlyCTC;
+        hraMaster = 0;
+        Object.keys(earningsMap).forEach(k => { earningsMap[k] = k === 'basic' ? monthlyCTC : 0; });
+      }
+    } else {
+      specialAllowance = roundAmount(Math.max(
+        monthlyCTC - basicMaster - hraMaster - flexi - broadband - petrol - lta - pfEmployerInCTC - gratuityInCTC - lwfEmployer - insurance - esiEmployer - employerNPS - conveyance - medicalAllowance - otherAllowancesSum,
+        0
+      ));
     }
   }
 
@@ -709,7 +716,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
   const dailyOtherDeductions = [];
 
   const isHourly = employee.payType === 'hourly';
-  const hoursWorked = isHourly ? (Number(attendance?.hoursWorked) || Number(adjustments?.hoursWorked) || 0) : 0;
+  const hoursWorked = isHourly ? (Number(attendance?.hoursWorked) || Number(adjustments?.hoursWorked) || Number(employee.hoursWorked) || 0) : 0;
 
   for (let d = 1; d <= totalDaysInMonth; d++) {
     const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
@@ -1188,7 +1195,7 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
   }
 
   const isHourly = employee.payType === 'hourly';
-  const hoursWorked = isHourly ? (Number(adjustments?.hoursWorked) || 0) : 0;
+  const hoursWorked = isHourly ? (Number(adjustments?.hoursWorked) || Number(employee.hoursWorked) || 0) : 0;
 
   const workingDays = isHourly ? totalDaysInMonth : Math.max(Number(workingDaysCount) || config.defaultWorkingDays, 1);
   const paidDays = isHourly ? workingDays : Math.max(Math.min(Number(paidDaysCount) ?? workingDays, workingDays), 0);

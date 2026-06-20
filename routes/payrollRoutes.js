@@ -8,6 +8,7 @@ const {
   getPayrolls,
   getPayrollById,
   updatePayroll,
+  deletePayroll,
   markPayrollAsPaid,
   generatePayslip,
   getPayrollConfig,
@@ -43,7 +44,8 @@ router.get('/', getPayrolls);
 
 router.route('/:id')
   .get(getPayrollById)
-  .put(updatePayroll);
+  .put(updatePayroll)
+  .delete(deletePayroll);
 
 router.post('/:id/mark-paid', markPayrollAsPaid);
 router.post('/:id/reopen', reopenPayroll);
