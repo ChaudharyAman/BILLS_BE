@@ -967,30 +967,68 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     );
   }
 
+  let sumPfEmployee = 0;
+  let sumPfEmployer = 0;
   let sumEsiEmployee = 0;
   let sumEsiEmployer = 0;
+  let sumGratuity = 0;
   for (let d = 0; d < totalDaysInMonth; d++) {
     const ds = dailyStructures[d];
-    const dailyBasic = (ds.basicMaster / totalDaysInMonth) * dayProrate[d];
-    const dailyEsiEmployee = ds.esiApplicable ? dailyBasic * config.esiEmployeeRate : 0;
-    const dailyEsiEmployer = ds.esiApplicable ? dailyBasic * config.esiEmployerRate : 0;
+    const dP = dayProrate[d];
+
+    // 1. PF daily proration
+    sumPfEmployee += (ds.pfEmployee / totalDaysInMonth) * dP;
+    sumPfEmployer += (ds.pfEmployer / totalDaysInMonth) * dP;
+
+    // 2. Gratuity daily proration
+    sumGratuity += (ds.gratuity / totalDaysInMonth) * dP;
+
+    // 3. ESI daily calculation on daily gross wages (excluding overtime)
+    let dailyGrossForEsi = 0;
+    if (hasDynamicComponents) {
+      config.salaryComponents.forEach(c => {
+        if (c.type === 'earning') {
+          const dailyVal = ds.earningsMap?.[c.id] ?? ds[c.id] ?? 0;
+          dailyGrossForEsi += (dailyVal / totalDaysInMonth) * dP;
+        }
+      });
+    } else {
+      const dailyBasic = (ds.basicMaster / totalDaysInMonth) * dP;
+      const dailyHra = (ds.hraMaster / totalDaysInMonth) * dP;
+      const dailyFlexi = (ds.flexi / totalDaysInMonth) * dP;
+      const dailyBroadband = (ds.broadband / totalDaysInMonth) * dP;
+      const dailyPetrol = (ds.petrol / totalDaysInMonth) * dP;
+      const dailyLta = (ds.lta / totalDaysInMonth) * dP;
+      const dailySpecial = (ds.specialAllowance / totalDaysInMonth) * dP;
+      const dailyConveyance = (ds.conveyance / totalDaysInMonth) * dP;
+      const dailyMedical = (ds.medicalAllowance / totalDaysInMonth) * dP;
+
+      dailyGrossForEsi = dailyBasic + dailyHra + dailyFlexi + dailyBroadband + dailyPetrol + dailyLta + dailySpecial + dailyConveyance + dailyMedical;
+    }
+    dailyGrossForEsi += sumNamedAmounts(otherEarnings) / totalDaysInMonth;
+
+    const dailyEsiEmployee = ds.esiApplicable ? dailyGrossForEsi * config.esiEmployeeRate : 0;
+    const dailyEsiEmployer = ds.esiApplicable ? dailyGrossForEsi * config.esiEmployerRate : 0;
     sumEsiEmployee += dailyEsiEmployee;
     sumEsiEmployer += dailyEsiEmployer;
   }
+  const pfEmployee = roundAmount(sumPfEmployee);
+  const pfEmployer = roundAmount(sumPfEmployer);
+  const gratuity = roundAmount(sumGratuity);
   const esiEmployee = roundAmount(sumEsiEmployee);
   const esiEmployer = roundAmount(sumEsiEmployer);
 
   const employerContributions = {
-    pfEmployer: master.pfEmployer,
+    pfEmployer,
     esiEmployer,
-    gratuity: master.gratuity,
+    gratuity,
     lwfEmployer: master.lwfEmployer,
     insuranceEmployer: master.insurance,
     nps: master.employerNPS,
     grossTotalSalary: roundAmount(
       earnings.totalEarnings +
-      master.pfEmployer +
-      master.gratuity +
+      pfEmployer +
+      gratuity +
       master.lwfEmployer +
       master.insurance +
       esiEmployer +
@@ -1014,7 +1052,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
   const totalPayable = roundAmount(employerContributions.grossTotalSalary + variablePay.totalVariablePay);
 
   const deductions = {
-    pfEmployee: master.pfEmployee,
+    pfEmployee,
     esiEmployee,
     professionalTax: master.ptEnabled ? roundAmount(employee.deductions?.professionalTax) : 0,
     tds: roundAmount(adjustments.tds ?? (Number(employee.deductions?.tds) > 0 ? employee.deductions.tds : master.tds)),
@@ -1226,8 +1264,11 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
     const segmentRatio = seg.daysCount / totalDaysInMonth;
 
     let segmentBasicSum = 0;
+    let segmentPfEmployeeSum = 0;
+    let segmentPfEmployerSum = 0;
     let segmentEsiEmployeeSum = 0;
     let segmentEsiEmployerSum = 0;
+    let segmentGratuitySum = 0;
     let segmentProrateSum = 0;
 
     for (let day = seg.startDay; day <= seg.endDay; day++) {
@@ -1236,9 +1277,18 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
       
       const dailyBasic = (dayMaster.basicMaster / totalDaysInMonth) * dP;
       segmentBasicSum += dailyBasic;
-      
-      const dailyEsiEmployee = dayMaster.esiApplicable ? dailyBasic * config.esiEmployeeRate : 0;
-      const dailyEsiEmployer = dayMaster.esiApplicable ? dailyBasic * config.esiEmployerRate : 0;
+
+      const dailyPfEmployee = (dayMaster.pfEmployee / totalDaysInMonth) * dP;
+      const dailyPfEmployer = (dayMaster.pfEmployer / totalDaysInMonth) * dP;
+      segmentPfEmployeeSum += dailyPfEmployee;
+      segmentPfEmployerSum += dailyPfEmployer;
+
+      const dailyGratuity = (dayMaster.gratuity / totalDaysInMonth) * dP;
+      segmentGratuitySum += dailyGratuity;
+
+      const dailyGrossForEsi = (dayMaster.totalEarnings / totalDaysInMonth) * dP;
+      const dailyEsiEmployee = dayMaster.esiApplicable ? dailyGrossForEsi * config.esiEmployeeRate : 0;
+      const dailyEsiEmployer = dayMaster.esiApplicable ? dailyGrossForEsi * config.esiEmployerRate : 0;
       segmentEsiEmployeeSum += dailyEsiEmployee;
       segmentEsiEmployerSum += dailyEsiEmployer;
     }
@@ -1255,13 +1305,13 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
     const conveyance = roundAmount(dayMaster.conveyance * segmentProrateRatio);
     const medicalAllowance = roundAmount(dayMaster.medicalAllowance * segmentProrateRatio);
 
-    const pfEmployee = roundAmount(dayMaster.pfEmployee * segmentRatio);
-    const pfEmployer = roundAmount(dayMaster.pfEmployer * segmentRatio);
+    const pfEmployee = roundAmount(segmentPfEmployeeSum);
+    const pfEmployer = roundAmount(segmentPfEmployerSum);
     
     const esiEmployee = roundAmount(segmentEsiEmployeeSum);
     const esiEmployer = roundAmount(segmentEsiEmployerSum);
 
-    const gratuity = roundAmount(dayMaster.gratuity * segmentRatio);
+    const gratuity = roundAmount(segmentGratuitySum);
     const lwfEmployee = roundAmount(dayMaster.lwfEmployee * segmentRatio);
     const lwfEmployer = roundAmount(dayMaster.lwfEmployer * segmentRatio);
     const insurance = roundAmount(dayMaster.insurance * segmentRatio);

@@ -88,12 +88,27 @@ const buildAdjustmentsPayload = (employee, payload = {}, month, year) => {
   return adjustments;
 };
 
-const buildPayrollWorkbook = (payrolls) => {
+const buildPayrollWorkbook = (payrolls, config) => {
   const headerGroups = ['MASTER DATA', 'Monthly Salary', 'Other Payables', 'Deductions'];
+
+  const getComponentName = (id, defaultName) => {
+    if (!config || !Array.isArray(config.salaryComponents)) return defaultName;
+    const comp = config.salaryComponents.find(c => c.id === id);
+    return comp?.name || defaultName;
+  };
+
+  const basicName = getComponentName('basic', 'BASIC');
+  const hraName = getComponentName('hra', 'HRA');
+  const flexiName = getComponentName('flexi', 'Flexi');
+  const specialName = getComponentName('special', 'Special Allowance');
+  const broadbandName = getComponentName('broadband', 'Broadband');
+  const petrolName = getComponentName('petrol', 'Petrol');
+  const ltaName = getComponentName('lta', 'LTA');
+
   const columns = [
     'Sr No', 'Name', 'DOJ', 'DOL', 'Gender', 'Emp No', 'Email', 'Bank A/C', 'IFSC', 'PAN', 'Aadhar', 'Location', 'Designation',
-    'Monthly CTC', 'BASIC(master)', 'HRA(master)', 'Meal+Broadband', 'PF Employer', 'Special Allowance', 'DIFF',
-    'Working Days', 'Paid Days', 'Hours Worked', 'Hourly Rate', 'BASIC(paid)', 'HRA(paid)', 'Flexi', 'Broadband', 'Petrol', 'LTA', 'Employer NPS', 'Insurance',
+    'Monthly CTC', `${basicName}(master)`, `${hraName}(master)`, `${flexiName}(master)`, 'PF Employer', `${specialName}`, 'DIFF',
+    'Working Days', 'Paid Days', 'Hours Worked', 'Hourly Rate', `${basicName}(paid)`, `${hraName}(paid)`, `${flexiName}`, `${broadbandName}`, `${petrolName}`, `${ltaName}`, 'Employer NPS', 'Insurance',
     'PF(Emp Contrib)', 'Gratuity', 'LWF', 'GROSS TOTAL', 'Joining Bonus', 'Loyalty Bonus', 'Incentive', 'Other Allowance', 'Special Bonus', 'Total Payable',
     'PF Deduction', 'Insurance(ded)', 'Gratuity(ded)', 'LWF(ded)', 'Other Deduction', 'Income Tax', 'TOTAL DEDUCTION', 'NET TAKE HOME', 'Remarks',
   ];
@@ -137,7 +152,7 @@ const buildPayrollWorkbook = (payrolls) => {
       employeeMonthlyCTC,
       basicMaster,
       hraMaster,
-      flexiMaster + broadbandMaster,
+      flexiMaster,
       Number(payroll.employerContributions?.pfEmployer) || 0,
       specialMaster,
       diff,
@@ -654,7 +669,8 @@ exports.exportPayrollExcel = async (req, res) => {
       .sort({ createdAt: 1 })
       .lean();
 
-    const workbook = buildPayrollWorkbook(payrolls);
+    const config = await getOrCreateConfig(req.user._id);
+    const workbook = buildPayrollWorkbook(payrolls, config);
     sendWorkbook(res, workbook, `payroll-sheet-${year}-${String(month).padStart(2, '0')}.xlsx`);
   } catch (error) {
     console.error('Error exporting payroll workbook:', error);
