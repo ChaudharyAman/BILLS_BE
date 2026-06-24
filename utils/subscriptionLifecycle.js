@@ -31,7 +31,10 @@ const syncExpiredSubscription = async (user, now = new Date()) => {
   if (!isProExpired(user.subscription, now)) return { updated: false };
 
   downgradeToFree(user);
-  await user.save();
+  await user.constructor.updateOne(
+    { _id: user._id },
+    { $set: { subscription: user.subscription } }
+  );
 
   return { updated: true };
 };

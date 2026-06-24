@@ -1006,7 +1006,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       dailyGrossForEsi = dailyBasic + dailyHra + dailyFlexi + dailyBroadband + dailyPetrol + dailyLta + dailySpecial + dailyConveyance + dailyMedical;
     }
     dailyGrossForEsi += sumNamedAmounts(otherEarnings) / totalDaysInMonth;
-
+ 
     const dailyEsiEmployee = ds.esiApplicable ? dailyGrossForEsi * config.esiEmployeeRate : 0;
     const dailyEsiEmployer = ds.esiApplicable ? dailyGrossForEsi * config.esiEmployerRate : 0;
     sumEsiEmployee += dailyEsiEmployee;
