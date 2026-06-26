@@ -1808,6 +1808,18 @@ async function payrollAndEmployeeCases() {
     });
     ok(pfChallan.data.data.some(x => x['Employee ID'] === empId1 && x['Employee Name'] === 'DeletedOne Employee'), 'PF challan report should contain DeletedOne');
 
+    const esiChallan = await api('GET', '/api/reports/payroll-summary/esi-challan?month=8&year=2026', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(esiChallan.data.data.some(x => x['Employee ID'] === empId1 && x['Employee Name'] === 'DeletedOne Employee'), 'ESI challan report should contain DeletedOne');
+
+    const statutorySummary = await api('GET', '/api/reports/payroll-summary/statutory-summary?month=8&year=2026', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(statutorySummary.data.data.some(x => x['Employee ID'] === empId1 && x['Employee Name'] === 'DeletedOne Employee'), 'Statutory summary report should contain DeletedOne');
+
     const tdsSummary = await api('GET', `/api/reports/payroll-summary/tds-summary?year=2026`, {
       token: state.tokens.pro,
       expectedStatus: 200

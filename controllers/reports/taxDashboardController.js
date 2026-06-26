@@ -75,6 +75,7 @@ function classifyInvoice(row = {}) {
 
 async function aggregateTotals(Model, userId, startDate, endDate, fields, allowedStatuses = ACTIVE_EXPENSE_STATUSES) {
   const isExpense = Model.modelName === 'Expense';
+  const isIncome = Model.modelName === 'Income';
   const project = fields.reduce((acc, field) => {
     let sumExpression = `$${field}`;
     if (isExpense && field === 'taxTotal') {
@@ -89,8 +90,13 @@ async function aggregateTotals(Model, userId, startDate, endDate, fields, allowe
     return { ...acc, [field]: { $sum: sumExpression } };
   }, {});
 
+  const matchQuery = { user: userId, date: { $gte: startDate, $lte: endDate }, status: allowedStatuses };
+  if (isIncome) {
+    matchQuery.sourceType = 'manual';
+  }
+
   const [result] = await Model.aggregate([
-    { $match: { user: userId, date: { $gte: startDate, $lte: endDate }, status: allowedStatuses } },
+    { $match: matchQuery },
     { $group: { _id: null, ...project } },
   ]);
   return result || fields.reduce((acc, field) => ({ ...acc, [field]: 0 }), {});
@@ -484,10 +490,10 @@ exports.getTaxDashboard = async (req, res) => {
         gstDueDate,
         tdsDueDate,
         totalInvoices: invoiceSplit.total,
-        totalRevenue: roundTwo(incomeTotals.grandTotal || invoiceTotals.grandTotal),
+        totalRevenue: roundTwo(incomeTotals.grandTotal + invoiceTotals.grandTotal),
         totalExpenses: roundTwo(expenseTotals.grandTotal),
-        netProfit: roundTwo((incomeTotals.grandTotal || invoiceTotals.grandTotal) - expenseTotals.grandTotal),
-        taxableRevenue: roundTwo(incomeTotals.subTotal || invoiceTotals.subTotal),
+        netProfit: roundTwo((incomeTotals.grandTotal + invoiceTotals.grandTotal) - expenseTotals.grandTotal),
+        taxableRevenue: roundTwo(incomeTotals.subTotal + invoiceTotals.subTotal),
         gstLiability: outputLiability,
         gstCredit: inputCredit,
         netGstPayable: netPayable,

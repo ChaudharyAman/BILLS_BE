@@ -136,7 +136,8 @@ exports.syncEmployeesFromExternal = async (userId) => {
           monthlyCTC,
           panNumber,
           aadharNumber,
-          bankDetails
+          bankDetails,
+          department: departmentId
         };
 
         // Determine / update salary structure

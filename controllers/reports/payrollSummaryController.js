@@ -128,25 +128,258 @@ exports.getPFChallan = async (req, res) => {
     }
 
     const payrolls = await Payroll.find({ user: req.user._id, month, year })
-      .populate({ path: 'employee', select: 'firstName lastName employeeId uanNumber' })
+      .populate({ path: 'employee', select: 'firstName lastName employeeId +uanNumber' })
       .sort({ createdAt: 1 })
       .lean();
 
     const rows = [
-      ['Employee Name', 'Employee ID', 'PF Employee', 'PF Employer', 'Total PF'],
-      ...payrolls.map((payroll) => [
-        `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
-        payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
-        Number(payroll.deductions?.pfEmployee) || 0,
-        Number(payroll.employerContributions?.pfEmployer) || 0,
-        (Number(payroll.deductions?.pfEmployee) || 0) + (Number(payroll.employerContributions?.pfEmployer) || 0),
-      ]),
+      [
+        'Employee Name',
+        'Employee ID',
+        'UAN',
+        'Gross Wages',
+        'EPF Wages',
+        'EPS Wages',
+        'EDLI Wages',
+        'EPF Employee Share (12%)',
+        'EPS Employer Share (8.33%)',
+        'EPF Employer Share Diff (3.67%)',
+        'NCP Days (LOP)',
+        'Total PF Contribution',
+      ],
+      ...payrolls.map((payroll) => {
+        const grossWages = Number(payroll.earnings?.totalEarnings) || 0;
+        const pfEmployee = Number(payroll.deductions?.pfEmployee) || 0;
+        const pfEmployer = Number(payroll.employerContributions?.pfEmployer) || 0;
+        
+        // Calculate EPF Wages: pfEmployee / pfRate (0.12)
+        const epfWages = pfEmployee > 0 ? Math.round((pfEmployee / 0.12) * 100) / 100 : 0;
+        // EPS & EDLI Wages are capped at 15,000
+        const epsWages = epfWages > 0 ? Math.min(epfWages, 15000) : 0;
+        const edliWages = epsWages;
+        
+        // EPS Share: 8.33% of EPS Wages, capped at 1250 (max)
+        const epsContribution = Math.min(1250, Math.round(epsWages * 0.0833 * 100) / 100);
+        // EPF Employer Share Diff (3.67%)
+        const epfEmployerDiff = Math.max(0, Math.round((pfEmployer - epsContribution) * 100) / 100);
+        
+        const lop = Number(payroll.lop) || 0;
+        
+        return [
+          `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
+          payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
+          payroll.employee?.uanNumber || '',
+          grossWages,
+          epfWages,
+          epsWages,
+          edliWages,
+          pfEmployee,
+          epsContribution,
+          epfEmployerDiff,
+          lop,
+          pfEmployee + pfEmployer,
+        ];
+      }),
     ];
+
+    if (payrolls.length > 0) {
+      const totalRow = [
+        'TOTAL',
+        '',
+        '',
+        payrolls.reduce((sum, p) => sum + (Number(p.earnings?.totalEarnings) || 0), 0),
+        payrolls.reduce((sum, p) => {
+          const pfEmp = Number(p.deductions?.pfEmployee) || 0;
+          return sum + (pfEmp > 0 ? Math.round((pfEmp / 0.12) * 100) / 100 : 0);
+        }, 0),
+        payrolls.reduce((sum, p) => {
+          const pfEmp = Number(p.deductions?.pfEmployee) || 0;
+          const epf = pfEmp > 0 ? Math.round((pfEmp / 0.12) * 100) / 100 : 0;
+          return sum + (epf > 0 ? Math.min(epf, 15000) : 0);
+        }, 0),
+        payrolls.reduce((sum, p) => {
+          const pfEmp = Number(p.deductions?.pfEmployee) || 0;
+          const epf = pfEmp > 0 ? Math.round((pfEmp / 0.12) * 100) / 100 : 0;
+          return sum + (epf > 0 ? Math.min(epf, 15000) : 0);
+        }, 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.deductions?.pfEmployee) || 0), 0),
+        payrolls.reduce((sum, p) => {
+          const pfEmp = Number(p.deductions?.pfEmployee) || 0;
+          const epf = pfEmp > 0 ? Math.round((pfEmp / 0.12) * 100) / 100 : 0;
+          const epsWages = epf > 0 ? Math.min(epf, 15000) : 0;
+          return sum + Math.min(1250, Math.round(epsWages * 0.0833 * 100) / 100);
+        }, 0),
+        payrolls.reduce((sum, p) => {
+          const pfEmp = Number(p.deductions?.pfEmployee) || 0;
+          const pfEmployer = Number(p.employerContributions?.pfEmployer) || 0;
+          const epf = pfEmp > 0 ? Math.round((pfEmp / 0.12) * 100) / 100 : 0;
+          const epsWages = epf > 0 ? Math.min(epf, 15000) : 0;
+          const epsContribution = Math.min(1250, Math.round(epsWages * 0.0833 * 100) / 100);
+          return sum + Math.max(0, Math.round((pfEmployer - epsContribution) * 100) / 100);
+        }, 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.lop) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.deductions?.pfEmployee) || 0) + (Number(p.employerContributions?.pfEmployer) || 0), 0),
+      ];
+      // Round total numeric values in the total row
+      for (let i = 3; i < totalRow.length; i++) {
+        totalRow[i] = Math.round(totalRow[i] * 100) / 100;
+      }
+      rows.push(totalRow);
+    }
 
     return sendReport(res, rows, 'PF Challan', `pf-challan-${year}-${String(month).padStart(2, '0')}.xlsx`, format);
   } catch (error) {
     console.error('Error generating PF challan:', error);
     res.status(500).json({ message: 'Server error generating PF challan' });
+  }
+};
+
+exports.getESIChallan = async (req, res) => {
+  try {
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+    const format = String(req.query.format || 'json').toLowerCase();
+
+    if (!validateMonth(month) || !validateYear(year)) {
+      return res.status(400).json({ message: 'Valid month and year are required' });
+    }
+
+    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+      .populate({ path: 'employee', select: 'firstName lastName employeeId' })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const rows = [
+      ['Employee Name', 'Employee ID', 'Gross Wages', 'Paid Days', 'ESI Employee (0.75%)', 'ESI Employer (3.25%)', 'Total ESI Contribution'],
+      ...payrolls.map((payroll) => {
+        const grossWages = Number(payroll.earnings?.totalEarnings) || 0;
+        const paidDays = Number(payroll.paidDays) || 0;
+        const esiEmployee = Number(payroll.deductions?.esiEmployee) || 0;
+        const esiEmployer = Number(payroll.employerContributions?.esiEmployer) || 0;
+        
+        return [
+          `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
+          payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
+          grossWages,
+          paidDays,
+          esiEmployee,
+          esiEmployer,
+          esiEmployee + esiEmployer,
+        ];
+      }),
+    ];
+
+    if (payrolls.length > 0) {
+      const totalRow = [
+        'TOTAL',
+        '',
+        payrolls.reduce((sum, p) => sum + (Number(p.earnings?.totalEarnings) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.paidDays) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.deductions?.esiEmployee) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.employerContributions?.esiEmployer) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.deductions?.esiEmployee) || 0) + (Number(p.employerContributions?.esiEmployer) || 0), 0),
+      ];
+      // Round total numeric values in the total row
+      for (let i = 2; i < totalRow.length; i++) {
+        totalRow[i] = Math.round(totalRow[i] * 100) / 100;
+      }
+      rows.push(totalRow);
+    }
+
+    return sendReport(res, rows, 'ESI Challan', `esi-challan-${year}-${String(month).padStart(2, '0')}.xlsx`, format);
+  } catch (error) {
+    console.error('Error generating ESI challan:', error);
+    res.status(500).json({ message: 'Server error generating ESI challan' });
+  }
+};
+
+exports.getStatutorySummary = async (req, res) => {
+  try {
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+    const format = String(req.query.format || 'json').toLowerCase();
+
+    if (!validateMonth(month) || !validateYear(year)) {
+      return res.status(400).json({ message: 'Valid month and year are required' });
+    }
+
+    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+      .populate({ path: 'employee', select: 'firstName lastName employeeId' })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const rows = [
+      [
+        'Employee Name',
+        'Employee ID',
+        'PF Employee (12%)',
+        'PF Employer (12%)',
+        'ESI Employee (0.75%)',
+        'ESI Employer (3.25%)',
+        'Professional Tax (PT)',
+        'LWF Employee',
+        'LWF Employer',
+        'Total Statutory Dues',
+      ],
+      ...payrolls.map((p) => {
+        const pfEmp = Number(p.deductions?.pfEmployee) || 0;
+        const pfEst = Number(p.employerContributions?.pfEmployer) || 0;
+        const esiEmp = Number(p.deductions?.esiEmployee) || 0;
+        const esiEst = Number(p.employerContributions?.esiEmployer) || 0;
+        const pt = Number(p.deductions?.professionalTax) || 0;
+        const lwfEmp = Number(p.deductions?.lwfEmployee) || 0;
+        const lwfEst = Number(p.employerContributions?.lwfEmployer) || 0;
+        
+        const total = pfEmp + pfEst + esiEmp + esiEst + pt + lwfEmp + lwfEst;
+        
+        return [
+          `${p.employee?.firstName || p.employeeSnapshot?.firstName || ''} ${p.employee?.lastName || p.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
+          p.employee?.employeeId || p.employeeSnapshot?.employeeId || '',
+          pfEmp,
+          pfEst,
+          esiEmp,
+          esiEst,
+          pt,
+          lwfEmp,
+          lwfEst,
+          total,
+        ];
+      }),
+    ];
+
+    if (payrolls.length > 0) {
+      const totalRow = [
+        'TOTAL',
+        '',
+        payrolls.reduce((sum, p) => sum + (Number(p.deductions?.pfEmployee) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.employerContributions?.pfEmployer) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.deductions?.esiEmployee) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.employerContributions?.esiEmployer) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.deductions?.professionalTax) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.deductions?.lwfEmployee) || 0), 0),
+        payrolls.reduce((sum, p) => sum + (Number(p.employerContributions?.lwfEmployer) || 0), 0),
+        payrolls.reduce((sum, p) => {
+          const pfEmp = Number(p.deductions?.pfEmployee) || 0;
+          const pfEst = Number(p.employerContributions?.pfEmployer) || 0;
+          const esiEmp = Number(p.deductions?.esiEmployee) || 0;
+          const esiEst = Number(p.employerContributions?.esiEmployer) || 0;
+          const pt = Number(p.deductions?.professionalTax) || 0;
+          const lwfEmp = Number(p.deductions?.lwfEmployee) || 0;
+          const lwfEst = Number(p.employerContributions?.lwfEmployer) || 0;
+          return sum + pfEmp + pfEst + esiEmp + esiEst + pt + lwfEmp + lwfEst;
+        }, 0),
+      ];
+      // Round total numeric values in the total row
+      for (let i = 2; i < totalRow.length; i++) {
+        totalRow[i] = Math.round(totalRow[i] * 100) / 100;
+      }
+      rows.push(totalRow);
+    }
+
+    return sendReport(res, rows, 'Statutory Summary', `statutory-summary-${year}-${String(month).padStart(2, '0')}.xlsx`, format);
+  } catch (error) {
+    console.error('Error generating statutory summary:', error);
+    res.status(500).json({ message: 'Server error generating statutory summary' });
   }
 };
 

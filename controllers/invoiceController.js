@@ -579,7 +579,7 @@ exports.createInvoice = async (req, res) => {
     const finalDiscountTotal = Number(discountTotal) || 0;
     const grandTotal = subTotal + (reverseCharge ? 0 : taxTotal) + totalExcise + finalShipping + finalPackaging - finalDiscountTotal + (Number(tcs) || 0);
     const finalTcs = Number(tcs) || 0;
-    
+
     // TDS is calculated on taxable/base amount only, excluding GST.
     const clientTdsApplies = storedGstInvoiceType === 'B2B' && client.tds_applicable === true;
     const activeTdsApplicable = req.body.tds_applicable !== undefined ? !!req.body.tds_applicable : (tdsApplicable !== undefined ? !!tdsApplicable : clientTdsApplies);

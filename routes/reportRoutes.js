@@ -9,6 +9,8 @@ const {
   getPayrollSummary,
   getBankTransferSheet,
   getPFChallan,
+  getESIChallan,
+  getStatutorySummary,
   getTDSSummary,
   getAnnualEmployeeSummary,
 } = require('../controllers/reports/payrollSummaryController');
@@ -30,6 +32,8 @@ router.get('/cash-flow', getCashFlow);
 router.get('/payroll-summary', getPayrollSummary);
 router.get('/payroll-summary/bank-transfer', getBankTransferSheet);
 router.get('/payroll-summary/pf-challan', getPFChallan);
+router.get('/payroll-summary/esi-challan', getESIChallan);
+router.get('/payroll-summary/statutory-summary', getStatutorySummary);
 router.get('/payroll-summary/tds-summary', getTDSSummary);
 router.get('/payroll-summary/annual-employee-summary', getAnnualEmployeeSummary);
 router.get('/tax-dashboard', authorizeAuthenticatedUser, getTaxDashboard);
