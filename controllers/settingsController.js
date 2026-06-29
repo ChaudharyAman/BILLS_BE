@@ -210,6 +210,7 @@ exports.getPublicSubmissionsConfig = async (req, res) => {
     return res.json({
       enabled:              ps.enabled              || false,
       hasToken:             !!ps.token,
+      token:                ps.token                || null,
       portalLink:           ps.token ? buildPortalLink(ps.token) : null,
       companyDisplayName:   ps.companyDisplayName   || '',
       allowedCategories:    ps.allowedCategories    || ['invoice', 'expense', 'income', 'purchaseorder'],
@@ -284,6 +285,7 @@ exports.updatePublicSubmissionsConfig = async (req, res) => {
     return res.json({
       enabled:              ps.enabled,
       hasToken:             !!ps.token,
+      token:                ps.token,
       portalLink:           ps.token ? buildPortalLink(ps.token) : null,
       companyDisplayName:   ps.companyDisplayName,
       allowedCategories:    ps.allowedCategories,
@@ -331,6 +333,7 @@ exports.regeneratePublicToken = async (req, res) => {
     return res.json({
       enabled:              true,
       hasToken:             true,
+      token:                newToken,
       portalLink:           buildPortalLink(newToken),
       message:              'Token regenerated. The old link is now inactive.',
       companyDisplayName:   ps.companyDisplayName,
