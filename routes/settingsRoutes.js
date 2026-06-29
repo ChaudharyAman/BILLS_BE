@@ -11,4 +11,11 @@ router.put('/', protect, upload.fields([
   { name: 'signature', maxCount: 1 }
 ]), settingsController.updateSettings);
 
+// ── Public Submission Portal config ──────────────────────────────────────────
+// regenerate-token must be declared before the generic PATCH to avoid routing conflicts
+router.post('/public-submissions/regenerate-token', protect, settingsController.regeneratePublicToken);
+router.get('/public-submissions',  protect, settingsController.getPublicSubmissionsConfig);
+router.patch('/public-submissions', protect, settingsController.updatePublicSubmissionsConfig);
+
 module.exports = router;
+
