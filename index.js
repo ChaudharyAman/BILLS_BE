@@ -80,6 +80,13 @@ app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/pdf', require('./routes/pdfRoutes'));
 app.use('/api/bank-statements', require('./routes/bankStatementRoutes'));
 
+// ── Public Submission Portal (no auth — token-scoped) ────────────────────────
+app.use('/api/public', require('./routes/publicSubmissionRoutes'));
+
+// ── Authenticated Submission Review (protect applied inside route file) ───────
+app.use('/api/submissions', require('./routes/submissionReviewRoutes'));
+
+
 app.get('/', (req, res) => {
   res.send('API is working fine.');
 });

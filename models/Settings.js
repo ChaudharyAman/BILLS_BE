@@ -60,8 +60,32 @@ const SettingsSchema = new mongoose.Schema({
     apiKey: { type: String, default: '' },
     encryptionSecret: { type: String, default: '' },
     webhookSecret: { type: String, default: '' }
-  }
+  },
+
+  // Public Submission Portal — shareable link for vendors/clients to submit bills/invoices
+  publicSubmissions: {
+    enabled: { type: Boolean, default: false },
+    // Randomly generated hex token; NEVER derived from or equal to the User _id
+    token: { type: String, default: null },
+    // Display name shown on the public page (not necessarily the same as companyName)
+    companyDisplayName: { type: String, default: '' },
+    // Which document categories the submitter may choose from
+    allowedCategories: {
+      type: [String],
+      enum: ['invoice', 'expense', 'income', 'purchaseorder'],
+      default: ['invoice', 'expense', 'income', 'purchaseorder'],
+    },
+    // Optional instructions shown at the top of the public page
+    instructionsText: { type: String, default: '' },
+    // Hard cap on submissions per calendar day (abuse guard)
+    maxSubmissionsPerDay: { type: Number, default: 100, min: 1, max: 10000 },
+  },
 
 }, { timestamps: true });
+
+// Sparse unique index: only Settings documents that have a token value are indexed.
+// This allows the fast token→user lookup without indexing the null values of
+// users who have never enabled the portal.
+SettingsSchema.index({ 'publicSubmissions.token': 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Settings', SettingsSchema);

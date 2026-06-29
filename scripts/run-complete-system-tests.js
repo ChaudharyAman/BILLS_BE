@@ -16,6 +16,7 @@ const Expense = require('../models/Expense');
 const Settings = require('../models/Settings');
 const SubscriptionOrder = require('../models/SubscriptionOrder');
 const BankStatement = require('../models/BankStatement');
+const PublicSubmission = require('../models/PublicSubmission');
 
 const EXTERNAL_BASE_URL = process.env.SYSTEM_TEST_BASE_URL || '';
 const PORT = Number(process.env.SYSTEM_TEST_PORT || 5051);
@@ -155,6 +156,7 @@ async function cleanup() {
     Expense.deleteMany({ user: { $in: ids } }),
     Settings.deleteMany({ user: { $in: ids } }),
     SubscriptionOrder.deleteMany({ user: { $in: ids } }),
+    PublicSubmission.deleteMany({ user: { $in: ids } }),
     User.deleteMany({ _id: { $in: ids } }),
   ]);
 }
@@ -1973,6 +1975,157 @@ async function bankStatementCases() {
   });
 }
 
+async function publicPortalCases() {
+  await run('Public Submission Portal Lifecycle', async () => {
+    // 1. Get initial public submission settings (should default to disabled, no token)
+    const getSettingsRes = await api('GET', '/api/settings/public-submissions', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(getSettingsRes.data.enabled === false, 'Portal should be disabled by default');
+    ok(getSettingsRes.data.hasToken === false, 'Portal should not have a token by default');
+
+    // 2. Try accessing a random token submission page - should 404
+    await api('GET', '/api/public/submit/invalidtoken123', {
+      expectedStatus: 404
+    });
+
+    // 3. Enable the portal and update settings
+    const updateSettingsRes = await api('PATCH', '/api/settings/public-submissions', {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        enabled: true,
+        companyDisplayName: 'Pro Test Company',
+        allowedCategories: ['expense', 'invoice'],
+        instructionsText: 'Please submit clear documents.',
+        maxSubmissionsPerDay: 50
+      }
+    });
+
+    ok(updateSettingsRes.data.enabled === true, 'Portal should be enabled');
+    ok(updateSettingsRes.data.hasToken === true, 'Portal should have a token now');
+    ok(updateSettingsRes.data.portalLink, 'Portal should have a link');
+    
+    // Extract the token from the portal link
+    const tokenMatch = updateSettingsRes.data.portalLink.match(/\/submit\/([a-f0-9]+)/);
+    ok(tokenMatch, 'Should be able to extract token from link');
+    const token = tokenMatch[1];
+
+    // 4. GET safe landing page config anonymously
+    const getPublicRes = await api('GET', `/api/public/submit/${token}`, {
+      expectedStatus: 200
+    });
+    ok(getPublicRes.data.companyDisplayName === 'Pro Test Company', 'Company name should match');
+    ok(getPublicRes.data.instructionsText === 'Please submit clear documents.', 'Instructions should match');
+    ok(getPublicRes.data.allowedCategories.includes('expense'), 'Allowed categories should match');
+    ok(!getPublicRes.data.token, 'Should never return raw token in safe config');
+
+    // 5. Submit a document anonymously
+    const formData = new FormData();
+    const fileBlob = new Blob(['%PDF-1.4 dummy pdf'], { type: 'application/pdf' });
+    formData.append('files', fileBlob, 'invoice.pdf');
+    formData.append('category', 'expense');
+    formData.append('submitterName', 'John Doe');
+    formData.append('submitterEmail', 'john@example.com');
+    formData.append('submitterPhone', '+919876543210');
+    formData.append('submitterNote', 'Attached expense invoice');
+
+    const submitRes = await api('POST', `/api/public/submit/${token}`, {
+      expectedStatus: 201,
+      formData
+    });
+
+    ok(submitRes.data.success === true, 'Submit should respond with success');
+    ok(submitRes.data.referenceNumber, 'Submit should respond with referenceNumber');
+    const refNum = submitRes.data.referenceNumber;
+
+    // 6. Get list of submissions as owner (GET /api/submissions)
+    const getInboxRes = await api('GET', '/api/submissions', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+
+    ok(getInboxRes.data.data.length > 0, 'Submission list should have at least one entry');
+    const subEntry = getInboxRes.data.data.find(s => s.referenceNumber === refNum);
+    ok(subEntry, 'Created submission should be in list');
+    ok(subEntry.status === 'pending', 'Status should be pending');
+    ok(subEntry.submitterName === 'John Doe', 'Submitter name should match');
+    ok(!subEntry.files[0].buffer, 'File buffer should not be sent in list');
+    ok(subEntry.ipAddress === undefined, 'IP address should not be leaked in list');
+
+    // 7. Get single submission detail as owner (GET /api/submissions/:id)
+    const getDetailRes = await api('GET', `/api/submissions/${subEntry._id}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(getDetailRes.data.referenceNumber === refNum, 'Detail reference number should match');
+    ok(!getDetailRes.data.files[0].buffer, 'File buffer should not be sent in details');
+
+    // 8. Edit parsed data as owner (PATCH /api/submissions/:id)
+    const patchRes = await api('PATCH', `/api/submissions/${subEntry._id}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        parsedData: {
+          vendorName: 'Nvidia Corporation',
+          totalAmount: 1500,
+          invoiceDate: '2026-06-25'
+        }
+      }
+    });
+    ok(patchRes.data.data.parsedData.vendorName === 'Nvidia Corporation', 'Edited vendor name should be saved');
+
+    // 9. Approve submission as an Expense (POST /api/submissions/:id/approve)
+    const approveRes = await api('POST', `/api/submissions/${subEntry._id}/approve`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: {
+        category: 'expense',
+        overrides: {
+          grandTotal: 1500,
+          subTotal: 1500,
+          taxAmount: 0
+        }
+      }
+    });
+
+    ok(approveRes.data.success === true, 'Approve should be successful');
+    ok(approveRes.data.resultingRecord.collection === 'expenses', 'Should create an expense');
+    const expenseId = approveRes.data.resultingRecord.recordId;
+
+    // Verify the expense record was actually created
+    const getExpenseRes = await api('GET', `/api/expenses/${expenseId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(getExpenseRes.data.grandTotal === 1500, 'Expense grandTotal should match');
+    ok(getExpenseRes.data.vendor.name === 'Nvidia Corporation', 'Expense vendor name should match');
+
+    // Verify submission is now approved
+    const getDetailApprovedRes = await api('GET', `/api/submissions/${subEntry._id}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(getDetailApprovedRes.data.status === 'approved', 'Status should now be approved');
+    ok(getDetailApprovedRes.data.resultingRecord.recordId === expenseId, 'Should point to the expenseId');
+
+    // 10. Regenerate token
+    const regenRes = await api('POST', '/api/settings/public-submissions/regenerate-token', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(regenRes.data.portalLink !== updateSettingsRes.data.portalLink, 'Link should have changed');
+
+    // Old token should now 404
+    await api('GET', `/api/public/submit/${token}`, {
+      expectedStatus: 404
+    });
+
+    return 'Public Submission Portal verified successfully';
+  });
+}
+
 async function writeReportAndClose(exitCode) {
   try {
     fs.writeFileSync(REPORT_PATH, reportText(), 'utf8');
@@ -2014,6 +2167,7 @@ async function main() {
   await expenseAndBillingCases();
   await payrollAndEmployeeCases();
   await bankStatementCases();
+  await publicPortalCases();
 
   await run('Logout endpoint responds', async () => {
     await api('POST', '/api/auth/logout', { expectedStatus: 200 });

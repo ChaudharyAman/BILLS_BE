@@ -179,3 +179,168 @@ exports.updateSettings = async (req, res) => {
     res.status(400).json({ message: error.message });
   }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public Submission Portal Settings
+// ─────────────────────────────────────────────────────────────────────────────
+
+const crypto = require('crypto');
+const AuditLog = require('../models/AuditLog');
+
+function generatePublicToken() {
+  return crypto.randomBytes(32).toString('hex'); // 64-char hex, never derived from User _id
+}
+
+function buildPortalLink(token) {
+  const appUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+  return `${appUrl}/submit/${token}`;
+}
+
+/**
+ * GET /api/settings/public-submissions
+ * Returns the public portal config.
+ * The token itself is NOT returned — only a ready-to-share link (which contains it).
+ */
+exports.getPublicSubmissionsConfig = async (req, res) => {
+  try {
+    const settings = await Settings.findOne({ user: req.user._id });
+    if (!settings) return res.status(404).json({ message: 'Settings not found' });
+
+    const ps = settings.publicSubmissions || {};
+    return res.json({
+      enabled:              ps.enabled              || false,
+      hasToken:             !!ps.token,
+      portalLink:           ps.token ? buildPortalLink(ps.token) : null,
+      companyDisplayName:   ps.companyDisplayName   || '',
+      allowedCategories:    ps.allowedCategories    || ['invoice', 'expense', 'income', 'purchaseorder'],
+      instructionsText:     ps.instructionsText      || '',
+      maxSubmissionsPerDay: ps.maxSubmissionsPerDay  || 100,
+    });
+  } catch (error) {
+    console.error('getPublicSubmissionsConfig error:', error.message);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+/**
+ * PATCH /api/settings/public-submissions
+ * Update portal config. Generates a token on first enable if none exists.
+ */
+exports.updatePublicSubmissionsConfig = async (req, res) => {
+  try {
+    let settings = await Settings.findOne({ user: req.user._id });
+    if (!settings) {
+      settings = new Settings({ user: req.user._id });
+    }
+
+    if (!settings.publicSubmissions) settings.publicSubmissions = {};
+
+    const {
+      enabled, companyDisplayName, allowedCategories,
+      instructionsText, maxSubmissionsPerDay,
+    } = req.body;
+
+    const wasEnabled = settings.publicSubmissions.enabled;
+
+    if (enabled !== undefined) settings.publicSubmissions.enabled = !!enabled;
+
+    // Generate token the first time the portal is enabled
+    if (settings.publicSubmissions.enabled && !settings.publicSubmissions.token) {
+      settings.publicSubmissions.token = generatePublicToken();
+    }
+
+    if (companyDisplayName !== undefined) {
+      settings.publicSubmissions.companyDisplayName = String(companyDisplayName).slice(0, 200);
+    }
+    if (Array.isArray(allowedCategories)) {
+      const valid = ['invoice', 'expense', 'income', 'purchaseorder'];
+      settings.publicSubmissions.allowedCategories = allowedCategories.filter((c) => valid.includes(c));
+    }
+    if (instructionsText !== undefined) {
+      settings.publicSubmissions.instructionsText = String(instructionsText).slice(0, 2000);
+    }
+    if (maxSubmissionsPerDay !== undefined) {
+      const cap = Number(maxSubmissionsPerDay);
+      if (cap >= 1 && cap <= 10000) settings.publicSubmissions.maxSubmissionsPerDay = cap;
+    }
+
+    settings.markModified('publicSubmissions');
+    await settings.save();
+
+    // Audit: log if enabled/disabled changed
+    const nowEnabled = settings.publicSubmissions.enabled;
+    if (wasEnabled !== nowEnabled) {
+      try {
+        await AuditLog.create({
+          user:    req.user._id,
+          actor:   req.user._id,
+          action:  nowEnabled ? 'PUBLIC_PORTAL_ENABLED' : 'PUBLIC_PORTAL_DISABLED',
+          changes: {},
+        });
+      } catch (_) {}
+    }
+
+    const ps = settings.publicSubmissions;
+    return res.json({
+      enabled:              ps.enabled,
+      hasToken:             !!ps.token,
+      portalLink:           ps.token ? buildPortalLink(ps.token) : null,
+      companyDisplayName:   ps.companyDisplayName,
+      allowedCategories:    ps.allowedCategories,
+      instructionsText:     ps.instructionsText,
+      maxSubmissionsPerDay: ps.maxSubmissionsPerDay,
+    });
+  } catch (error) {
+    console.error('updatePublicSubmissionsConfig error:', error.message);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+/**
+ * POST /api/settings/public-submissions/regenerate-token
+ * Generates a brand-new token, immediately invalidating the old shareable link.
+ * No grace period — the old link 404s the moment this completes.
+ */
+exports.regeneratePublicToken = async (req, res) => {
+  try {
+    let settings = await Settings.findOne({ user: req.user._id });
+    if (!settings) {
+      settings = new Settings({ user: req.user._id });
+    }
+    if (!settings.publicSubmissions) settings.publicSubmissions = {};
+
+    const oldToken = settings.publicSubmissions.token;
+    const newToken = generatePublicToken();
+
+    settings.publicSubmissions.token   = newToken;
+    settings.publicSubmissions.enabled = true; // Auto-enable when regenerating
+
+    settings.markModified('publicSubmissions');
+    await settings.save();
+
+    try {
+      await AuditLog.create({
+        user:    req.user._id,
+        actor:   req.user._id,
+        action:  'PUBLIC_TOKEN_REGENERATED',
+        changes: { hadPreviousToken: !!oldToken },
+      });
+    } catch (_) {}
+
+    const ps = settings.publicSubmissions;
+    return res.json({
+      enabled:              true,
+      hasToken:             true,
+      portalLink:           buildPortalLink(newToken),
+      message:              'Token regenerated. The old link is now inactive.',
+      companyDisplayName:   ps.companyDisplayName,
+      allowedCategories:    ps.allowedCategories,
+      instructionsText:     ps.instructionsText,
+      maxSubmissionsPerDay: ps.maxSubmissionsPerDay,
+    });
+  } catch (error) {
+    console.error('regeneratePublicToken error:', error.message);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
