@@ -60,6 +60,9 @@ const EmployeeSchema = new mongoose.Schema({
   pfEnabled: { type: Boolean, default: true },
   esiEnabled: { type: Boolean, default: true },
   ptEnabled: { type: Boolean, default: true },
+  // State code used for automatic PT slab lookup (e.g. 'MH', 'KA').
+  // Empty string = no auto-compute; manual deductions.professionalTax is used.
+  ptState: { type: String, default: '', trim: true, uppercase: true },
   lwfEnabled: { type: Boolean, default: true },
   gratuityEnabled: { type: Boolean, default: true },
   includePfInCTC: { type: Boolean, default: false },
@@ -95,6 +98,7 @@ const EmployeeSchema = new mongoose.Schema({
   panNumber: { type: String, default: '', select: false },
   uanNumber: { type: String, default: '', select: false },
   aadharNumber: { type: String, default: '', select: false },
+  esiNumber: { type: String, default: '', select: false },
 
   taxRegime: {
     type: String,
@@ -142,6 +146,7 @@ const EmployeeSchema = new mongoose.Schema({
     pfEnabled: { type: Boolean },
     esiEnabled: { type: Boolean },
     ptEnabled: { type: Boolean },
+    ptState: { type: String },
     lwfEnabled: { type: Boolean },
     gratuityEnabled: { type: Boolean },
     includePfInCTC: { type: Boolean },

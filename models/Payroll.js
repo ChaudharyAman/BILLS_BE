@@ -20,6 +20,7 @@ const PayrollSchema = new mongoose.Schema({
   unpaidLeaves: { type: Number, default: 0 },
   lop: { type: Number, default: 0 },
   hoursWorked: { type: Number, default: 0 },
+  attendanceSource: { type: String, enum: ['hrms', 'manual', 'default'], default: 'default' },
   payType: { type: String, enum: ['salaried', 'hourly'], default: 'salaried' },
   hourlyRate: { type: Number, default: 0 },
 
@@ -111,6 +112,7 @@ const PayrollSchema = new mongoose.Schema({
     includePfInCTC: Boolean,
     includeGratuityInCTC: Boolean,
     useSalaryComponents: Boolean,
+    ptState: String,
     taxRegime: String,
     declarations: mongoose.Schema.Types.Mixed,
   },

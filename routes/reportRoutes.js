@@ -13,6 +13,9 @@ const {
   getStatutorySummary,
   getTDSSummary,
   getAnnualEmployeeSummary,
+  getPFECR,
+  getESIMonthlyUpload,
+  getBankPaymentBatch,
 } = require('../controllers/reports/payrollSummaryController');
 const { getTaxDashboard } = require('../controllers/reports/taxDashboardController');
 
@@ -36,6 +39,9 @@ router.get('/payroll-summary/esi-challan', getESIChallan);
 router.get('/payroll-summary/statutory-summary', getStatutorySummary);
 router.get('/payroll-summary/tds-summary', getTDSSummary);
 router.get('/payroll-summary/annual-employee-summary', getAnnualEmployeeSummary);
+router.get('/payroll-summary/pf-ecr', getPFECR);
+router.get('/payroll-summary/esi-monthly-upload', getESIMonthlyUpload);
+router.get('/payroll-summary/bank-payment-batch', getBankPaymentBatch);
 router.get('/tax-dashboard', authorizeAuthenticatedUser, getTaxDashboard);
 
 module.exports = router;

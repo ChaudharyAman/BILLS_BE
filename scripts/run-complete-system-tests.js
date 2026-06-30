@@ -1573,6 +1573,53 @@ async function payrollAndEmployeeCases() {
     return 'Reimbursement verified';
   });
 
+  await run('Leave management types, request, approval, and balance check', async () => {
+    // 1. Fetch default leave types
+    const typesRes = await api('GET', '/api/leaves/types', {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    ok(typesRes.data.length >= 4, 'Expected at least 4 seeded leave types');
+    const clType = typesRes.data.find(t => t.code === 'CL');
+    ok(clType, 'Casual Leave type not found');
+
+    // 2. Submit leave request
+    const requestRes = await api('POST', '/api/leaves/requests', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        employee: state.ids.employee,
+        leaveType: clType._id,
+        startDate: '2026-05-15',
+        endDate: '2026-05-16',
+        numberOfDays: 2,
+        reason: 'Family event'
+      }
+    });
+    const requestId = requestRes.data._id;
+    ok(requestRes.data.status === 'pending', 'Leave request should default to pending status');
+
+    // 3. Approve leave request
+    const approveRes = await api('PUT', `/api/leaves/requests/${requestId}/status`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: { status: 'approved', approverRemarks: 'Approved' }
+    });
+    ok(approveRes.data.status === 'approved', 'Leave request was not approved');
+
+    // 4. Verify updated balance
+    const balanceRes = await api('GET', `/api/leaves/balances?employee=${state.ids.employee}&year=2026`, {
+      token: state.tokens.pro,
+      expectedStatus: 200
+    });
+    const clBalance = balanceRes.data.find(b => b.leaveType?.code === 'CL');
+    ok(clBalance, 'Casual Leave balance record not found');
+    ok(clBalance.used === 2, `Expected used balance to be 2, got ${clBalance.used}`);
+    ok(clBalance.closing === 10, `Expected closing balance to be 10, got ${clBalance.closing}`);
+
+    return 'Leave request approved and balance verified';
+  });
+
   await run('Hourly contractor employee lifecycle and payroll processing', async () => {
     // 1. Create hourly contractor employee
     const employeeId = unique('EMP-HOURLY');
