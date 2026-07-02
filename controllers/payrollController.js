@@ -1819,6 +1819,7 @@ exports.receiveHrmsWebhook = async (req, res) => {
 
     const panNumber = employeeData.panNumber || employeeData.pan || employeeData.identity?.panNumber || '';
     const aadharNumber = employeeData.aadharNumber || employeeData.aadhar || employeeData.aadhaar || employeeData.identity?.aadhaarNumber || '';
+    const uanNumber = employeeData.uanNumber || employeeData.bankDetails?.uanNumber || '';
 
     const bankDetails = {
       accountName: (
@@ -1864,6 +1865,27 @@ exports.receiveHrmsWebhook = async (req, res) => {
       if (dept) departmentId = dept._id;
     }
 
+    const pfEnabled = employeeData.compensation?.pfEnabled !== undefined ? employeeData.compensation.pfEnabled : true;
+    const esiEnabled = employeeData.compensation?.esiEnabled !== undefined ? employeeData.compensation.esiEnabled : true;
+    const ptEnabled = employeeData.compensation?.ptEnabled !== undefined ? employeeData.compensation.ptEnabled : true;
+    const lwfEnabled = employeeData.compensation?.lwfEnabled !== undefined ? employeeData.compensation.lwfEnabled : true;
+    const gratuityEnabled = employeeData.compensation?.gratuityEnabled !== undefined ? employeeData.compensation.gratuityEnabled : true;
+    const includePfInCTC = employeeData.compensation?.includePfInCTC !== undefined ? employeeData.compensation.includePfInCTC : false;
+    const includeGratuityInCTC = employeeData.compensation?.includeGratuityInCTC !== undefined ? employeeData.compensation.includeGratuityInCTC : true;
+    const basicPercent = employeeData.compensation?.basicPercent !== undefined && employeeData.compensation.basicPercent !== null ? Number(employeeData.compensation.basicPercent) : null;
+    const hraPercent = employeeData.compensation?.hraPercent !== undefined && employeeData.compensation.hraPercent !== null ? Number(employeeData.compensation.hraPercent) : null;
+    const useSalaryComponents = employeeData.compensation?.useSalaryComponents !== undefined ? employeeData.compensation.useSalaryComponents : true;
+    const ptState = employeeData.compensation?.ptState || '';
+
+    const extBreakup = employeeData.compensation?.salaryBreakup || {};
+    const broadband = Number(extBreakup.broadband || employeeData.broadband || 0);
+    const petrol = Number(extBreakup.petrol || employeeData.petrol || 0);
+    const lta = Number(extBreakup.lta || employeeData.lta || 0);
+    const employerNPS = Number(extBreakup.employerNPS || extBreakup.nps || employeeData.employerNPS || employeeData.nps || 0);
+    const insuranceAmount = Number(extBreakup.insuranceAmount || extBreakup.insurance || employeeData.insuranceAmount || employeeData.insurance || 0);
+    const conveyance = Number(extBreakup.conveyance || employeeData.conveyance || 0);
+    const medicalAllowance = Number(extBreakup.medical || extBreakup.medicalAllowance || employeeData.medical || employeeData.medicalAllowance || 0);
+
     const query = { user: userId, employeeId: empId };
     const updateData = {
       employeeId: empId,
@@ -1879,8 +1901,25 @@ exports.receiveHrmsWebhook = async (req, res) => {
       monthlyCTC,
       panNumber,
       aadharNumber,
+      uanNumber,
       bankDetails,
-      department: departmentId
+      department: departmentId,
+      pfEnabled,
+      esiEnabled,
+      ptEnabled,
+      lwfEnabled,
+      gratuityEnabled,
+      includePfInCTC,
+      includeGratuityInCTC,
+      basicPercent,
+      hraPercent,
+      useSalaryComponents,
+      ptState,
+      broadband,
+      petrol,
+      lta,
+      employerNPS,
+      insuranceAmount
     };
 
     const config = await PayrollConfig.findOne({ user: userId }) || {};
@@ -1888,8 +1927,8 @@ exports.receiveHrmsWebhook = async (req, res) => {
     updateData.salaryStructure = {
       basic: master.basicMaster,
       hra: master.hraMaster,
-      conveyance: Number(employeeData.conveyance || employeeData.compensation?.conveyance) || 0,
-      medicalAllowance: Number(employeeData.medicalAllowance || employeeData.compensation?.medicalAllowance) || 0,
+      conveyance: conveyance,
+      medicalAllowance: medicalAllowance,
       specialAllowance: master.specialAllowance,
       grossSalary: master.grossSalary,
       ctc: master.grossTotalSalary,
