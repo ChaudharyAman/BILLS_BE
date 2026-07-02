@@ -1,3 +1,4 @@
+const { getMonthlyPT } = require('./professionalTaxSlabs');
 const DEFAULT_PAYROLL_CONFIG = {
   basicPercent: 0.5,
   hraPercent: 0.5,
@@ -538,7 +539,15 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const calculatedTdsMonthly = taxDetails[taxRegime === 'old' ? 'oldRegime' : 'newRegime'].monthlyTax;
   const tds = Number(source.deductions?.tds) > 0 ? Number(source.deductions?.tds) : roundAmount(calculatedTdsMonthly);
 
-  const professionalTax = ptEnabled ? (Number(source.deductions?.professionalTax) || 0) : 0;
+  // Professional Tax: prefer manual override when non-zero, otherwise
+  // auto-compute from state slab (getMonthlyPT returns 0 if no state set).
+  const manualPT = Number(source.deductions?.professionalTax) || 0;
+  const computedPT = (ptEnabled && source.ptState)
+    ? getMonthlyPT(source.ptState, totalEarnings, source._month)
+    : 0;
+  const professionalTax = ptEnabled
+    ? (manualPT > 0 ? manualPT : computedPT)
+    : 0;
   const otherDeductions = source.deductions?.otherDeductions || source.otherDeductions || [];
   const otherDeductionsSum = roundAmount(otherDeductions.reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
 
@@ -683,6 +692,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       pfEnabled: getVal('pfEnabled', true),
       esiEnabled: getVal('esiEnabled', true),
       ptEnabled: getVal('ptEnabled', true),
+      ptState: getVal('ptState', ''),
       lwfEnabled: getVal('lwfEnabled', true),
       gratuityEnabled: getVal('gratuityEnabled', true),
       includePfInCTC: getVal('includePfInCTC', false),
@@ -728,12 +738,16 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       pfEnabled: adjustments.pfEnabled !== undefined ? adjustments.pfEnabled : activeParams.pfEnabled,
       esiEnabled: adjustments.esiEnabled !== undefined ? adjustments.esiEnabled : activeParams.esiEnabled,
       ptEnabled: adjustments.ptEnabled !== undefined ? adjustments.ptEnabled : activeParams.ptEnabled,
+      ptState: adjustments.ptState !== undefined ? adjustments.ptState : activeParams.ptState,
       lwfEnabled: adjustments.lwfEnabled !== undefined ? adjustments.lwfEnabled : activeParams.lwfEnabled,
       gratuityEnabled: adjustments.gratuityEnabled !== undefined ? adjustments.gratuityEnabled : activeParams.gratuityEnabled,
       includePfInCTC: adjustments.includePfInCTC !== undefined ? adjustments.includePfInCTC : activeParams.includePfInCTC,
       includeGratuityInCTC: adjustments.includeGratuityInCTC !== undefined ? adjustments.includeGratuityInCTC : activeParams.includeGratuityInCTC,
       basicPercent: adjustments.basicPercent !== undefined && adjustments.basicPercent !== null ? adjustments.basicPercent : activeParams.basicPercent,
       hraPercent: adjustments.hraPercent !== undefined && adjustments.hraPercent !== null ? adjustments.hraPercent : activeParams.hraPercent,
+      // Thread month/year so getMonthlyPT can apply the MH February rule
+      _month: month,
+      _year: year,
     };
 
     const dayMaster = buildMasterSalaryStructure(daySource, config);
@@ -1178,6 +1192,7 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
       pfEnabled: getVal('pfEnabled', true),
       esiEnabled: getVal('esiEnabled', true),
       ptEnabled: getVal('ptEnabled', true),
+      ptState: getVal('ptState', ''),
       lwfEnabled: getVal('lwfEnabled', true),
       gratuityEnabled: getVal('gratuityEnabled', true),
       includePfInCTC: getVal('includePfInCTC', false),
@@ -1252,12 +1267,16 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
       pfEnabled: adjustments.pfEnabled !== undefined ? adjustments.pfEnabled : seg.activeParams.pfEnabled,
       esiEnabled: adjustments.esiEnabled !== undefined ? adjustments.esiEnabled : seg.activeParams.esiEnabled,
       ptEnabled: adjustments.ptEnabled !== undefined ? adjustments.ptEnabled : seg.activeParams.ptEnabled,
+      ptState: adjustments.ptState !== undefined ? adjustments.ptState : seg.activeParams.ptState,
       lwfEnabled: adjustments.lwfEnabled !== undefined ? adjustments.lwfEnabled : seg.activeParams.lwfEnabled,
       gratuityEnabled: adjustments.gratuityEnabled !== undefined ? adjustments.gratuityEnabled : seg.activeParams.gratuityEnabled,
       includePfInCTC: adjustments.includePfInCTC !== undefined ? adjustments.includePfInCTC : seg.activeParams.includePfInCTC,
       includeGratuityInCTC: adjustments.includeGratuityInCTC !== undefined ? adjustments.includeGratuityInCTC : seg.activeParams.includeGratuityInCTC,
       basicPercent: adjustments.basicPercent !== undefined && adjustments.basicPercent !== null ? adjustments.basicPercent : seg.activeParams.basicPercent,
       hraPercent: adjustments.hraPercent !== undefined && adjustments.hraPercent !== null ? adjustments.hraPercent : seg.activeParams.hraPercent,
+      // Thread month/year so getMonthlyPT can apply the MH February rule
+      _month: month,
+      _year: year,
     };
     
     const dayMaster = buildMasterSalaryStructure(daySource, config);
@@ -1347,6 +1366,145 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
   });
 };
 
+// =============================================================================
+// STATUTORY GRATUITY ENTITLEMENT (Payment of Gratuity Act, 1972 — Section 4)
+// =============================================================================
+// IMPORTANT: This is NOT the monthly CTC-provisioning gratuity (basicMaster ×
+// 4.81%) used for salary structuring — that calculation is untouched above.
+// This function computes the actual one-time gratuity payable at separation
+// (Full & Final Settlement) under statute.
+//
+// Formula: (Basic + DA) × 15/26 × completed years of service
+//
+// Years-of-service rounding rule:
+//   Per Section 2A of the Act and the Supreme Court ruling in Mettur Beardsell
+//   Ltd v. Regional Labour Commissioner (1998 ILLJ 180 Mad), after counting
+//   complete years:
+//     - Remaining months < 6  → discarded (round down)
+//     - Remaining months >= 6 → treated as a full year (round up)
+//   Employers who prefer always-round-down can adjust the final amount
+//   manually in the Full & Final Settlement (Gap 2b).
+//
+// Eligibility: minimum 5 years of continuous service (Section 4(1)).
+//
+// Statutory cap: ₹20,00,000 — Payment of Gratuity (Amendment) Act, 2018.
+//   Source: Ministry of Labour & Employment notification S.O. 1420(E), 29 Mar 2018.
+//   (Note: The government has announced but not yet notified a further increase;
+//   ₹20 lakh is the currently enforceable ceiling as of FY 2025-26.)
+//
+// DA note: Most private-sector employers in India pay 0 DA (DA is merged into
+// Basic in the CTC structure). This function accepts a single `basicPlusDa`
+// parameter — callers should pass Basic alone if DA is nil.
+
+/**
+ * @param {Date|string} joiningDate
+ * @param {Date|string} separationDate — date of leaving; pass new Date() for active employees
+ * @param {number}      basicPlusDa    — monthly (Basic + DA) at time of separation
+ * @returns {{
+ *   eligible: boolean,
+ *   completedYears: number,
+ *   completedMonths: number,
+ *   roundedYears: number,
+ *   entitlement: number,
+ *   cappedEntitlement: number,
+ *   isCapped: boolean,
+ *   note: string
+ * }}
+ */
+const calculateGratuityEntitlement = (joiningDate, separationDate, basicPlusDa) => {
+  const GRATUITY_CAP = 2000000; // ₹20,00,000 — S.O. 1420(E), 29 Mar 2018
+  const MIN_SERVICE_YEARS = 5;  // Section 4(1), Payment of Gratuity Act 1972
+
+  const joining    = new Date(joiningDate);
+  const separation = new Date(separationDate || Date.now());
+
+  // Validate inputs
+  if (
+    isNaN(joining.getTime()) ||
+    isNaN(separation.getTime()) ||
+    separation <= joining
+  ) {
+    return {
+      eligible: false,
+      completedYears: 0,
+      completedMonths: 0,
+      roundedYears: 0,
+      entitlement: 0,
+      cappedEntitlement: 0,
+      isCapped: false,
+      note: 'Invalid dates — joining date must be before separation date.',
+    };
+  }
+
+  // Compute precise service duration
+  let years  = separation.getFullYear() - joining.getFullYear();
+  let months = separation.getMonth()   - joining.getMonth();
+  let days   = separation.getDate()    - joining.getDate();
+
+  // Normalise negative days into months
+  if (days < 0) {
+    months -= 1;
+    const prevMonth = new Date(separation.getFullYear(), separation.getMonth(), 0);
+    days += prevMonth.getDate();
+  }
+  // Normalise negative months into years
+  if (months < 0) {
+    years  -= 1;
+    months += 12;
+  }
+
+  const totalMonths = years * 12 + months;
+
+  // 6-month rounding rule (see header comment for legal basis)
+  const roundedYears = years + (months >= 6 ? 1 : 0);
+  const roundingNote = months >= 6
+    ? `${months} months in final year ≥ 6 → rounded up to full year.`
+    : months > 0
+      ? `${months} months in final year < 6 → discarded.`
+      : '';
+
+  if (years < MIN_SERVICE_YEARS) {
+    const yearsRemaining = MIN_SERVICE_YEARS - years;
+    const monthsRemaining = months > 0 ? (12 - months) : 0;
+    const note = monthsRemaining > 0
+      ? `Ineligible. Requires ${yearsRemaining} year(s) and ${monthsRemaining} more month(s) of service.`
+      : `Ineligible. Requires ${yearsRemaining} more year(s) of service.`;
+    return {
+      eligible: false,
+      completedYears: years,
+      completedMonths: totalMonths,
+      roundedYears: 0,
+      entitlement: 0,
+      cappedEntitlement: 0,
+      isCapped: false,
+      note,
+    };
+  }
+
+  // Statutory formula: (Basic + DA) × 15/26 × roundedYears
+  const gross       = Number(basicPlusDa) || 0;
+  const entitlement = roundAmount(gross * 15 / 26 * roundedYears);
+  const capped      = Math.min(entitlement, GRATUITY_CAP);
+  const isCapped    = entitlement > GRATUITY_CAP;
+
+  const note = [
+    `Eligible. ${years} completed year(s), ${months} month(s).`,
+    roundingNote,
+    isCapped ? `Entitlement (₹${entitlement.toLocaleString('en-IN')}) exceeds statutory cap — capped at ₹20,00,000.` : '',
+  ].filter(Boolean).join(' ');
+
+  return {
+    eligible: true,
+    completedYears: years,
+    completedMonths: totalMonths,
+    roundedYears,
+    entitlement,
+    cappedEntitlement: capped,
+    isCapped,
+    note,
+  };
+};
+
 module.exports = {
   DEFAULT_PAYROLL_CONFIG,
   roundAmount,
@@ -1359,4 +1517,5 @@ module.exports = {
   buildMasterSalaryStructure,
   buildPayrollSnapshot,
   getSalarySplits,
+  calculateGratuityEntitlement,
 };

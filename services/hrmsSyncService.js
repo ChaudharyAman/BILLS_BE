@@ -108,6 +108,7 @@ exports.syncEmployeesFromExternal = async (userId) => {
 
         const panNumber = extEmp.panNumber || extEmp.pan || extEmp.identity?.panNumber || '';
         const aadharNumber = extEmp.aadharNumber || extEmp.aadhar || extEmp.aadhaar || extEmp.identity?.aadhaarNumber || '';
+        const uanNumber = extEmp.uanNumber || extEmp.bankDetails?.uanNumber || '';
 
         const bankDetails = {
           accountName: (
@@ -120,6 +121,59 @@ exports.syncEmployeesFromExternal = async (userId) => {
           ifscCode: extEmp.bankDetails?.ifscCode || extEmp.bank_ifsc || '',
           bankName: extEmp.bankDetails?.bankName || extEmp.bank_name || ''
         };
+
+        const pfEnabled = extEmp.compensation?.pfEnabled !== undefined ? extEmp.compensation.pfEnabled : true;
+        const esiEnabled = extEmp.compensation?.esiEnabled !== undefined ? extEmp.compensation.esiEnabled : true;
+        const ptEnabled = extEmp.compensation?.ptEnabled !== undefined ? extEmp.compensation.ptEnabled : true;
+        const lwfEnabled = extEmp.compensation?.lwfEnabled !== undefined ? extEmp.compensation.lwfEnabled : true;
+        const gratuityEnabled = extEmp.compensation?.gratuityEnabled !== undefined ? extEmp.compensation.gratuityEnabled : true;
+        const includePfInCTC = extEmp.compensation?.includePfInCTC !== undefined ? extEmp.compensation.includePfInCTC : false;
+        const includeGratuityInCTC = extEmp.compensation?.includeGratuityInCTC !== undefined ? extEmp.compensation.includeGratuityInCTC : true;
+        const basicPercent = extEmp.compensation?.basicPercent !== undefined && extEmp.compensation.basicPercent !== null ? Number(extEmp.compensation.basicPercent) : null;
+        const hraPercent = extEmp.compensation?.hraPercent !== undefined && extEmp.compensation.hraPercent !== null ? Number(extEmp.compensation.hraPercent) : null;
+        const useSalaryComponents = extEmp.compensation?.useSalaryComponents !== undefined ? extEmp.compensation.useSalaryComponents : true;
+        const ptState = extEmp.compensation?.ptState || '';
+
+        // Department lookup or create by name
+        let departmentName = String(extEmp.department || extEmp.dept || extEmp.employment?.department || '').trim();
+        if ((departmentName.startsWith('"') && departmentName.endsWith('"')) || (departmentName.startsWith("'") && departmentName.endsWith("'"))) {
+          departmentName = departmentName.slice(1, -1).trim();
+        }
+        let departmentId = null;
+        if (departmentName) {
+          const Department = require('../models/Department');
+          const escapeRegex = (string) => string.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+          let dept = await Department.findOne({
+            user: userId,
+            name: { $regex: new RegExp(`^${escapeRegex(departmentName)}$`, 'i') },
+          });
+          if (!dept) {
+            let baseCode = departmentName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 5).toUpperCase();
+            if (!baseCode) baseCode = 'DEPT';
+            let code = baseCode;
+            let counter = 1;
+            while (await Department.exists({ user: userId, code })) {
+              code = `${baseCode}${counter}`;
+              counter += 1;
+            }
+            dept = await Department.create({
+              user: userId,
+              name: departmentName,
+              code,
+              description: 'Auto-created during sync',
+            });
+          }
+          if (dept) departmentId = dept._id;
+        }
+
+        const extBreakup = extEmp.compensation?.salaryBreakup || {};
+        const broadband = Number(extBreakup.broadband || extEmp.broadband || 0);
+        const petrol = Number(extBreakup.petrol || extEmp.petrol || 0);
+        const lta = Number(extBreakup.lta || extEmp.lta || 0);
+        const employerNPS = Number(extBreakup.employerNPS || extBreakup.nps || extEmp.employerNPS || extEmp.nps || 0);
+        const insuranceAmount = Number(extBreakup.insuranceAmount || extBreakup.insurance || extEmp.insuranceAmount || extEmp.insurance || 0);
+        const conveyance = Number(extBreakup.conveyance || extEmp.conveyance || 0);
+        const medicalAllowance = Number(extBreakup.medical || extBreakup.medicalAllowance || extEmp.medical || extEmp.medicalAllowance || 0);
 
         const query = { user: userId, employeeId: empId };
         const updateData = {
@@ -136,8 +190,25 @@ exports.syncEmployeesFromExternal = async (userId) => {
           monthlyCTC,
           panNumber,
           aadharNumber,
+          uanNumber,
           bankDetails,
-          department: departmentId
+          department: departmentId,
+          pfEnabled,
+          esiEnabled,
+          ptEnabled,
+          lwfEnabled,
+          gratuityEnabled,
+          includePfInCTC,
+          includeGratuityInCTC,
+          basicPercent,
+          hraPercent,
+          useSalaryComponents,
+          ptState,
+          broadband,
+          petrol,
+          lta,
+          employerNPS,
+          insuranceAmount
         };
 
         // Determine / update salary structure
@@ -145,8 +216,8 @@ exports.syncEmployeesFromExternal = async (userId) => {
         updateData.salaryStructure = {
           basic: master.basicMaster,
           hra: master.hraMaster,
-          conveyance: Number(extEmp.conveyance || extEmp.compensation?.conveyance) || 0,
-          medicalAllowance: Number(extEmp.medicalAllowance || extEmp.compensation?.medicalAllowance) || 0,
+          conveyance: conveyance,
+          medicalAllowance: medicalAllowance,
           specialAllowance: master.specialAllowance,
           grossSalary: master.grossSalary,
           ctc: master.grossTotalSalary,

@@ -508,3 +508,258 @@ exports.getAnnualEmployeeSummary = async (req, res) => {
     res.status(500).json({ message: 'Server error generating annual employee summary' });
   }
 };
+
+exports.getPFECR = async (req, res) => {
+  try {
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+
+    if (!validateMonth(month) || !validateYear(year)) {
+      return res.status(400).json({ message: 'Valid month and year are required' });
+    }
+
+    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+      .populate({ path: 'employee', select: '+uanNumber firstName lastName employeeId' })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const pfPayrolls = payrolls.filter(p => p.employeeSnapshot?.pfEnabled !== false && p.deductions?.pfEmployee > 0);
+
+    const lines = pfPayrolls.map((payroll) => {
+      const uan = (payroll.employee?.uanNumber || '').trim();
+      const rawName = `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim();
+      const name = rawName.replace(/[^a-zA-Z0-9\s]/g, '').toUpperCase().trim();
+      
+      const grossWages = Math.round(Number(payroll.earnings?.totalEarnings) || 0);
+      const basicWages = Math.round(Number(payroll.earnings?.basic) || 0);
+      
+      let epfWages = 0;
+      const pfEmployee = Number(payroll.deductions?.pfEmployee) || 0;
+      const pfEmployer = Number(payroll.employerContributions?.pfEmployer) || 0;
+      
+      if (pfEmployee > 0) {
+        if (pfEmployee === 1800) {
+          epfWages = 15000;
+        } else {
+          epfWages = Math.round(pfEmployee / 0.12);
+        }
+      }
+      
+      const epsWages = epfWages > 0 ? Math.min(epfWages, 15000) : 0;
+      const edliWages = epsWages;
+      
+      const epsContribution = Math.min(1250, Math.round(epsWages * 0.0833));
+      const epfEpsDiff = Math.max(0, Math.round(pfEmployer - epsContribution));
+      
+      const ncpDays = Math.round(Number(payroll.unpaidLeaves) || Number(payroll.lop) || 0);
+      const refundOfAdvances = 0;
+
+      return [
+        uan,
+        name,
+        grossWages,
+        epfWages,
+        epsWages,
+        edliWages,
+        Math.round(pfEmployee),
+        epsContribution,
+        epfEpsDiff,
+        ncpDays,
+        refundOfAdvances
+      ].join('#~#');
+    });
+
+    const fileContent = lines.join('\r\n');
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', `attachment; filename=PF_ECR_${year}_${String(month).padStart(2, '0')}.txt`);
+    return res.send(fileContent);
+  } catch (error) {
+    console.error('Error generating PF ECR:', error);
+    res.status(500).json({ message: 'Server error generating PF ECR file' });
+  }
+};
+
+exports.getESIMonthlyUpload = async (req, res) => {
+  try {
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+
+    if (!validateMonth(month) || !validateYear(year)) {
+      return res.status(400).json({ message: 'Valid month and year are required' });
+    }
+
+    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+      .populate({ path: 'employee', select: '+esiNumber firstName lastName employeeId dateOfLeaving status' })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const esiPayrolls = payrolls.filter(p => p.employeeSnapshot?.esiEnabled !== false && p.deductions?.esiEmployee > 0);
+
+    const rows = [
+      ['IP Number', 'IP Name', 'No. of Days', 'Total Monthly Wages', 'Reason for 0 Wages', 'Last Working Day']
+    ];
+
+    esiPayrolls.forEach((payroll) => {
+      const ipNumber = (payroll.employee?.esiNumber || '').trim();
+      const rawName = `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim();
+      const ipName = rawName.replace(/[^a-zA-Z0-9\s]/g, '').toUpperCase().trim();
+      
+      const noOfDays = Math.round(Number(payroll.paidDays) || 0);
+      const totalWages = Math.round(Number(payroll.earnings?.totalEarnings) || 0);
+      const reasonCode = totalWages === 0 ? 2 : 0;
+      
+      let lastWorkingDay = '';
+      if (payroll.employee?.dateOfLeaving) {
+        const dol = new Date(payroll.employee.dateOfLeaving);
+        if (dol.getMonth() + 1 === month && dol.getFullYear() === year) {
+          const dd = String(dol.getDate()).padStart(2, '0');
+          const mm = String(dol.getMonth() + 1).padStart(2, '0');
+          const yyyy = dol.getFullYear();
+          lastWorkingDay = `${dd}/${mm}/${yyyy}`;
+        }
+      }
+
+      rows.push([
+        ipNumber,
+        ipName,
+        noOfDays,
+        totalWages,
+        reasonCode,
+        lastWorkingDay
+      ]);
+    });
+
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+
+    const rowCount = rows.length;
+    for (let r = 1; r < rowCount; r++) {
+      const cellRefA = XLSX.utils.encode_cell({ r, c: 0 });
+      if (worksheet[cellRefA]) {
+        worksheet[cellRefA].t = 's';
+      }
+      const cellRefF = XLSX.utils.encode_cell({ r, c: 5 });
+      if (worksheet[cellRefF]) {
+        worksheet[cellRefF].t = 's';
+      }
+    }
+
+    worksheet['!cols'] = [
+      { wch: 20 },
+      { wch: 30 },
+      { wch: 12 },
+      { wch: 20 },
+      { wch: 18 },
+      { wch: 18 }
+    ];
+
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'ESI Upload');
+    return sendWorkbook(res, workbook, `esi-monthly-upload-${year}-${String(month).padStart(2, '0')}.xlsx`);
+  } catch (error) {
+    console.error('Error generating ESI monthly upload:', error);
+    res.status(500).json({ message: 'Server error generating ESI upload sheet' });
+  }
+};
+
+exports.getBankPaymentBatch = async (req, res) => {
+  try {
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+    const bank = String(req.query.bank || 'generic').toLowerCase();
+
+    if (!validateMonth(month) || !validateYear(year)) {
+      return res.status(400).json({ message: 'Valid month and year are required' });
+    }
+
+    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+      .populate({ path: 'employee', select: '+bankDetails.accountNumber firstName lastName employeeId bankDetails.ifscCode bankDetails.bankName bankDetails.accountName email' })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    let csvContent = '';
+    const sanitizeCSV = (str) => {
+      if (!str) return '';
+      return String(str).replace(/[,\"\r\n]/g, ' ').trim();
+    };
+
+    if (bank === 'hdfc') {
+      const headers = ['Transaction Type', 'Beneficiary Account Number', 'Net Amount', 'Beneficiary Name', 'Payment Detail', 'IFSC Code', 'Beneficiary Email'];
+      const lines = [headers.join(',')];
+      
+      payrolls.forEach(p => {
+        const accountNo = p.employee?.bankDetails?.accountNumber || '';
+        const name = `${p.employee?.firstName || p.employeeSnapshot?.firstName || ''} ${p.employee?.lastName || p.employeeSnapshot?.lastName || ''}`.trim();
+        const amt = Number(p.netSalary) || 0;
+        const ifsc = p.employee?.bankDetails?.ifscCode || '';
+        const email = p.employee?.email || p.employeeSnapshot?.email || '';
+        const isHdfc = (p.employee?.bankDetails?.bankName || '').toLowerCase().includes('hdfc');
+        const txType = isHdfc ? 'FT' : 'N';
+
+        lines.push([
+          txType,
+          sanitizeCSV(accountNo),
+          amt.toFixed(2),
+          sanitizeCSV(name),
+          `SALARY_${formatMonthName(month).toUpperCase()}_${year}`,
+          sanitizeCSV(ifsc),
+          sanitizeCSV(email)
+        ].join(','));
+      });
+      csvContent = lines.join('\r\n');
+    } else if (bank === 'icici') {
+      const headers = ['Serial Number', 'Beneficiary Account Number', 'Beneficiary Name', 'Amount', 'Transaction Type', 'IFSC Code', 'Remarks'];
+      const lines = [headers.join(',')];
+
+      payrolls.forEach((p, idx) => {
+        const accountNo = p.employee?.bankDetails?.accountNumber || '';
+        const name = `${p.employee?.firstName || p.employeeSnapshot?.firstName || ''} ${p.employee?.lastName || p.employeeSnapshot?.lastName || ''}`.trim();
+        const amt = Number(p.netSalary) || 0;
+        const ifsc = p.employee?.bankDetails?.ifscCode || '';
+        const isIcici = (p.employee?.bankDetails?.bankName || '').toLowerCase().includes('icici');
+        const txType = isIcici ? 'IFT' : 'NEFT';
+
+        lines.push([
+          idx + 1,
+          sanitizeCSV(accountNo),
+          sanitizeCSV(name),
+          amt.toFixed(2),
+          txType,
+          sanitizeCSV(ifsc),
+          `SALARY FOR ${formatMonthName(month).toUpperCase()} ${year}`
+        ].join(','));
+      });
+      csvContent = lines.join('\r\n');
+    } else {
+      const headers = ['Employee ID', 'Employee Name', 'Bank Name', 'Account Number', 'IFSC Code', 'Net Amount', 'Email'];
+      const lines = [headers.join(',')];
+
+      payrolls.forEach(p => {
+        const empId = p.employee?.employeeId || p.employeeSnapshot?.employeeId || '';
+        const name = `${p.employee?.firstName || p.employeeSnapshot?.firstName || ''} ${p.employee?.lastName || p.employeeSnapshot?.lastName || ''}`.trim();
+        const bankName = p.employee?.bankDetails?.bankName || '';
+        const accountNo = p.employee?.bankDetails?.accountNumber || '';
+        const ifsc = p.employee?.bankDetails?.ifscCode || '';
+        const amt = Number(p.netSalary) || 0;
+        const email = p.employee?.email || p.employeeSnapshot?.email || '';
+
+        lines.push([
+          sanitizeCSV(empId),
+          sanitizeCSV(name),
+          sanitizeCSV(bankName),
+          sanitizeCSV(accountNo),
+          sanitizeCSV(ifsc),
+          amt.toFixed(2),
+          sanitizeCSV(email)
+        ].join(','));
+      });
+      csvContent = lines.join('\r\n');
+    }
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=bank-payment-${bank}-${year}-${String(month).padStart(2, '0')}.csv`);
+    return res.send(csvContent);
+  } catch (error) {
+    console.error('Error exporting bank payment batch:', error);
+    res.status(500).json({ message: 'Server error exporting bank payment batch' });
+  }
+};

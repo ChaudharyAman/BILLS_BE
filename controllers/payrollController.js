@@ -85,6 +85,10 @@ const buildAdjustmentsPayload = (employee, payload = {}, month, year) => {
 
   adjustments.otherEarnings = Array.isArray(adjustments.otherEarnings) ? adjustments.otherEarnings : [];
   adjustments.otherDeductions = Array.isArray(adjustments.otherDeductions) ? adjustments.otherDeductions : [];
+  // Propagate PT state so buildPayrollSnapshot can compute the correct slab amount
+  if (adjustments.ptState === undefined) {
+    adjustments.ptState = employee.ptState || '';
+  }
   return adjustments;
 };
 
@@ -241,6 +245,126 @@ const buildPayrollWorkbook = (payrolls, config) => {
   XLSX.utils.book_append_sheet(workbook, sheet, 'Payroll Sheet');
   return workbook;
 };
+const LeaveRequest = require('../models/LeaveRequest');
+const LeaveType = require('../models/LeaveType');
+const LeaveBalance = require('../models/LeaveBalance');
+
+const getOverlapInfo = (startDate, endDate, month, year) => {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+
+  const startOfMonth = new Date(year, month - 1, 1);
+  const endOfMonth = new Date(year, month, 0);
+  startOfMonth.setHours(0, 0, 0, 0);
+  endOfMonth.setHours(0, 0, 0, 0);
+
+  const totalCalendarMs = end.getTime() - start.getTime();
+  const totalCalendarDays = Math.round(totalCalendarMs / (1000 * 60 * 60 * 24)) + 1;
+
+  const overlapStart = new Date(Math.max(start.getTime(), startOfMonth.getTime()));
+  const overlapEnd = new Date(Math.min(end.getTime(), endOfMonth.getTime()));
+  overlapStart.setHours(0, 0, 0, 0);
+  overlapEnd.setHours(0, 0, 0, 0);
+
+  if (overlapStart > overlapEnd) {
+    return { totalCalendarDays, calendarDaysInTargetMonth: 0 };
+  }
+
+  const overlapMs = overlapEnd.getTime() - overlapStart.getTime();
+  const calendarDaysInTargetMonth = Math.round(overlapMs / (1000 * 60 * 60 * 24)) + 1;
+
+  return { totalCalendarDays, calendarDaysInTargetMonth };
+};
+
+const autoDeriveLeavesForMonth = async (employeeId, month, year, userId) => {
+  const yearStart = new Date(year, 0, 1);
+  const yearEnd = new Date(year, 11, 31, 23, 59, 59, 999);
+
+  // Find all approved leave requests of the employee in the calendar year
+  const allRequestsInYear = await LeaveRequest.find({
+    employee: employeeId,
+    user: userId,
+    status: 'approved',
+    startDate: { $lte: yearEnd },
+    endDate: { $gte: yearStart }
+  }).populate('leaveType').sort({ startDate: 1 });
+
+  // Group requests by leaveType id
+  const typeRequests = {};
+  for (const req of allRequestsInYear) {
+    if (!req.leaveType) continue;
+    const typeId = String(req.leaveType._id);
+    if (!typeRequests[typeId]) typeRequests[typeId] = [];
+    typeRequests[typeId].push(req);
+  }
+
+  let calculatedUnpaidLeaves = 0;
+  let calculatedPaidLeaves = 0;
+
+  const leaveTypes = await LeaveType.find({ user: userId });
+  for (const leaveType of leaveTypes) {
+    const typeId = String(leaveType._id);
+    const requests = typeRequests[typeId] || [];
+    if (requests.length === 0) continue;
+
+    if (!leaveType.isPaid) {
+      // Unpaid leave - all days are LOP
+      for (const req of requests) {
+        const { totalCalendarDays, calendarDaysInTargetMonth } = getOverlapInfo(req.startDate, req.endDate, month, year);
+        if (calendarDaysInTargetMonth > 0) {
+          const ratio = calendarDaysInTargetMonth / totalCalendarDays;
+          calculatedUnpaidLeaves += req.numberOfDays * ratio;
+        }
+      }
+    } else {
+      // Paid leave - chronological debiting
+      const balance = await LeaveBalance.findOne({
+        user: userId,
+        employee: employeeId,
+        leaveType: leaveType._id,
+        year: year
+      });
+
+      const entitlement = balance
+        ? (balance.opening + balance.accrued + balance.carriedForward)
+        : leaveType.annualEntitlement;
+
+      let cumulativeUsed = 0;
+      for (const req of requests) {
+        const requestDays = req.numberOfDays;
+        let paidDaysForRequest = 0;
+        let unpaidDaysForRequest = 0;
+
+        if (cumulativeUsed + requestDays <= entitlement) {
+          paidDaysForRequest = requestDays;
+        } else if (cumulativeUsed < entitlement) {
+          paidDaysForRequest = entitlement - cumulativeUsed;
+          unpaidDaysForRequest = requestDays - paidDaysForRequest;
+        } else {
+          unpaidDaysForRequest = requestDays;
+        }
+
+        cumulativeUsed += requestDays;
+
+        // Poration for current month
+        const { totalCalendarDays, calendarDaysInTargetMonth } = getOverlapInfo(req.startDate, req.endDate, month, year);
+        if (calendarDaysInTargetMonth > 0) {
+          const ratio = calendarDaysInTargetMonth / totalCalendarDays;
+          calculatedPaidLeaves += paidDaysForRequest * ratio;
+          calculatedUnpaidLeaves += unpaidDaysForRequest * ratio;
+        }
+      }
+    }
+  }
+
+  return {
+    unpaidLeaves: Math.round(calculatedUnpaidLeaves * 100) / 100,
+    paidLeaves: Math.round(calculatedPaidLeaves * 100) / 100
+  };
+};
 
 exports.processPayroll = async (req, res) => {
   try {
@@ -257,6 +381,19 @@ exports.processPayroll = async (req, res) => {
     }
 
     const config = await getOrCreateConfig(req.user._id);
+    const settings = await Settings.findOne({ user: req.user._id });
+    
+    let hrmsAttendanceRecords = null;
+    let hrmsSyncError = null;
+
+    if (settings?.integration?.enabled) {
+      try {
+        hrmsAttendanceRecords = await hrmsSyncService.syncAttendanceFromExternal(req.user._id, month, year);
+      } catch (err) {
+        hrmsSyncError = err.message;
+      }
+    }
+
     const success = [];
     const errors = [];
 
@@ -287,6 +424,49 @@ exports.processPayroll = async (req, res) => {
           errors.push({ employeeId, employeeName, error: 'Payroll already exists for this period' });
           continue;
         }
+
+        // Precedence: manual overrides in request body take precedence
+        const hasManualAttendance = 
+          payload.workingDays !== undefined && payload.workingDays !== null ||
+          payload.paidDays !== undefined && payload.paidDays !== null ||
+          payload.unpaidLeaves !== undefined && payload.unpaidLeaves !== null ||
+          payload.paidLeaves !== undefined && payload.paidLeaves !== null;
+
+        let attendanceSource = 'default';
+        let attendanceWarning = null;
+
+        if (hasManualAttendance) {
+          attendanceSource = 'manual';
+        } else if (settings?.integration?.enabled) {
+          if (hrmsSyncError) {
+            attendanceWarning = `HRMS attendance sync failed: ${hrmsSyncError}`;
+            attendanceSource = 'default';
+          } else if (hrmsAttendanceRecords) {
+            const record = hrmsAttendanceRecords.find(r => 
+              String(r.employeeId) === String(employee._id) || 
+              String(r.employeeNumber).trim() === String(employee.employeeId).trim()
+            );
+            if (record) {
+              payload.workingDays = record.workingDays;
+              payload.paidDays = record.paidDays;
+              payload.unpaidLeaves = record.unpaidLeaves;
+              payload.paidLeaves = record.paidLeaves;
+              attendanceSource = 'hrms';
+            } else {
+              attendanceWarning = `Employee attendance record not found in HRMS response.`;
+              attendanceSource = 'default';
+            }
+          } else {
+            attendanceWarning = `HRMS integration enabled but no records returned.`;
+            attendanceSource = 'default';
+          }
+        } else {
+          attendanceSource = 'default';
+        }
+
+        // Fallbacks for default/failed sync (no leaves, default config working days)
+        if (payload.unpaidLeaves === undefined) payload.unpaidLeaves = 0;
+        if (payload.paidLeaves === undefined) payload.paidLeaves = 0;
 
         const attendance = buildAttendancePayload(payload, config.defaultWorkingDays);
         const adjustments = buildAdjustmentsPayload(employee, payload, month, year);
@@ -321,6 +501,17 @@ exports.processPayroll = async (req, res) => {
 
         const snapshot = buildPayrollSnapshot(employee, config, attendance, adjustments, month, year);
         const statusVal = saveAsDraft ? 'draft' : 'processed';
+
+        const notesList = [];
+        if (saveAsDraft) {
+          notesList.push('Payroll initialized as draft');
+        } else {
+          notesList.push('Payroll calculated and processed');
+        }
+        if (attendanceWarning) {
+          notesList.push(`[Warning] ${attendanceWarning}`);
+        }
+
         const payroll = await Payroll.create({
           user: req.user._id,
           employee: employee._id,
@@ -331,6 +522,7 @@ exports.processPayroll = async (req, res) => {
           paidDays: snapshot.paidDays,
           paidLeaves: snapshot.paidLeaves,
           unpaidLeaves: snapshot.unpaidLeaves,
+          attendanceSource,
           lop: snapshot.lop,
           hoursWorked: employee.payType === 'hourly' ? attendance.hoursWorked : 0,
           payType: employee.payType,
@@ -347,7 +539,7 @@ exports.processPayroll = async (req, res) => {
           approvalWorkflow: [{
             status: statusVal,
             actor: req.user._id,
-            remarks: saveAsDraft ? 'Payroll initialized as draft' : 'Payroll calculated and processed'
+            remarks: notesList.join('. ')
           }],
           employeeSnapshot: {
             employeeId: employee.employeeId,
@@ -360,6 +552,7 @@ exports.processPayroll = async (req, res) => {
             pfEnabled: snapshot.master.pfEnabled !== false,
             esiEnabled: snapshot.master.esiEnabled !== false,
             ptEnabled: snapshot.master.ptEnabled !== false,
+            ptState: employee.ptState || '',
             lwfEnabled: snapshot.master.lwfEnabled !== false,
             gratuityEnabled: snapshot.master.gratuityEnabled !== false,
             includePfInCTC: snapshot.master.includePfInCTC !== false,
@@ -380,7 +573,7 @@ exports.processPayroll = async (req, res) => {
             changedById: req.user._id,
             changedAt: new Date(),
             netSalary: snapshot.netSalary,
-            notes: saveAsDraft ? 'Payroll initialized as draft' : 'Payroll calculated and processed'
+            notes: notesList.join('. ')
           }]
         });
 
@@ -1111,6 +1304,7 @@ exports.generatePayslip = async (req, res) => {
       pfEnabled: payroll.employeeSnapshot?.pfEnabled,
       esiEnabled: payroll.employeeSnapshot?.esiEnabled,
       ptEnabled: payroll.employeeSnapshot?.ptEnabled,
+      ptState: payroll.employeeSnapshot?.ptState || '',
       lwfEnabled: payroll.employeeSnapshot?.lwfEnabled,
       gratuityEnabled: payroll.employeeSnapshot?.gratuityEnabled,
       includePfInCTC: payroll.employeeSnapshot?.includePfInCTC,
@@ -1625,6 +1819,7 @@ exports.receiveHrmsWebhook = async (req, res) => {
 
     const panNumber = employeeData.panNumber || employeeData.pan || employeeData.identity?.panNumber || '';
     const aadharNumber = employeeData.aadharNumber || employeeData.aadhar || employeeData.aadhaar || employeeData.identity?.aadhaarNumber || '';
+    const uanNumber = employeeData.uanNumber || employeeData.bankDetails?.uanNumber || '';
 
     const bankDetails = {
       accountName: (
@@ -1670,6 +1865,27 @@ exports.receiveHrmsWebhook = async (req, res) => {
       if (dept) departmentId = dept._id;
     }
 
+    const pfEnabled = employeeData.compensation?.pfEnabled !== undefined ? employeeData.compensation.pfEnabled : true;
+    const esiEnabled = employeeData.compensation?.esiEnabled !== undefined ? employeeData.compensation.esiEnabled : true;
+    const ptEnabled = employeeData.compensation?.ptEnabled !== undefined ? employeeData.compensation.ptEnabled : true;
+    const lwfEnabled = employeeData.compensation?.lwfEnabled !== undefined ? employeeData.compensation.lwfEnabled : true;
+    const gratuityEnabled = employeeData.compensation?.gratuityEnabled !== undefined ? employeeData.compensation.gratuityEnabled : true;
+    const includePfInCTC = employeeData.compensation?.includePfInCTC !== undefined ? employeeData.compensation.includePfInCTC : false;
+    const includeGratuityInCTC = employeeData.compensation?.includeGratuityInCTC !== undefined ? employeeData.compensation.includeGratuityInCTC : true;
+    const basicPercent = employeeData.compensation?.basicPercent !== undefined && employeeData.compensation.basicPercent !== null ? Number(employeeData.compensation.basicPercent) : null;
+    const hraPercent = employeeData.compensation?.hraPercent !== undefined && employeeData.compensation.hraPercent !== null ? Number(employeeData.compensation.hraPercent) : null;
+    const useSalaryComponents = employeeData.compensation?.useSalaryComponents !== undefined ? employeeData.compensation.useSalaryComponents : true;
+    const ptState = employeeData.compensation?.ptState || '';
+
+    const extBreakup = employeeData.compensation?.salaryBreakup || {};
+    const broadband = Number(extBreakup.broadband || employeeData.broadband || 0);
+    const petrol = Number(extBreakup.petrol || employeeData.petrol || 0);
+    const lta = Number(extBreakup.lta || employeeData.lta || 0);
+    const employerNPS = Number(extBreakup.employerNPS || extBreakup.nps || employeeData.employerNPS || employeeData.nps || 0);
+    const insuranceAmount = Number(extBreakup.insuranceAmount || extBreakup.insurance || employeeData.insuranceAmount || employeeData.insurance || 0);
+    const conveyance = Number(extBreakup.conveyance || employeeData.conveyance || 0);
+    const medicalAllowance = Number(extBreakup.medical || extBreakup.medicalAllowance || employeeData.medical || employeeData.medicalAllowance || 0);
+
     const query = { user: userId, employeeId: empId };
     const updateData = {
       employeeId: empId,
@@ -1685,8 +1901,25 @@ exports.receiveHrmsWebhook = async (req, res) => {
       monthlyCTC,
       panNumber,
       aadharNumber,
+      uanNumber,
       bankDetails,
-      department: departmentId
+      department: departmentId,
+      pfEnabled,
+      esiEnabled,
+      ptEnabled,
+      lwfEnabled,
+      gratuityEnabled,
+      includePfInCTC,
+      includeGratuityInCTC,
+      basicPercent,
+      hraPercent,
+      useSalaryComponents,
+      ptState,
+      broadband,
+      petrol,
+      lta,
+      employerNPS,
+      insuranceAmount
     };
 
     const config = await PayrollConfig.findOne({ user: userId }) || {};
@@ -1694,8 +1927,8 @@ exports.receiveHrmsWebhook = async (req, res) => {
     updateData.salaryStructure = {
       basic: master.basicMaster,
       hra: master.hraMaster,
-      conveyance: Number(employeeData.conveyance || employeeData.compensation?.conveyance) || 0,
-      medicalAllowance: Number(employeeData.medicalAllowance || employeeData.compensation?.medicalAllowance) || 0,
+      conveyance: conveyance,
+      medicalAllowance: medicalAllowance,
       specialAllowance: master.specialAllowance,
       grossSalary: master.grossSalary,
       ctc: master.grossTotalSalary,
