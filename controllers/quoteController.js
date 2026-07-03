@@ -162,7 +162,7 @@ exports.getQuotes = async (req, res) => {
       sortObj['createdAt'] = -1;
     }
 
-    const selectFields = exportAll ? '-items -terms -shippingAddress' : '-items -notes -terms -shippingAddress';
+    const selectFields = exportAll ? '' : '-items -notes -terms -shippingAddress';
     const quotesQuery = Quote.find(query)
       .select(selectFields)
       .populate('user', 'username')
