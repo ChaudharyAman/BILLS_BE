@@ -150,6 +150,7 @@ exports.syncEmployeesFromExternal = async (userId) => {
     let createdCount = 0;
     let updatedCount = 0;
     const errors = [];
+    const details = [];
 
     for (const extEmp of employeesList) {
       try {
@@ -413,12 +414,25 @@ exports.syncEmployeesFromExternal = async (userId) => {
           await Employee.create({ ...updateData, user: userId });
           createdCount += 1;
         }
+
+        details.push({
+          employeeId: empId,
+          name: `${extEmp.firstName || extEmp.personal?.firstName || 'Unknown'} ${extEmp.lastName || extEmp.personal?.lastName || 'Employee'}`.trim(),
+          email,
+          monthlyCTC: monthlyCTC,
+          roleTemplateName: PAY_TYPE_ROLE_MAP[hrmsPayType]?.name || PAY_TYPE_ROLE_MAP.salaried.name,
+          pfEnabled: resolvedPfEnabled,
+          esiEnabled: resolvedEsiEnabled,
+          flexiAmount: flexiAmount,
+          customAllowances: otherAllowances.map(a => `${a.name}: ₹${a.amount}`).join(', ') || 'None',
+          status: status === 'active' ? 'Active' : 'Inactive'
+        });
       } catch (err) {
         errors.push({ id: extEmp.employeeId || extEmp.emp_id || 'unknown', error: err.message });
       }
     }
 
-    return { created: createdCount, updated: updatedCount, errors };
+    return { created: createdCount, updated: updatedCount, errors, details };
   } catch (error) {
     console.error('hrmsSyncService syncEmployees error:', error.message);
     throw new Error(`Sync connection failed: ${error.message}`);
