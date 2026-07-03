@@ -262,6 +262,11 @@ EmployeeSchema.pre('save', async function() {
   const { buildMasterSalaryStructure } = require('../utils/payrollMath');
   const master = buildMasterSalaryStructure(this, config);
 
+  this.flexiAmount = master.flexi;
+  this.broadband = master.broadband;
+  this.petrol = master.petrol;
+  this.lta = master.lta;
+
   const salary = this.salaryStructure || {};
   salary.basic = master.basicMaster;
   salary.hra = master.hraMaster;
@@ -447,6 +452,10 @@ const applySalaryStructureUpdate = async function() {
       grossSalary: master.grossSalary,
       ctc: master.grossTotalSalary
     };
+    set.flexiAmount = master.flexi;
+    set.broadband = master.broadband;
+    set.petrol = master.petrol;
+    set.lta = master.lta;
   } else {
     if (!update.$set) update.$set = {};
     update.$set['salaryStructure.basic'] = master.basicMaster;
@@ -456,6 +465,10 @@ const applySalaryStructureUpdate = async function() {
     update.$set['salaryStructure.specialAllowance'] = master.specialAllowance;
     update.$set['salaryStructure.grossSalary'] = master.grossSalary;
     update.$set['salaryStructure.ctc'] = master.grossTotalSalary;
+    update.$set.flexiAmount = master.flexi;
+    update.$set.broadband = master.broadband;
+    update.$set.petrol = master.petrol;
+    update.$set.lta = master.lta;
   }
 
   if (set.deductions && typeof set.deductions === 'object') {
