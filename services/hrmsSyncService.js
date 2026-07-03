@@ -2,6 +2,7 @@ const axios = require('axios');
 const Settings = require('../models/Settings');
 const Employee = require('../models/Employee');
 const PayrollConfig = require('../models/PayrollConfig');
+const Role = require('../models/Role');
 const { decryptPayload } = require('../utils/cryptoHelper');
 const { buildMasterSalaryStructure } = require('../utils/payrollMath');
 
@@ -9,6 +10,109 @@ const { buildMasterSalaryStructure } = require('../utils/payrollMath');
 const isEncryptedPackage = (obj) => {
   return obj && typeof obj === 'object' && obj.data && obj.iv && obj.salt && obj.authTag;
 };
+
+/**
+ * HRMS payType -> MyBill Job Role Template definition.
+ *
+ * | HRMS payType | Template Name         | MyBill payType | useSalaryComponents | employmentType |
+ * |--------------|-----------------------|---------------|---------------------|----------------|
+ * | salaried     | EMPLOYEE (Salaried)   | salaried      | true                | full-time      |
+ * | hourly       | CONSULTANT (Hourly)   | hourly        | false               | contract       |
+ * | flat         | INTERN (Salaried)     | salaried      | false               | full-time      |
+ */
+const PAY_TYPE_ROLE_MAP = {
+  salaried: {
+    name: 'EMPLOYEE (Salaried)',
+    description: 'Standard salaried employee — full component breakdown and statutory deductions.',
+    payType: 'salaried',
+    employmentType: 'full-time',
+    useSalaryComponents: true,
+    pfEnabled: true,
+    esiEnabled: true,
+    ptEnabled: true,
+    lwfEnabled: true,
+    gratuityEnabled: true,
+    includePfInCTC: false,
+    includeGratuityInCTC: true,
+  },
+  hourly: {
+    name: 'CONSULTANT (Hourly)',
+    description: 'Hourly-rate contractor — no statutory deductions, billed on hours worked.',
+    payType: 'hourly',
+    employmentType: 'contract',
+    useSalaryComponents: false,
+    pfEnabled: false,
+    esiEnabled: false,
+    ptEnabled: false,
+    lwfEnabled: false,
+    gratuityEnabled: false,
+    includePfInCTC: false,
+    includeGratuityInCTC: false,
+  },
+  flat: {
+    name: 'INTERN (Salaried)',
+    description: 'Flat monthly salary — no component breakdown or deductions applied.',
+    payType: 'salaried',
+    employmentType: 'full-time',
+    useSalaryComponents: false,
+    pfEnabled: false,
+    esiEnabled: false,
+    ptEnabled: false,
+    lwfEnabled: false,
+    gratuityEnabled: false,
+    includePfInCTC: false,
+    includeGratuityInCTC: false,
+  },
+};
+
+/**
+ * Finds or creates the appropriate Job Role Template document for a given
+ * HRMS payType value ('salaried' | 'hourly' | 'flat'). Returns the Role _id
+ * and the resolved field overrides to apply to the Employee document.
+ */
+const resolvePayrollRoleTemplate = async (userId, hrmsPayType) => {
+  const key = String(hrmsPayType || 'salaried').toLowerCase();
+  const template = PAY_TYPE_ROLE_MAP[key] || PAY_TYPE_ROLE_MAP.salaried;
+
+  // Upsert: create if not exists, always keep description/flags up-to-date
+  const role = await Role.findOneAndUpdate(
+    { user: userId, name: template.name },
+    {
+      $setOnInsert: { user: userId },
+      $set: {
+        description: template.description,
+        payType: template.payType,
+        employmentType: template.employmentType,
+        useSalaryComponents: template.useSalaryComponents,
+        pfEnabled: template.pfEnabled,
+        esiEnabled: template.esiEnabled,
+        ptEnabled: template.ptEnabled,
+        lwfEnabled: template.lwfEnabled,
+        gratuityEnabled: template.gratuityEnabled,
+        includePfInCTC: template.includePfInCTC,
+        includeGratuityInCTC: template.includeGratuityInCTC,
+      }
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  return {
+    roleId: role._id,
+    payType: template.payType,
+    employmentType: template.employmentType,
+    useSalaryComponents: template.useSalaryComponents,
+    // For flat/hourly: disable all statutory deductions to match HRMS intent
+    pfEnabled: template.pfEnabled,
+    esiEnabled: template.esiEnabled,
+    ptEnabled: template.ptEnabled,
+    lwfEnabled: template.lwfEnabled,
+    gratuityEnabled: template.gratuityEnabled,
+    includePfInCTC: template.includePfInCTC,
+    includeGratuityInCTC: template.includeGratuityInCTC,
+  };
+};
+
+exports.resolvePayrollRoleTemplate = resolvePayrollRoleTemplate;
 
 /**
  * Fetch and upsert employee profiles from external multi-tenant HRMS.
@@ -190,6 +294,8 @@ exports.syncEmployeesFromExternal = async (userId) => {
           'pfenabled', 'esienabled', 'ptenabled', 'lwfenabled', 'gratuityenabled',
           'includepfinctc', 'includegratuityinctc', 'basicpercent', 'hrapercent',
           'usesalarycomponents', 'ptstate',
+          // payType is a configuration field, not an allowance
+          'paytype',
           // Computed values stored by HRMS — ignore on sync (not allowances)
           'annualctc', 'monthlytc', 'monthlyctc', 'monthlyGross', 'monthlygross',
           'specialallowance', 'pfemployer', 'pfemployee', 'gratuity',
@@ -210,6 +316,23 @@ exports.syncEmployeesFromExternal = async (userId) => {
           }
         }
 
+        // Resolve the HRMS payType to a MyBill Job Role Template.
+        // payType is stored in the HRMS salaryBreakup Map as the key 'payType'.
+        const hrmsPayType = String(extBreakup.payType || extBreakup.paytype || 'salaried').toLowerCase();
+        const roleTemplate = await resolvePayrollRoleTemplate(userId, hrmsPayType);
+
+        // When the HRMS explicitly provided per-employee statutory flags, honour them
+        // over the template defaults (the template sets the structural type, but the
+        // admin may have individually toggled PF/ESI for this specific employee).
+        const resolvedPfEnabled = hrmsPayType === 'salaried' ? pfEnabled : roleTemplate.pfEnabled;
+        const resolvedEsiEnabled = hrmsPayType === 'salaried' ? esiEnabled : roleTemplate.esiEnabled;
+        const resolvedPtEnabled = hrmsPayType === 'salaried' ? ptEnabled : roleTemplate.ptEnabled;
+        const resolvedLwfEnabled = hrmsPayType === 'salaried' ? lwfEnabled : roleTemplate.lwfEnabled;
+        const resolvedGratuityEnabled = hrmsPayType === 'salaried' ? gratuityEnabled : roleTemplate.gratuityEnabled;
+        const resolvedIncludePfInCTC = hrmsPayType === 'salaried' ? includePfInCTC : roleTemplate.includePfInCTC;
+        const resolvedIncludeGratuityInCTC = hrmsPayType === 'salaried' ? includeGratuityInCTC : roleTemplate.includeGratuityInCTC;
+        const resolvedUseSalaryComponents = hrmsPayType === 'salaried' ? useSalaryComponents : roleTemplate.useSalaryComponents;
+
         const query = { user: userId, employeeId: empId };
         const updateData = {
           employeeId: empId,
@@ -228,16 +351,21 @@ exports.syncEmployeesFromExternal = async (userId) => {
           uanNumber,
           bankDetails,
           department: departmentId,
-          pfEnabled,
-          esiEnabled,
-          ptEnabled,
-          lwfEnabled,
-          gratuityEnabled,
-          includePfInCTC,
-          includeGratuityInCTC,
+          // Job Role Template assignment
+          role: roleTemplate.roleId,
+          payType: roleTemplate.payType,
+          employmentType: roleTemplate.employmentType,
+          // Statutory flags — HRMS-level overrides respected for salaried; template governs otherwise
+          pfEnabled: resolvedPfEnabled,
+          esiEnabled: resolvedEsiEnabled,
+          ptEnabled: resolvedPtEnabled,
+          lwfEnabled: resolvedLwfEnabled,
+          gratuityEnabled: resolvedGratuityEnabled,
+          includePfInCTC: resolvedIncludePfInCTC,
+          includeGratuityInCTC: resolvedIncludeGratuityInCTC,
           basicPercent,
           hraPercent,
-          useSalaryComponents,
+          useSalaryComponents: resolvedUseSalaryComponents,
           ptState,
           broadband,
           petrol,

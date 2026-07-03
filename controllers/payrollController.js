@@ -10,6 +10,7 @@ const Loan = require('../models/Loan');
 const ReimbursementClaim = require('../models/ReimbursementClaim');
 const AuditLog = require('../models/AuditLog');
 const hrmsSyncService = require('../services/hrmsSyncService');
+const { resolvePayrollRoleTemplate } = hrmsSyncService;
 const {
   roundAmount,
   buildMasterSalaryStructure,
@@ -1901,6 +1902,8 @@ exports.receiveHrmsWebhook = async (req, res) => {
       'pfenabled', 'esienabled', 'ptenabled', 'lwfenabled', 'gratuityenabled',
       'includepfinctc', 'includegratuityinctc', 'basicpercent', 'hrapercent',
       'usesalarycomponents', 'ptstate',
+      // payType is a configuration field, not an allowance
+      'paytype',
       // Computed values stored by HRMS — ignore on sync (not allowances)
       'annualctc', 'monthlytc', 'monthlyctc', 'monthlygross', 'monthlyGross',
       'pfemployer', 'pfemployee', 'gratuity',
@@ -1921,6 +1924,23 @@ exports.receiveHrmsWebhook = async (req, res) => {
       }
     }
 
+    // Resolve the HRMS payType to a MyBill Job Role Template.
+    // payType is stored in the HRMS salaryBreakup Map as the key 'payType'.
+    const hrmsPayType = String(extBreakup.payType || extBreakup.paytype || 'salaried').toLowerCase();
+    const roleTemplate = await resolvePayrollRoleTemplate(userId, hrmsPayType);
+
+    // When the HRMS explicitly provided per-employee statutory flags, honour them
+    // over the template defaults (the template sets the structural type, but the
+    // admin may have individually toggled PF/ESI for this specific employee).
+    const resolvedPfEnabled = hrmsPayType === 'salaried' ? pfEnabled : roleTemplate.pfEnabled;
+    const resolvedEsiEnabled = hrmsPayType === 'salaried' ? esiEnabled : roleTemplate.esiEnabled;
+    const resolvedPtEnabled = hrmsPayType === 'salaried' ? ptEnabled : roleTemplate.ptEnabled;
+    const resolvedLwfEnabled = hrmsPayType === 'salaried' ? lwfEnabled : roleTemplate.lwfEnabled;
+    const resolvedGratuityEnabled = hrmsPayType === 'salaried' ? gratuityEnabled : roleTemplate.gratuityEnabled;
+    const resolvedIncludePfInCTC = hrmsPayType === 'salaried' ? includePfInCTC : roleTemplate.includePfInCTC;
+    const resolvedIncludeGratuityInCTC = hrmsPayType === 'salaried' ? includeGratuityInCTC : roleTemplate.includeGratuityInCTC;
+    const resolvedUseSalaryComponents = hrmsPayType === 'salaried' ? useSalaryComponents : roleTemplate.useSalaryComponents;
+
     const query = { user: userId, employeeId: empId };
     const updateData = {
       employeeId: empId,
@@ -1939,16 +1959,21 @@ exports.receiveHrmsWebhook = async (req, res) => {
       uanNumber,
       bankDetails,
       department: departmentId,
-      pfEnabled,
-      esiEnabled,
-      ptEnabled,
-      lwfEnabled,
-      gratuityEnabled,
-      includePfInCTC,
-      includeGratuityInCTC,
+      // Job Role Template assignment
+      role: roleTemplate.roleId,
+      payType: roleTemplate.payType,
+      employmentType: roleTemplate.employmentType,
+      // Statutory flags — HRMS-level overrides respected for salaried; template governs otherwise
+      pfEnabled: resolvedPfEnabled,
+      esiEnabled: resolvedEsiEnabled,
+      ptEnabled: resolvedPtEnabled,
+      lwfEnabled: resolvedLwfEnabled,
+      gratuityEnabled: resolvedGratuityEnabled,
+      includePfInCTC: resolvedIncludePfInCTC,
+      includeGratuityInCTC: resolvedIncludeGratuityInCTC,
       basicPercent,
       hraPercent,
-      useSalaryComponents,
+      useSalaryComponents: resolvedUseSalaryComponents,
       ptState,
       broadband,
       petrol,
