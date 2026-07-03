@@ -425,6 +425,17 @@ exports.syncEmployeesFromExternal = async (userId) => {
 
 /**
  * Fetch monthly attendance summary from external multi-tenant Attendance system.
+ *
+ * The HRMS now returns per-employee:
+ *   workingDays   - total schedulable working days for the employee this month
+ *                   (excludes weekoffs, holidays, and days before joining)
+ *   presentDays   - actual PRESENT + HALF_DAY count from Attendance records
+ *   absentDays    - workingDays not covered by presence or approved leaves
+ *   paidLeaves    - approved paid leave days in the month
+ *   unpaidLeaves  - approved unpaid leave days in the month
+ *
+ * paidDays (for payroll proration) = presentDays + paidLeaves
+ * This is clamped to [0, workingDays].
  */
 exports.syncAttendanceFromExternal = async (userId, month, year) => {
   const settings = await Settings.findOne({ user: userId });
@@ -453,22 +464,58 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
     const attendanceRecords = Array.isArray(rawData) ? rawData : (rawData?.attendance || []);
     const localEmployees = await Employee.find({ user: userId }).select('_id employeeId');
 
+    // Default working days fallback (used only when workingDays is completely absent from HRMS)
+    const defaultWorkingDays = settings.defaultWorkingDays || 26;
+
     const mapped = [];
     localEmployees.forEach(emp => {
-      const record = attendanceRecords.find(r => String(r.employeeId || r.emp_id || '').trim() === String(emp.employeeId).trim());
+      const record = attendanceRecords.find(
+        r => String(r.employeeId || r.emp_id || '').trim() === String(emp.employeeId).trim()
+      );
+
       if (record) {
-        const totalWorkingDays = Number(record.workingDays || record.total_working_days) || settings.defaultWorkingDays || 26;
-        const unpaidLeaves = Number(record.unpaidLeaves || record.unpaid_leaves) || 0;
-        const paidLeaves = Number(record.paidLeaves || record.paid_leaves) || 0;
-        const paidDays = Math.max(0, totalWorkingDays - unpaidLeaves);
+        // Use explicit !== undefined to avoid treating 0 as "missing"
+        const workingDays = record.workingDays !== undefined
+          ? Number(record.workingDays)
+          : defaultWorkingDays;
+
+        // presentDays: newly named field; fall back to legacy 'workingDays' if HRMS is old
+        const presentDays = record.presentDays !== undefined
+          ? Number(record.presentDays)
+          : (record.workingDays !== undefined ? Number(record.workingDays) : 0);
+
+        const unpaidLeaves = Number(record.unpaidLeaves || record.unpaid_leaves || 0);
+        const paidLeaves = Number(record.paidLeaves || record.paid_leaves || 0);
+        const absentDays = record.absentDays !== undefined
+          ? Number(record.absentDays)
+          : Math.max(workingDays - presentDays - paidLeaves - unpaidLeaves, 0);
+
+        // paidDays = days the employee is entitled to be paid for
+        // = present days + paid leave days, clamped to total working days
+        const paidDays = Math.min(Math.max(presentDays + paidLeaves, 0), workingDays);
 
         mapped.push({
           employeeId: emp._id,
           employeeNumber: emp.employeeId,
-          workingDays: totalWorkingDays,
-          paidDays: paidDays,
-          unpaidLeaves: unpaidLeaves,
-          paidLeaves: paidLeaves
+          workingDays,
+          presentDays,
+          absentDays,
+          paidDays,
+          unpaidLeaves,
+          paidLeaves
+        });
+      } else {
+        // Employee exists in MyBill but has NO attendance record in HRMS.
+        // This means all their applicable days are absent — do NOT default to fully paid.
+        mapped.push({
+          employeeId: emp._id,
+          employeeNumber: emp.employeeId,
+          workingDays: defaultWorkingDays,
+          presentDays: 0,
+          absentDays: defaultWorkingDays,
+          paidDays: 0,
+          unpaidLeaves: 0,
+          paidLeaves: 0
         });
       }
     });

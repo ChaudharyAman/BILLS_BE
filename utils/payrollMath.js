@@ -815,8 +815,24 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
 
   const requestedWorkingDays = Number(attendance?.workingDays);
   const workingDays = Math.max(requestedWorkingDays || config.defaultWorkingDays, 1);
-  const rawPaidDays = isHourly ? workingDays : Number(attendance?.paidDays ?? attendance?.presentDays ?? workingDays);
-  const paidDays = isHourly ? workingDays : roundAmount(clamp(rawPaidDays || workingDays, 0, workingDays));
+  // Resolve paid days from attendance.
+  // Explicit undefined/null check is required so that a genuine 0 (fully absent employee)
+  // is NOT replaced by `workingDays` (which would make them fully paid).
+  const rawPaidDays = isHourly
+    ? workingDays
+    : (attendance?.paidDays !== undefined && attendance?.paidDays !== null
+        ? Number(attendance.paidDays)
+        : (attendance?.presentDays !== undefined && attendance?.presentDays !== null
+            ? Number(attendance.presentDays)
+            : workingDays));
+  const paidDays = isHourly
+    ? workingDays
+    : roundAmount(clamp(
+        // Do NOT fall back to workingDays when rawPaidDays is 0 — that is a valid absence
+        rawPaidDays !== null && rawPaidDays !== undefined ? rawPaidDays : workingDays,
+        0,
+        workingDays
+      ));
   const prorate = isHourly ? 1.0 : Math.min(paidDays / workingDays, 1);
   const lop = isHourly ? 0 : roundAmount(Math.max(workingDays - paidDays, 0));
 
@@ -1251,7 +1267,16 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
   const hoursWorked = isHourly ? (Number(adjustments?.hoursWorked) || Number(employee.hoursWorked) || 0) : 0;
 
   const workingDays = isHourly ? totalDaysInMonth : Math.max(Number(workingDaysCount) || config.defaultWorkingDays, 1);
-  const paidDays = isHourly ? workingDays : Math.max(Math.min(Number(paidDaysCount) ?? workingDays, workingDays), 0);
+  // Explicit null/undefined guard: a paidDaysCount of 0 is a valid "fully absent" value.
+  const paidDays = isHourly
+    ? workingDays
+    : Math.max(
+        Math.min(
+          paidDaysCount !== null && paidDaysCount !== undefined ? Number(paidDaysCount) : workingDays,
+          workingDays
+        ),
+        0
+      );
   const prorate = isHourly ? 1.0 : (workingDays > 0 ? paidDays / workingDays : 1);
 
   const lopStrategy = adjustments.lopStrategy || 'proportional';
