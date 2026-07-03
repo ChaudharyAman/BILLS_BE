@@ -297,11 +297,13 @@ exports.syncEmployeesFromExternal = async (userId) => {
           // payType is a configuration field, not an allowance
           'paytype',
           // Computed values stored by HRMS — ignore on sync (not allowances)
-          'annualctc', 'monthlytc', 'monthlyctc', 'monthlyGross', 'monthlygross',
+          'annualctc', 'monthlyctc', 'monthlygross', 'monthlygross',
           'specialallowance', 'pfemployer', 'pfemployee', 'gratuity',
           'lwfemployer', 'lwfemployee', 'esiemployer', 'esiemployee',
-          'professionaltax', 'tds', 'nettakehome'
+          'professionaltax', 'professionaltaxval', 'tds', 'nettakehome',
+          'flatsalary'
         ]);
+
 
         const otherAllowances = [];
         for (const [key, value] of Object.entries(extBreakup)) {
