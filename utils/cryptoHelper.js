@@ -45,15 +45,22 @@ exports.decryptPayload = (encryptedPackage, secret) => {
   try {
     const { salt, iv, authTag, data } = encryptedPackage;
 
-    const saltBuf = Buffer.from(salt, 'hex');
-    const ivBuf = Buffer.from(iv, 'hex');
-    const authTagBuf = Buffer.from(authTag, 'hex');
+    const isHex = (str) => typeof str === 'string' && /^[0-9a-fA-F]+$/.test(str);
+
+    const saltEnc = isHex(salt) ? 'hex' : 'base64';
+    const ivEnc = isHex(iv) ? 'hex' : 'base64';
+    const authTagEnc = isHex(authTag) ? 'hex' : 'base64';
+    const dataEnc = isHex(data) ? 'hex' : 'base64';
+
+    const saltBuf = Buffer.from(salt, saltEnc);
+    const ivBuf = Buffer.from(iv, ivEnc);
+    const authTagBuf = Buffer.from(authTag, authTagEnc);
 
     const key = deriveKey(secret, saltBuf);
     const decipher = crypto.createDecipheriv(ALGORITHM, key, ivBuf);
     decipher.setAuthTag(authTagBuf);
 
-    let decrypted = decipher.update(data, 'hex', 'utf8');
+    let decrypted = decipher.update(data, dataEnc, 'utf8');
     decrypted += decipher.final('utf8');
 
     try {
@@ -90,9 +97,8 @@ exports.verifyMultiTenantWebhook = async (req, res, next) => {
 
     const webhookSecret = settings.integration.webhookSecret || process.env.SHARED_WEBHOOK_SECRET || 'default-webhook-secret';
     
-    // Stringify req.body or use raw body if available.
-    // If payload is encrypted, req.body itself contains the encrypted package (salt, iv, authTag, data).
-    const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    // Use rawBody buffer if available to avoid stringify mismatches, fallback to req.body stringify
+    const rawBody = req.rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
 
     const computedSignature = crypto
       .createHmac('sha256', webhookSecret)

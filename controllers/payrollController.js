@@ -1884,7 +1884,32 @@ exports.receiveHrmsWebhook = async (req, res) => {
     const employerNPS = Number(extBreakup.employerNPS || extBreakup.nps || employeeData.employerNPS || employeeData.nps || 0);
     const insuranceAmount = Number(extBreakup.insuranceAmount || extBreakup.insurance || employeeData.insuranceAmount || employeeData.insurance || 0);
     const conveyance = Number(extBreakup.conveyance || employeeData.conveyance || 0);
-    const medicalAllowance = Number(extBreakup.medical || extBreakup.medicalAllowance || employeeData.medical || employeeData.medicalAllowance || 0);
+    const medicalAllowance = Number(extBreakup.medical || employeeData.medicalAllowance || employeeData.medical || employeeData.medicalAllowance || 0);
+
+    const basic = Number(extBreakup.basic || 0);
+    const hra = Number(extBreakup.hra || 0);
+
+    const standardBreakupKeys = new Set([
+      'basic', 'hra', 'conveyance', 'medical', 'medicalallowance',
+      'broadband', 'petrol', 'lta', 'nps', 'employernps',
+      'insurance', 'insuranceamount', 'specialallowance', 'special',
+      'pfenabled', 'esienabled', 'ptenabled', 'lwfenabled', 'gratuityenabled',
+      'includepfinctc', 'includegratuityinctc', 'basicpercent', 'hrapercent',
+      'usesalarycomponents', 'ptstate'
+    ]);
+
+    const otherAllowances = [];
+    for (const [key, value] of Object.entries(extBreakup)) {
+      if (!standardBreakupKeys.has(key.toLowerCase())) {
+        const numVal = Number(value);
+        if (Number.isFinite(numVal) && numVal > 0) {
+          otherAllowances.push({
+            name: key,
+            amount: numVal
+          });
+        }
+      }
+    }
 
     const query = { user: userId, employeeId: empId };
     const updateData = {
@@ -1919,7 +1944,16 @@ exports.receiveHrmsWebhook = async (req, res) => {
       petrol,
       lta,
       employerNPS,
-      insuranceAmount
+      insuranceAmount,
+      basic,
+      hra,
+      salaryStructure: {
+        basic,
+        hra,
+        conveyance,
+        medicalAllowance,
+        otherAllowances
+      }
     };
 
     const config = await PayrollConfig.findOne({ user: userId }) || {};
@@ -1932,7 +1966,7 @@ exports.receiveHrmsWebhook = async (req, res) => {
       specialAllowance: master.specialAllowance,
       grossSalary: master.grossSalary,
       ctc: master.grossTotalSalary,
-      otherAllowances: []
+      otherAllowances: otherAllowances
     };
 
     const existingEmp = await Employee.findOne(query);

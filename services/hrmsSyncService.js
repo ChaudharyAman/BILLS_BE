@@ -175,6 +175,31 @@ exports.syncEmployeesFromExternal = async (userId) => {
         const conveyance = Number(extBreakup.conveyance || extEmp.conveyance || 0);
         const medicalAllowance = Number(extBreakup.medical || extBreakup.medicalAllowance || extEmp.medical || extEmp.medicalAllowance || 0);
 
+        const basic = Number(extBreakup.basic || 0);
+        const hra = Number(extBreakup.hra || 0);
+
+        const standardBreakupKeys = new Set([
+          'basic', 'hra', 'conveyance', 'medical', 'medicalallowance',
+          'broadband', 'petrol', 'lta', 'nps', 'employernps',
+          'insurance', 'insuranceamount', 'specialallowance', 'special',
+          'pfenabled', 'esienabled', 'ptenabled', 'lwfenabled', 'gratuityenabled',
+          'includepfinctc', 'includegratuityinctc', 'basicpercent', 'hrapercent',
+          'usesalarycomponents', 'ptstate'
+        ]);
+
+        const otherAllowances = [];
+        for (const [key, value] of Object.entries(extBreakup)) {
+          if (!standardBreakupKeys.has(key.toLowerCase())) {
+            const numVal = Number(value);
+            if (Number.isFinite(numVal) && numVal > 0) {
+              otherAllowances.push({
+                name: key,
+                amount: numVal
+              });
+            }
+          }
+        }
+
         const query = { user: userId, employeeId: empId };
         const updateData = {
           employeeId: empId,
@@ -208,7 +233,16 @@ exports.syncEmployeesFromExternal = async (userId) => {
           petrol,
           lta,
           employerNPS,
-          insuranceAmount
+          insuranceAmount,
+          basic,
+          hra,
+          salaryStructure: {
+            basic,
+            hra,
+            conveyance,
+            medicalAllowance,
+            otherAllowances
+          }
         };
 
         // Determine / update salary structure
@@ -221,7 +255,7 @@ exports.syncEmployeesFromExternal = async (userId) => {
           specialAllowance: master.specialAllowance,
           grossSalary: master.grossSalary,
           ctc: master.grossTotalSalary,
-          otherAllowances: []
+          otherAllowances: otherAllowances
         };
 
         const existingEmp = await Employee.findOne(query);

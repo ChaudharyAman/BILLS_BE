@@ -300,10 +300,10 @@ const applySalaryStructureUpdate = async function() {
   );
   if (!hasSalaryUpdate) return;
 
-  const docId = this.getQuery()._id;
+  const query = this.getQuery();
   let currentDoc = {};
-  if (mongoose.Types.ObjectId.isValid(String(docId))) {
-    currentDoc = await this.model.findOne({ _id: docId }).lean() || {};
+  if (query) {
+    currentDoc = await this.model.findOne(query).lean() || {};
   }
 
   // Load Role if role is set or changed
