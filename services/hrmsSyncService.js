@@ -65,6 +65,18 @@ const PAY_TYPE_ROLE_MAP = {
   },
 };
 
+const DEFAULT_SALARY_COMPONENTS = [
+  { id: 'basic',                    name: 'Basic Salary',                  type: 'earning',   taxable: true,  linkedTo: 'ctc_percent',   linkValue: 0.5,           frequency: 'monthly' },
+  { id: 'hra',                      name: 'HRA',                           type: 'earning',   taxable: false, linkedTo: 'basic_percent', linkValue: 0.5,             frequency: 'monthly' },
+  { id: 'special',                  name: 'Special Allowance',             type: 'earning',   taxable: true,  linkedTo: 'remainder',     linkValue: 0,             frequency: 'monthly' },
+  { id: 'flexi',                    name: 'Flexi Allowance',               type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+  { id: 'broadband',                name: 'Broadband',                     type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+  { id: 'petrol',                   name: 'Petrol',                        type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+  { id: 'lta',                      name: 'LTA',                           type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+  { id: 'conveyance',               name: 'Conveyance',                    type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+  { id: 'medical',                  name: 'Medical Allowance',             type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
+];
+
 /**
  * Finds or creates the appropriate Job Role Template document for a given
  * HRMS payType value ('salaried' | 'hourly' | 'flat'). Returns the Role _id
@@ -272,39 +284,75 @@ exports.syncEmployeesFromExternal = async (userId) => {
         }
 
         const extBreakup = extEmp.compensation?.salaryBreakup || {};
-        const broadband = Number(extBreakup.broadband || extEmp.broadband || 0);
-        const petrol = Number(extBreakup.petrol || extEmp.petrol || 0);
-        const lta = Number(extBreakup.lta || extEmp.lta || 0);
-        const employerNPS = Number(extBreakup.employerNPS || extBreakup.nps || extEmp.employerNPS || extEmp.nps || 0);
-        const insuranceAmount = Number(extBreakup.insuranceAmount || extBreakup.insurance || extEmp.insuranceAmount || extEmp.insurance || 0);
-        const conveyance = Number(extBreakup.conveyance || extEmp.conveyance || 0);
-        // medicalAllowance: HRMS stores as 'medical' (component id) or 'medicalAllowance'
-        const medicalAllowance = Number(extBreakup.medical || extBreakup.medicalAllowance || extEmp.medical || extEmp.medicalAllowance || 0);
-        // flexiAmount: HRMS stores as 'flexi' (component id) or 'flexiAllowance'
-        const flexiAmount = Number(extBreakup.flexi || extBreakup.flexiAllowance || extEmp.flexiAmount || extEmp.flexi || 0);
 
-        const basic = Number(extBreakup.basic || 0);
-        const hra = Number(extBreakup.hra || 0);
-
-        // Keys that are handled as named fields — must not appear in otherAllowances
-        const standardBreakupKeys = new Set([
-          'basic', 'hra', 'conveyance', 'medical', 'medicalallowance',
-          'flexi', 'flexiallowance', 'flexiamount',
-          'broadband', 'petrol', 'lta', 'nps', 'employernps',
-          'insurance', 'insuranceamount', 'specialallowance', 'special',
+        // Base standard keys that are NOT custom/other allowances (infrastructure/statutory flags/computed values)
+        const baseStandardKeys = new Set([
           'pfenabled', 'esienabled', 'ptenabled', 'lwfenabled', 'gratuityenabled',
           'includepfinctc', 'includegratuityinctc', 'basicpercent', 'hrapercent',
-          'usesalarycomponents', 'ptstate',
-          // payType is a configuration field, not an allowance
-          'paytype',
-          // Computed values stored by HRMS — ignore on sync (not allowances)
-          'annualctc', 'monthlyctc', 'monthlygross', 'monthlygross',
-          'specialallowance', 'pfemployer', 'pfemployee', 'gratuity',
+          'usesalarycomponents', 'ptstate', 'paytype',
+          'annualctc', 'monthlyctc', 'monthlygross', 'pfemployer', 'pfemployee', 'gratuity',
           'lwfemployer', 'lwfemployee', 'esiemployer', 'esiemployee',
-          'professionaltax', 'professionaltaxval', 'tds', 'nettakehome',
-          'flatsalary'
+          'professionaltax', 'professionaltaxval', 'tds', 'nettakehome', 'flatsalary'
         ]);
 
+        const standardBreakupKeys = new Set(baseStandardKeys);
+        const activeComponents = config?.salaryComponents && config.salaryComponents.length > 0 ? config.salaryComponents : DEFAULT_SALARY_COMPONENTS;
+
+        // Add config-defined components to standardBreakupKeys dynamically
+        activeComponents.forEach(c => {
+          if (!c.id) return;
+          standardBreakupKeys.add(c.id.toLowerCase());
+          // Add standard spelling variations of config-defined components
+          if (c.id === 'medical') {
+            standardBreakupKeys.add('medicalallowance');
+          } else if (c.id === 'flexi') {
+            standardBreakupKeys.add('flexiallowance');
+            standardBreakupKeys.add('flexiamount');
+          } else if (c.id === 'default_insurance_amount' || c.id === 'insurance') {
+            standardBreakupKeys.add('default_insurance_amount');
+            standardBreakupKeys.add('insurance');
+            standardBreakupKeys.add('insuranceamount');
+          } else if (c.id === 'special' || c.id === 'specialAllowance') {
+            standardBreakupKeys.add('specialallowance');
+            standardBreakupKeys.add('special');
+          }
+        });
+
+        // Dynamic helper to extract active component values from the HRMS payload
+        const getComponentValue = (compId) => {
+          const isActive = activeComponents.some(c => c.id === compId);
+          if (!isActive) return 0;
+
+          if (compId === 'basic') return Number(extBreakup.basic || extEmp.basic || 0);
+          if (compId === 'hra') return Number(extBreakup.hra || extEmp.hra || 0);
+          if (compId === 'conveyance') return Number(extBreakup.conveyance || extEmp.conveyance || 0);
+          if (compId === 'medical') {
+            return Number(extBreakup.medical || extBreakup.medicalAllowance || extEmp.medical || extEmp.medicalAllowance || 0);
+          }
+          if (compId === 'flexi') {
+            return Number(extBreakup.flexi || extBreakup.flexiAllowance || extEmp.flexiAmount || extEmp.flexi || 0);
+          }
+          if (compId === 'broadband') return Number(extBreakup.broadband || extEmp.broadband || 0);
+          if (compId === 'petrol') return Number(extBreakup.petrol || extEmp.petrol || 0);
+          if (compId === 'lta') return Number(extBreakup.lta || extEmp.lta || 0);
+
+          // Fallback lookup by compId (case-insensitive) in extBreakup
+          const match = Object.entries(extBreakup).find(([k]) => k.toLowerCase() === compId.toLowerCase());
+          return match ? Number(match[1]) || 0 : 0;
+        };
+
+        const basic = getComponentValue('basic');
+        const hra = getComponentValue('hra');
+        const conveyance = getComponentValue('conveyance');
+        const medicalAllowance = getComponentValue('medical');
+        const flexiAmount = getComponentValue('flexi');
+        const broadband = getComponentValue('broadband');
+        const petrol = getComponentValue('petrol');
+        const lta = getComponentValue('lta');
+
+        // Standalone fields in MyBills calculator (always parsed if available in payload)
+        const employerNPS = Number(extBreakup.employerNPS || extBreakup.nps || extEmp.employerNPS || extEmp.nps || 0);
+        const insuranceAmount = Number(extBreakup.insuranceAmount || extBreakup.insurance || extEmp.insuranceAmount || extEmp.insurance || 0);
 
         const otherAllowances = [];
         for (const [key, value] of Object.entries(extBreakup)) {
