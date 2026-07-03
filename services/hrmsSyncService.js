@@ -173,18 +173,28 @@ exports.syncEmployeesFromExternal = async (userId) => {
         const employerNPS = Number(extBreakup.employerNPS || extBreakup.nps || extEmp.employerNPS || extEmp.nps || 0);
         const insuranceAmount = Number(extBreakup.insuranceAmount || extBreakup.insurance || extEmp.insuranceAmount || extEmp.insurance || 0);
         const conveyance = Number(extBreakup.conveyance || extEmp.conveyance || 0);
+        // medicalAllowance: HRMS stores as 'medical' (component id) or 'medicalAllowance'
         const medicalAllowance = Number(extBreakup.medical || extBreakup.medicalAllowance || extEmp.medical || extEmp.medicalAllowance || 0);
+        // flexiAmount: HRMS stores as 'flexi' (component id) or 'flexiAllowance'
+        const flexiAmount = Number(extBreakup.flexi || extBreakup.flexiAllowance || extEmp.flexiAmount || extEmp.flexi || 0);
 
         const basic = Number(extBreakup.basic || 0);
         const hra = Number(extBreakup.hra || 0);
 
+        // Keys that are handled as named fields — must not appear in otherAllowances
         const standardBreakupKeys = new Set([
           'basic', 'hra', 'conveyance', 'medical', 'medicalallowance',
+          'flexi', 'flexiallowance', 'flexiamount',
           'broadband', 'petrol', 'lta', 'nps', 'employernps',
           'insurance', 'insuranceamount', 'specialallowance', 'special',
           'pfenabled', 'esienabled', 'ptenabled', 'lwfenabled', 'gratuityenabled',
           'includepfinctc', 'includegratuityinctc', 'basicpercent', 'hrapercent',
-          'usesalarycomponents', 'ptstate'
+          'usesalarycomponents', 'ptstate',
+          // Computed values stored by HRMS — ignore on sync (not allowances)
+          'annualctc', 'monthlytc', 'monthlyctc', 'monthlyGross', 'monthlygross',
+          'specialallowance', 'pfemployer', 'pfemployee', 'gratuity',
+          'lwfemployer', 'lwfemployee', 'esiemployer', 'esiemployee',
+          'professionaltax', 'tds', 'nettakehome'
         ]);
 
         const otherAllowances = [];
@@ -234,6 +244,7 @@ exports.syncEmployeesFromExternal = async (userId) => {
           lta,
           employerNPS,
           insuranceAmount,
+          flexiAmount,
           basic,
           hra,
           salaryStructure: {
@@ -245,7 +256,13 @@ exports.syncEmployeesFromExternal = async (userId) => {
           }
         };
 
-        // Determine / update salary structure
+        // Compute the final salary structure using all extracted HRMS values.
+        // buildMasterSalaryStructure reads:
+        //   source.basic / source.salaryStructure.basic  → basicMaster (if useSalaryComponents)
+        //   source.hra   / source.salaryStructure.hra    → hraMaster   (if useSalaryComponents)
+        //   source.flexiAmount                           → flexi
+        //   source.salaryStructure.conveyance            → conveyance
+        //   source.salaryStructure.medicalAllowance      → medicalAllowance
         const master = buildMasterSalaryStructure(updateData, config);
         updateData.salaryStructure = {
           basic: master.basicMaster,

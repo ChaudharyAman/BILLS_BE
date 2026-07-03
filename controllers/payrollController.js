@@ -1884,18 +1884,28 @@ exports.receiveHrmsWebhook = async (req, res) => {
     const employerNPS = Number(extBreakup.employerNPS || extBreakup.nps || employeeData.employerNPS || employeeData.nps || 0);
     const insuranceAmount = Number(extBreakup.insuranceAmount || extBreakup.insurance || employeeData.insuranceAmount || employeeData.insurance || 0);
     const conveyance = Number(extBreakup.conveyance || employeeData.conveyance || 0);
-    const medicalAllowance = Number(extBreakup.medical || employeeData.medicalAllowance || employeeData.medical || employeeData.medicalAllowance || 0);
+    // medicalAllowance: HRMS stores as 'medical' (component id) or 'medicalAllowance'
+    const medicalAllowance = Number(extBreakup.medical || extBreakup.medicalAllowance || employeeData.medical || employeeData.medicalAllowance || 0);
+    // flexiAmount: HRMS stores as 'flexi' (component id) or 'flexiAllowance'
+    const flexiAmount = Number(extBreakup.flexi || extBreakup.flexiAllowance || employeeData.flexiAmount || employeeData.flexi || 0);
 
     const basic = Number(extBreakup.basic || 0);
     const hra = Number(extBreakup.hra || 0);
 
+    // Keys that are handled as named fields — must not appear in otherAllowances
     const standardBreakupKeys = new Set([
       'basic', 'hra', 'conveyance', 'medical', 'medicalallowance',
+      'flexi', 'flexiallowance', 'flexiamount',
       'broadband', 'petrol', 'lta', 'nps', 'employernps',
       'insurance', 'insuranceamount', 'specialallowance', 'special',
       'pfenabled', 'esienabled', 'ptenabled', 'lwfenabled', 'gratuityenabled',
       'includepfinctc', 'includegratuityinctc', 'basicpercent', 'hrapercent',
-      'usesalarycomponents', 'ptstate'
+      'usesalarycomponents', 'ptstate',
+      // Computed values stored by HRMS — ignore on sync (not allowances)
+      'annualctc', 'monthlytc', 'monthlyctc', 'monthlygross', 'monthlyGross',
+      'pfemployer', 'pfemployee', 'gratuity',
+      'lwfemployer', 'lwfemployee', 'esiemployer', 'esiemployee',
+      'professionaltax', 'tds', 'nettakehome'
     ]);
 
     const otherAllowances = [];
@@ -1945,6 +1955,7 @@ exports.receiveHrmsWebhook = async (req, res) => {
       lta,
       employerNPS,
       insuranceAmount,
+      flexiAmount,
       basic,
       hra,
       salaryStructure: {
