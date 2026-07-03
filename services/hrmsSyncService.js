@@ -443,6 +443,10 @@ exports.syncEmployeesFromExternal = async (userId) => {
         //   source.salaryStructure.conveyance            → conveyance
         //   source.salaryStructure.medicalAllowance      → medicalAllowance
         const master = buildMasterSalaryStructure(updateData, config);
+        updateData.flexiAmount = master.flexi;
+        updateData.broadband = master.broadband;
+        updateData.petrol = master.petrol;
+        updateData.lta = master.lta;
         updateData.salaryStructure = {
           basic: master.basicMaster,
           hra: master.hraMaster,
