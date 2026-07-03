@@ -1905,10 +1905,11 @@ exports.receiveHrmsWebhook = async (req, res) => {
       // payType is a configuration field, not an allowance
       'paytype',
       // Computed values stored by HRMS — ignore on sync (not allowances)
-      'annualctc', 'monthlytc', 'monthlyctc', 'monthlygross', 'monthlyGross',
-      'pfemployer', 'pfemployee', 'gratuity',
+      'annualctc', 'monthlyctc', 'monthlygross', 'monthlygross',
+      'specialallowance', 'pfemployer', 'pfemployee', 'gratuity',
       'lwfemployer', 'lwfemployee', 'esiemployer', 'esiemployee',
-      'professionaltax', 'tds', 'nettakehome'
+      'professionaltax', 'professionaltaxval', 'tds', 'nettakehome',
+      'flatsalary'
     ]);
 
     const otherAllowances = [];
