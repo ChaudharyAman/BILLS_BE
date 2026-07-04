@@ -631,10 +631,8 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
       );
 
       if (record) {
-        // Use explicit !== undefined to avoid treating 0 as "missing"
-        const workingDays = record.workingDays !== undefined
-          ? Number(record.workingDays)
-          : defaultWorkingDays;
+        const calendarDays = new Date(year, month, 0).getDate();
+        const hrmsWorkingDays = record.workingDays !== undefined ? Number(record.workingDays) : 23;
 
         // presentDays: newly named field; fall back to legacy 'workingDays' if HRMS is old
         const presentDays = record.presentDays !== undefined
@@ -645,31 +643,37 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
         const paidLeaves = Number(record.paidLeaves || record.paid_leaves || 0);
         const absentDays = record.absentDays !== undefined
           ? Number(record.absentDays)
-          : Math.max(workingDays - presentDays - paidLeaves - unpaidLeaves, 0);
+          : Math.max(hrmsWorkingDays - presentDays - paidLeaves - unpaidLeaves, 0);
 
-        // paidDays = days the employee is entitled to be paid for
-        // = present days + paid leave days, clamped to total working days
-        const paidDays = Math.min(Math.max(presentDays + paidLeaves, 0), workingDays);
+        // Scale counts to calendar days to maintain mathematically correct proration ratio
+        const scaleFactor = hrmsWorkingDays > 0 ? calendarDays / hrmsWorkingDays : 1;
+
+        const scaledPresent = Number((presentDays * scaleFactor).toFixed(2));
+        const scaledUnpaid = Number((unpaidLeaves * scaleFactor).toFixed(2));
+        const scaledPaidLeaves = Number((paidLeaves * scaleFactor).toFixed(2));
+        const scaledAbsent = Number((absentDays * scaleFactor).toFixed(2));
+
+        // paidDays = calendarDays - scaledUnpaid - scaledAbsent
+        const paidDays = Math.min(Math.max(Number((calendarDays - scaledUnpaid - scaledAbsent).toFixed(2)), 0), calendarDays);
 
         mapped.push({
           employeeId: emp._id,
           employeeNumber: emp.employeeId,
-          workingDays,
-          presentDays,
-          absentDays,
+          workingDays: calendarDays,
+          presentDays: scaledPresent,
+          absentDays: scaledAbsent,
           paidDays,
-          unpaidLeaves,
-          paidLeaves
+          unpaidLeaves: scaledUnpaid,
+          paidLeaves: scaledPaidLeaves
         });
       } else {
-        // Employee exists in MyBill but has NO attendance record in HRMS.
-        // This means all their applicable days are absent — do NOT default to fully paid.
+        const calendarDays = new Date(year, month, 0).getDate();
         mapped.push({
           employeeId: emp._id,
           employeeNumber: emp.employeeId,
-          workingDays: defaultWorkingDays,
+          workingDays: calendarDays,
           presentDays: 0,
-          absentDays: defaultWorkingDays,
+          absentDays: calendarDays,
           paidDays: 0,
           unpaidLeaves: 0,
           paidLeaves: 0
