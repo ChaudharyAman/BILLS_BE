@@ -6,7 +6,7 @@ const ExpenseItemSchema = new mongoose.Schema({
   description: String,
   qty: { type: Number, required: true, min: 0 },
   unit: String,
-  rate: { type: Number, required: true, min: 0 },
+  rate: { type: Number, required: true },
   taxRate: { type: Number, default: 0 },
   taxAmount: { type: Number, default: 0 },
   amount: { type: Number, required: true },
