@@ -907,6 +907,53 @@ exports.deleteEmployee = async (req, res) => {
   }
 };
 
+exports.bulkDeleteEmployees = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'No employee IDs provided' });
+    }
+
+    const employeeIds = ids.filter(id => mongoose.Types.ObjectId.isValid(String(id)));
+    if (employeeIds.length === 0) {
+      return res.status(400).json({ message: 'No valid employee IDs provided' });
+    }
+
+    // 1. Find all payroll records to delete their generated expenses
+    const payrolls = await Payroll.find({ user: req.user._id, employee: { $in: employeeIds } }).select('expenseRef');
+    const expenseIds = payrolls.map(p => p.expenseRef).filter(Boolean);
+    if (expenseIds.length > 0) {
+      await Expense.deleteMany({ user: req.user._id, _id: { $in: expenseIds } });
+    }
+
+    // 2. Delete payroll records
+    await Payroll.deleteMany({ user: req.user._id, employee: { $in: employeeIds } });
+
+    // 3. Delete loans
+    await Loan.deleteMany({ user: req.user._id, employee: { $in: employeeIds } });
+
+    // 4. Delete reimbursement claims
+    await ReimbursementClaim.deleteMany({ user: req.user._id, employee: { $in: employeeIds } });
+
+    // 5. Pull employees from project teams
+    await Project.updateMany(
+      { user: req.user._id, team: { $in: employeeIds } },
+      { $pull: { team: { $in: employeeIds } } }
+    );
+
+    // 6. Delete the employee profiles
+    const result = await Employee.deleteMany({ _id: { $in: employeeIds }, user: req.user._id });
+
+    res.json({ 
+      message: `${result.deletedCount} employees and all associated payrolls, expenses, loans, and claims deleted successfully`,
+      deletedCount: result.deletedCount
+    });
+  } catch (error) {
+    console.error('Error bulk deleting employees:', error);
+    res.status(500).json({ message: 'Server error bulk deleting employees' });
+  }
+};
+
 exports.importEmployees = async (req, res) => {
   try {
     if (!req.file?.buffer) {
