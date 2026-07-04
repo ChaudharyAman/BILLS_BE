@@ -619,10 +619,8 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
     }
 
     const attendanceRecords = Array.isArray(rawData) ? rawData : (rawData?.attendance || []);
-    const localEmployees = await Employee.find({ user: userId }).select('_id employeeId');
-
-    // Default working days fallback (used only when workingDays is completely absent from HRMS)
-    const defaultWorkingDays = settings.defaultWorkingDays || 26;
+    const calendarDays = new Date(year, month, 0).getDate();
+    const localEmployees = await Employee.find({ user: userId }).select('_id employeeId joiningDate dateOfLeaving');
 
     const mapped = [];
     localEmployees.forEach(emp => {
@@ -630,8 +628,25 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
         r => String(r.employeeId || r.emp_id || '').trim() === String(emp.employeeId).trim()
       );
 
+      // Check joining and leaving dates to handle mid-month cases correctly
+      const startOfMonth = new Date(year, month - 1, 1);
+      const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+
+      const jDate = emp.joiningDate ? new Date(emp.joiningDate) : startOfMonth;
+      const lDate = emp.dateOfLeaving ? new Date(emp.dateOfLeaving) : endOfMonth;
+
+      const activeStart = jDate > startOfMonth ? jDate : startOfMonth;
+      const activeEnd = lDate < endOfMonth ? lDate : endOfMonth;
+
+      let activeCalendarDays = calendarDays;
+      if (activeStart <= activeEnd) {
+        const diffTime = Math.max(0, activeEnd.getTime() - activeStart.getTime());
+        activeCalendarDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+      } else {
+        activeCalendarDays = 0;
+      }
+
       if (record) {
-        const calendarDays = new Date(year, month, 0).getDate();
         const hrmsWorkingDays = record.workingDays !== undefined ? Number(record.workingDays) : 23;
 
         // presentDays: newly named field; fall back to legacy 'workingDays' if HRMS is old
@@ -645,35 +660,34 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
           ? Number(record.absentDays)
           : Math.max(hrmsWorkingDays - presentDays - paidLeaves - unpaidLeaves, 0);
 
-        // Scale counts to calendar days to maintain mathematically correct proration ratio
-        const scaleFactor = hrmsWorkingDays > 0 ? calendarDays / hrmsWorkingDays : 1;
+        // Raw LOP days (absent days + unpaid leaves)
+        const lop = absentDays + unpaidLeaves;
 
-        const scaledPresent = Number((presentDays * scaleFactor).toFixed(2));
-        const scaledUnpaid = Number((unpaidLeaves * scaleFactor).toFixed(2));
-        const scaledPaidLeaves = Number((paidLeaves * scaleFactor).toFixed(2));
-        const scaledAbsent = Number((absentDays * scaleFactor).toFixed(2));
+        // paidDays = active calendar days minus raw LOP days
+        let paidDays = Math.min(Math.max(activeCalendarDays - lop, 0), calendarDays);
 
-        // paidDays = calendarDays - scaledUnpaid - scaledAbsent
-        const paidDays = Math.min(Math.max(Number((calendarDays - scaledUnpaid - scaledAbsent).toFixed(2)), 0), calendarDays);
+        // If they did not work and had no paid leaves, they are fully absent (paidDays = 0)
+        if (presentDays === 0 && paidLeaves === 0) {
+          paidDays = 0;
+        }
 
         mapped.push({
           employeeId: emp._id,
           employeeNumber: emp.employeeId,
           workingDays: calendarDays,
-          presentDays: scaledPresent,
-          absentDays: scaledAbsent,
+          presentDays,
+          absentDays,
           paidDays,
-          unpaidLeaves: scaledUnpaid,
-          paidLeaves: scaledPaidLeaves
+          unpaidLeaves,
+          paidLeaves
         });
       } else {
-        const calendarDays = new Date(year, month, 0).getDate();
         mapped.push({
           employeeId: emp._id,
           employeeNumber: emp.employeeId,
           workingDays: calendarDays,
           presentDays: 0,
-          absentDays: calendarDays,
+          absentDays: activeCalendarDays,
           paidDays: 0,
           unpaidLeaves: 0,
           paidLeaves: 0
