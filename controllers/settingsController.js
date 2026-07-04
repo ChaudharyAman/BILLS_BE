@@ -104,8 +104,7 @@ exports.updateSettings = async (req, res) => {
       companyName, contactName, website, email, phone, gstin, pan,
       address, defaultTerms, defaultNotes, bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
-      defaultCurrency, timezone, dateFormat,
-      ...(safeIntegration !== undefined ? { integration: safeIntegration } : {})
+      defaultCurrency, timezone, dateFormat
     };
 
     // Remove undefined fields and invalid "[object Object]" strings (common in multipart/form-data submissions)
@@ -157,12 +156,20 @@ exports.updateSettings = async (req, res) => {
       const settingsData = { ...settingsUpdate, user: req.user._id };
       if (newLogoUrl) settingsData.logoUrl = newLogoUrl;
       if (newSignatureUrl) settingsData.signatureUrl = newSignatureUrl;
+      if (safeIntegration !== undefined) settingsData.integration = safeIntegration;
       settings = new Settings(settingsData);
     } else {
       // Update existing
       if (newLogoUrl) settingsUpdate.logoUrl = newLogoUrl;
       if (newSignatureUrl) settingsUpdate.signatureUrl = newSignatureUrl;
       Object.assign(settings, settingsUpdate);
+      if (safeIntegration !== undefined) {
+        if (!settings.integration) {
+          settings.integration = {};
+        }
+        // Assign fields to the existing integration subdocument to preserve omitted secrets
+        Object.assign(settings.integration, safeIntegration);
+      }
     }
     
     await settings.save();
