@@ -139,6 +139,96 @@ exports.syncEmployeesFromExternal = async (userId) => {
   if (!apiUrl) throw new Error('HRMS API URL is not configured.');
 
   try {
+    // 1. Fetch Payroll Config from HRMS to align settings dynamically
+    let hrmsConfig = null;
+    try {
+      const configResponse = await axios.get(`${apiUrl.replace(/\/$/, '')}/api/v1/payroll-config`, {
+        params: { tenantId: externalTenantId },
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Accept': 'application/json'
+        },
+        timeout: 5000
+      });
+      let configData = configResponse.data;
+      if (isEncryptedPackage(configData)) {
+        configData = decryptPayload(configData, encryptionSecret);
+      }
+      if (configData) {
+        hrmsConfig = configData;
+      }
+    } catch (configError) {
+      console.warn('Failed to fetch payroll config from HRMS, using local/default payroll config:', configError.message);
+    }
+
+    let config = await PayrollConfig.findOne({ user: userId });
+    if (hrmsConfig) {
+      const updatedFields = {};
+      if (typeof hrmsConfig.basicPercent === 'number') updatedFields.basicPercent = hrmsConfig.basicPercent;
+      if (typeof hrmsConfig.hraPercent === 'number') updatedFields.hraPercent = hrmsConfig.hraPercent;
+      if (typeof hrmsConfig.pfRate === 'number') updatedFields.pfRate = hrmsConfig.pfRate;
+      if (typeof hrmsConfig.pfEmployerRate === 'number') updatedFields.pfEmployerRate = hrmsConfig.pfEmployerRate;
+      if (typeof hrmsConfig.pfCap === 'number') updatedFields.pfCap = hrmsConfig.pfCap;
+      if (hrmsConfig.pfCalculationType) updatedFields.pfCalculationType = hrmsConfig.pfCalculationType;
+      if (typeof hrmsConfig.pfAmountEmployee === 'number') updatedFields.pfAmountEmployee = hrmsConfig.pfAmountEmployee;
+      if (typeof hrmsConfig.pfAmountEmployer === 'number') updatedFields.pfAmountEmployer = hrmsConfig.pfAmountEmployer;
+      if (typeof hrmsConfig.esiEmployeeRate === 'number') updatedFields.esiEmployeeRate = hrmsConfig.esiEmployeeRate;
+      if (typeof hrmsConfig.esiEmployerRate === 'number') updatedFields.esiEmployerRate = hrmsConfig.esiEmployerRate;
+      if (typeof hrmsConfig.esiBasicThreshold === 'number') updatedFields.esiBasicThreshold = hrmsConfig.esiBasicThreshold;
+      if (typeof hrmsConfig.lwfEmployee === 'number') updatedFields.lwfEmployee = hrmsConfig.lwfEmployee;
+      if (typeof hrmsConfig.lwfEmployer === 'number') updatedFields.lwfEmployer = hrmsConfig.lwfEmployer;
+      if (typeof hrmsConfig.gratuityRate === 'number') updatedFields.gratuityRate = hrmsConfig.gratuityRate;
+      if (typeof hrmsConfig.defaultWorkingDays === 'number') updatedFields.defaultWorkingDays = hrmsConfig.defaultWorkingDays;
+      if (typeof hrmsConfig.ltaMaxPercent === 'number') updatedFields.ltaMaxPercent = hrmsConfig.ltaMaxPercent;
+      if (typeof hrmsConfig.defaultInsurance === 'number') updatedFields.defaultInsurance = hrmsConfig.defaultInsurance;
+
+      if (Array.isArray(hrmsConfig.salaryComponents) && hrmsConfig.salaryComponents.length > 0) {
+        const currentComponents = config ? [...(config.salaryComponents || [])] : [...DEFAULT_SALARY_COMPONENTS];
+        
+        hrmsConfig.salaryComponents.forEach(extComp => {
+          const idx = currentComponents.findIndex(c => c.id === extComp.id);
+          if (idx !== -1) {
+            currentComponents[idx] = {
+              ...currentComponents[idx],
+              name: extComp.name || currentComponents[idx].name,
+              linkedTo: extComp.linkedTo || currentComponents[idx].linkedTo,
+              linkValue: typeof extComp.linkValue === 'number' ? extComp.linkValue : currentComponents[idx].linkValue,
+              taxable: extComp.taxable !== undefined ? extComp.taxable : currentComponents[idx].taxable,
+            };
+          } else {
+            currentComponents.push({
+              id: extComp.id,
+              name: extComp.name,
+              type: extComp.type || 'earning',
+              taxable: extComp.taxable !== false,
+              linkedTo: extComp.linkedTo || 'fixed',
+              linkValue: extComp.linkValue || 0,
+              frequency: extComp.frequency || 'monthly',
+              isCustom: true
+            });
+          }
+        });
+        updatedFields.salaryComponents = currentComponents;
+      }
+
+      if (config) {
+        Object.assign(config, updatedFields);
+        await config.save();
+      } else {
+        config = await PayrollConfig.create({
+          ...updatedFields,
+          user: userId
+        });
+      }
+    } else {
+      if (!config) {
+        config = await PayrollConfig.create({
+          user: userId,
+          salaryComponents: DEFAULT_SALARY_COMPONENTS
+        });
+      }
+    }
+
     const response = await axios.get(`${apiUrl.replace(/\/$/, '')}/api/v1/employees`, {
       params: { tenantId: externalTenantId },
       headers: {
@@ -158,7 +248,6 @@ exports.syncEmployeesFromExternal = async (userId) => {
       return { created: 0, updated: 0, message: 'No employees found in external HRMS payload.' };
     }
 
-    const config = await PayrollConfig.findOne({ user: userId }) || {};
     let createdCount = 0;
     let updatedCount = 0;
     const errors = [];
