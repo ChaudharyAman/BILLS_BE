@@ -619,10 +619,8 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
     }
 
     const attendanceRecords = Array.isArray(rawData) ? rawData : (rawData?.attendance || []);
-    const localEmployees = await Employee.find({ user: userId }).select('_id employeeId');
-
-    // Default working days fallback (used only when workingDays is completely absent from HRMS)
-    const defaultWorkingDays = settings.defaultWorkingDays || 26;
+    const calendarDays = new Date(year, month, 0).getDate();
+    const localEmployees = await Employee.find({ user: userId }).select('_id employeeId joiningDate dateOfLeaving');
 
     const mapped = [];
     localEmployees.forEach(emp => {
@@ -630,11 +628,26 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
         r => String(r.employeeId || r.emp_id || '').trim() === String(emp.employeeId).trim()
       );
 
+      // Check joining and leaving dates to handle mid-month cases correctly
+      const startOfMonth = new Date(year, month - 1, 1);
+      const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+
+      const jDate = emp.joiningDate ? new Date(emp.joiningDate) : startOfMonth;
+      const lDate = emp.dateOfLeaving ? new Date(emp.dateOfLeaving) : endOfMonth;
+
+      const activeStart = jDate > startOfMonth ? jDate : startOfMonth;
+      const activeEnd = lDate < endOfMonth ? lDate : endOfMonth;
+
+      let activeCalendarDays = calendarDays;
+      if (activeStart <= activeEnd) {
+        const diffTime = Math.max(0, activeEnd.getTime() - activeStart.getTime());
+        activeCalendarDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+      } else {
+        activeCalendarDays = 0;
+      }
+
       if (record) {
-        // Use explicit !== undefined to avoid treating 0 as "missing"
-        const workingDays = record.workingDays !== undefined
-          ? Number(record.workingDays)
-          : defaultWorkingDays;
+        const hrmsWorkingDays = record.workingDays !== undefined ? Number(record.workingDays) : 23;
 
         // presentDays: newly named field; fall back to legacy 'workingDays' if HRMS is old
         const presentDays = record.presentDays !== undefined
@@ -645,16 +658,23 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
         const paidLeaves = Number(record.paidLeaves || record.paid_leaves || 0);
         const absentDays = record.absentDays !== undefined
           ? Number(record.absentDays)
-          : Math.max(workingDays - presentDays - paidLeaves - unpaidLeaves, 0);
+          : Math.max(hrmsWorkingDays - presentDays - paidLeaves - unpaidLeaves, 0);
 
-        // paidDays = days the employee is entitled to be paid for
-        // = present days + paid leave days, clamped to total working days
-        const paidDays = Math.min(Math.max(presentDays + paidLeaves, 0), workingDays);
+        // Raw LOP days (absent days + unpaid leaves)
+        const lop = absentDays + unpaidLeaves;
+
+        // paidDays = active calendar days minus raw LOP days
+        let paidDays = Math.min(Math.max(activeCalendarDays - lop, 0), calendarDays);
+
+        // If they did not work and had no paid leaves, they are fully absent (paidDays = 0)
+        if (presentDays === 0 && paidLeaves === 0) {
+          paidDays = 0;
+        }
 
         mapped.push({
           employeeId: emp._id,
           employeeNumber: emp.employeeId,
-          workingDays,
+          workingDays: calendarDays,
           presentDays,
           absentDays,
           paidDays,
@@ -662,14 +682,12 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
           paidLeaves
         });
       } else {
-        // Employee exists in MyBill but has NO attendance record in HRMS.
-        // This means all their applicable days are absent — do NOT default to fully paid.
         mapped.push({
           employeeId: emp._id,
           employeeNumber: emp.employeeId,
-          workingDays: defaultWorkingDays,
+          workingDays: calendarDays,
           presentDays: 0,
-          absentDays: defaultWorkingDays,
+          absentDays: activeCalendarDays,
           paidDays: 0,
           unpaidLeaves: 0,
           paidLeaves: 0
