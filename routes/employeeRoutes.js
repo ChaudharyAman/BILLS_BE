@@ -16,6 +16,7 @@ const {
   updateSalaryRevision,
   deleteSalaryRevision,
   updateEmployeeDeclarations,
+  bulkDeleteEmployees,
 } = require('../controllers/employeeController');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -30,6 +31,8 @@ router.get('/active', getActiveEmployees);
 router.get('/import-template', downloadImportTemplateExcel);
 router.post('/import', upload.single('file'), importEmployees);
 router.get('/export', exportEmployeesExcel);
+
+router.post('/bulk-delete', bulkDeleteEmployees);
 
 router.route('/:id')
   .get(getEmployeeById)
