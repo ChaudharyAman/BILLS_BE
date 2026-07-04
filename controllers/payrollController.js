@@ -1287,6 +1287,7 @@ exports.generatePayslip = async (req, res) => {
     const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id })
       .populate({
         path: 'employee',
+        select: '+uanNumber +panNumber +aadharNumber +esiNumber +bankDetails.accountNumber +pfNumber +pfNo',
         populate: { path: 'department', select: 'name code' },
       });
     const settings = await Settings.findOne({ user: req.user._id }).lean();
@@ -1328,6 +1329,172 @@ exports.generatePayslip = async (req, res) => {
       payroll.workingDays,
       adjustments
     );
+
+    // --- Build Tax Worksheet for the Financial Year ---
+    const currentMonth = payroll.month;
+    const currentYear = payroll.year;
+    let startYear, endYear;
+    if (currentMonth >= 4) {
+      startYear = currentYear;
+      endYear = currentYear + 1;
+    } else {
+      startYear = currentYear - 1;
+      endYear = currentYear;
+    }
+
+    const fyPayrolls = await Payroll.find({
+      user: req.user._id,
+      employee: employeeData._id,
+      $or: [
+        { year: startYear, month: { $gte: 4 } },
+        { year: endYear, month: { $lte: 3 } }
+      ]
+    }).sort({ year: 1, month: 1 });
+
+    let basicGross = 0;
+    let hraGross = 0;
+    let specialGross = 0;
+    let mealGross = 0;
+    let broadbandGross = 0;
+    let otherGross = 0;
+    let bonusGross = 0;
+    let arrearGross = 0;
+
+    const tdsMonths = {
+      4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 1: 0, 2: 0, 3: 0
+    };
+
+    for (const pr of fyPayrolls) {
+      basicGross += Number(pr.earnings?.basic || 0);
+      hraGross += Number(pr.earnings?.hra || 0);
+      specialGross += Number(pr.earnings?.specialAllowance || pr.earnings?.special || 0);
+      mealGross += Number(pr.earnings?.mealAllowance || pr.earnings?.meal || 0);
+      broadbandGross += Number(pr.earnings?.broadband || 0);
+      
+      let otherVal = Number(pr.earnings?.petrol || 0) + 
+                     Number(pr.earnings?.lta || 0) + 
+                     Number(pr.earnings?.conveyance || 0) + 
+                     Number(pr.earnings?.medicalAllowance || 0);
+      if (Array.isArray(pr.earnings?.otherEarnings)) {
+        otherVal += pr.earnings.otherEarnings.reduce((s, o) => s + (Number(o.amount) || 0), 0);
+      }
+      otherGross += otherVal;
+
+      let bonusVal = 0;
+      if (pr.variablePay) {
+        bonusVal += Number(pr.variablePay.joiningBonus || 0) +
+                    Number(pr.variablePay.loyaltyBonus || 0) +
+                    Number(pr.variablePay.incentive || 0) +
+                    Number(pr.variablePay.specialBonus || 0) +
+                    Number(pr.variablePay.otherAllowanceArrear || 0);
+      }
+      bonusGross += bonusVal;
+
+      if (pr.deductions?.tds) {
+        tdsMonths[pr.month] = Number(pr.deductions.tds) || 0;
+      }
+    }
+
+    const regime = employeeData.taxRegime || 'new';
+    const isOld = regime === 'old';
+    const standardDeduction = isOld ? 50000 : 75000;
+
+    const rentPaidMonthly = employeeData.declarations?.rentPaidMonthly || 0;
+    const monthsCount = fyPayrolls.length || 1;
+    const rentPaidTotal = rentPaidMonthly * monthsCount;
+    const basic_10 = basicGross * 0.1;
+    const rentMinusBasic10 = Math.max(0, rentPaidTotal - basic_10);
+    const isMetro = employeeData.declarations?.isMetroCity || false;
+    const basicPercent = basicGross * (isMetro ? 0.5 : 0.4);
+    const exemptHra = isOld ? Math.round(Math.min(hraGross, rentMinusBasic10, basicPercent)) : 0;
+
+    const componentBreakdown = [
+      { name: 'Basic', gross: basicGross, exempt: 0, taxable: basicGross },
+      { name: 'HRA', gross: hraGross, exempt: exemptHra, taxable: hraGross - exemptHra },
+      { name: 'Special All', gross: specialGross, exempt: 0, taxable: specialGross },
+      { name: 'Meal', gross: mealGross, exempt: 0, taxable: mealGross },
+      { name: 'Broadband', gross: broadbandGross, exempt: 0, taxable: broadbandGross },
+      { name: 'Other', gross: otherGross, exempt: 0, taxable: otherGross },
+      { name: 'Bonus', gross: bonusGross, exempt: 0, taxable: bonusGross },
+      { name: 'Arrear', gross: arrearGross, exempt: 0, taxable: arrearGross }
+    ];
+
+    const grossSalary = basicGross + hraGross + specialGross + mealGross + broadbandGross + otherGross + bonusGross + arrearGross;
+    const taxableIncome = Math.max(0, grossSalary - exemptHra - standardDeduction);
+
+    let totalTax = 0;
+    if (regime === 'new') {
+      let temp = taxableIncome;
+      if (temp > 2000000) {
+        totalTax += (temp - 2000000) * 0.3;
+        temp = 2000000;
+      }
+      if (temp > 1600000) {
+        totalTax += (temp - 1600000) * 0.2;
+        temp = 1600000;
+      }
+      if (temp > 1200000) {
+        totalTax += (temp - 1200000) * 0.15;
+        temp = 1200000;
+      }
+      if (temp > 800000) {
+        totalTax += (temp - 800000) * 0.1;
+        temp = 800000;
+      }
+      if (temp > 400000) {
+        totalTax += (temp - 400000) * 0.05;
+      }
+      if (taxableIncome <= 700000) {
+        totalTax = 0;
+      }
+    } else {
+      let temp = taxableIncome;
+      if (temp > 1000000) {
+        totalTax += (temp - 1000000) * 0.3;
+        temp = 1000000;
+      }
+      if (temp > 500000) {
+        totalTax += (temp - 500000) * 0.2;
+        temp = 500000;
+      }
+      if (temp > 250000) {
+        totalTax += (temp - 250000) * 0.05;
+      }
+      if (taxableIncome <= 500000) {
+        totalTax = 0;
+      }
+    }
+
+    const cess = Math.round(totalTax * 0.04 * 100) / 100;
+    const netTax = Math.round((totalTax + cess) * 100) / 100;
+
+    const taxDeductedTillDate = Object.values(tdsMonths).reduce((s, v) => s + v, 0);
+    const taxToDeducted = Math.max(0, netTax - taxDeductedTillDate);
+    const taxDeductionThisMonth = Number(payroll.deductions?.tds || 0);
+
+    const taxWorksheet = {
+      regime,
+      componentBreakdown,
+      grossSalary,
+      standardDeduction,
+      taxableIncome,
+      totalTax,
+      cess,
+      netTax,
+      taxDeductedTillDate,
+      taxToDeducted,
+      taxDeductionThisMonth,
+      tdsMonths,
+      hra: {
+        from: 'April',
+        to: 'March',
+        rentPaid: rentPaidTotal,
+        actualHRA: hraGross,
+        basicPercent,
+        rentMinusBasic10,
+        exemptHRA: exemptHra
+      }
+    };
 
     res.json({
       payslip: {
@@ -1372,6 +1539,7 @@ exports.generatePayslip = async (req, res) => {
           signatureUrl: settings.signatureUrl,
           address: settings.address,
         } : null,
+        taxWorksheet,
       },
     });
   } catch (error) {
