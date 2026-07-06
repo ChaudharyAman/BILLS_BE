@@ -553,6 +553,17 @@ exports.processPayroll = async (req, res) => {
           netSalary: snapshot.netSalary,
           status: statusVal,
           lopStrategy: adjustments.lopStrategy || 'proportional',
+          overrides: {
+            pfEnabled: payload.adjustments?.pfEnabled,
+            esiEnabled: payload.adjustments?.esiEnabled,
+            ptEnabled: payload.adjustments?.ptEnabled,
+            lwfEnabled: payload.adjustments?.lwfEnabled,
+            gratuityEnabled: payload.adjustments?.gratuityEnabled,
+            includePfInCTC: payload.adjustments?.includePfInCTC,
+            includeGratuityInCTC: payload.adjustments?.includeGratuityInCTC,
+            basicPercent: payload.adjustments?.basicPercent,
+            hraPercent: payload.adjustments?.hraPercent,
+          },
           segmentLops: snapshot.segmentLops || adjustments.segmentLops || [],
           approvalWorkflow: [{
             status: statusVal,
