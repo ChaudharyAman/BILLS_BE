@@ -314,7 +314,7 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
       const sourceBasic = source.basic !== undefined ? source.basic : source.salaryStructure?.basic;
       if (!useComponents) {
         basicMaster = monthlyCTC;
-      } else if (useComponents && sourceBasic !== undefined && sourceBasic !== null && Number(sourceBasic) > 0) {
+      } else if (useComponents && basicComp.linkedTo === 'fixed' && sourceBasic !== undefined && sourceBasic !== null && Number(sourceBasic) > 0) {
         basicMaster = roundAmount(sourceBasic);
       } else {
         let bVal = basicComp.linkValue;
@@ -334,7 +334,7 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
       const sourceHra = source.hra !== undefined ? source.hra : source.salaryStructure?.hra;
       if (!useComponents) {
         hraMaster = 0;
-      } else if (useComponents && sourceHra !== undefined && sourceHra !== null && Number(sourceHra) > 0) {
+      } else if (useComponents && hraComp.linkedTo === 'fixed' && sourceHra !== undefined && sourceHra !== null && Number(sourceHra) > 0) {
         hraMaster = roundAmount(sourceHra);
       } else {
         let hVal = hraComp.linkValue;
@@ -359,8 +359,8 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   let pfBase = 0;
   if (pfEnabled) {
     if (config.pfCalculationType === 'fixed') {
-      pfEmployer = roundAmount(Math.min(config.pfAmountEmployer, basicMaster * config.pfEmployerRate));
-      pfEmployee = roundAmount(Math.min(config.pfAmountEmployee, basicMaster * config.pfRate));
+      pfEmployer = roundAmount(config.pfAmountEmployer);
+      pfEmployee = roundAmount(config.pfAmountEmployee);
       pfBase = pfEmployee;
     } else {
       pfBase = roundAmount(Math.min(basicMaster, config.pfCap));
