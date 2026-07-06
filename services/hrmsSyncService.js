@@ -630,7 +630,7 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
 
       // Check joining and leaving dates to handle mid-month cases correctly
       const startOfMonth = new Date(year, month - 1, 1);
-      const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+      const endOfMonth = new Date(year, month, 0); // last day of the month
 
       const jDate = emp.joiningDate ? new Date(emp.joiningDate) : startOfMonth;
       const lDate = emp.dateOfLeaving ? new Date(emp.dateOfLeaving) : endOfMonth;
@@ -638,12 +638,14 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
       const activeStart = jDate > startOfMonth ? jDate : startOfMonth;
       const activeEnd = lDate < endOfMonth ? lDate : endOfMonth;
 
-      let activeCalendarDays = calendarDays;
-      if (activeStart <= activeEnd) {
-        const diffTime = Math.max(0, activeEnd.getTime() - activeStart.getTime());
-        activeCalendarDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-      } else {
-        activeCalendarDays = 0;
+      // Normalize to midnight to avoid hours/minutes diff causing rounding bugs
+      const activeStartMidnight = new Date(activeStart.getFullYear(), activeStart.getMonth(), activeStart.getDate());
+      const activeEndMidnight = new Date(activeEnd.getFullYear(), activeEnd.getMonth(), activeEnd.getDate());
+
+      let activeCalendarDays = 0;
+      if (activeStartMidnight <= activeEndMidnight) {
+        const diffTime = Math.max(0, activeEndMidnight.getTime() - activeStartMidnight.getTime());
+        activeCalendarDays = Math.round(diffTime / (1000 * 60 * 60 * 24)) + 1;
       }
 
       if (record) {
