@@ -66,10 +66,25 @@ exports.getIncomes = async (req, res) => {
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
+    const { status, sourceType, startDate, endDate, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
+
     let query = { user: req.user._id };
     if (req.query.category) query.category = req.query.category;
     if (req.query.subCategory) query.subCategory = req.query.subCategory;
     if (req.query.project) query.project = req.query.project;
+    if (status) query.status = status;
+    if (sourceType) query.sourceType = sourceType;
+
+    // Date range filter
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setUTCHours(23, 59, 59, 999);
+        query.date.$lte = end;
+      }
+    }
 
     if (search) {
       const Client = require('../models/Client');
@@ -86,13 +101,19 @@ exports.getIncomes = async (req, res) => {
       ];
     }
 
+    const sort = {};
+    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    if (sortBy !== 'createdAt') {
+      sort.createdAt = -1;
+    }
+
     const total = await Income.countDocuments(query);
     const incomesQuery = Income.find(query)
       .select('-items -terms -privateNotes')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent')
       .lean()
-      .sort({ date: -1, createdAt: -1 });
+      .sort(sort);
 
     if (!exportAll) {
       incomesQuery.skip(skip).limit(limit);
@@ -108,6 +129,7 @@ exports.getIncomes = async (req, res) => {
       totalPages: exportAll ? 1 : Math.ceil(total / limit)
     });
   } catch (error) {
+    console.error('Error fetching incomes:', error);
     res.status(500).json({ message: 'Server Error fetching incomes' });
   }
 };
