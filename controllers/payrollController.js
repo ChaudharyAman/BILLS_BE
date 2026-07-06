@@ -422,47 +422,55 @@ exports.processPayroll = async (req, res) => {
 
         const existing = await Payroll.findOne({ user: req.user._id, employee: employeeId, month, year });
         if (existing) {
-          errors.push({ employeeId, employeeName, error: 'Payroll already exists for this period' });
-          continue;
+          if (existing.status !== 'draft') {
+            errors.push({ employeeId, employeeName, error: 'Payroll already exists for this period' });
+            continue;
+          }
+          // If it's a draft, delete it first so we can re-create/update it successfully
+          await Payroll.deleteOne({ _id: existing._id });
         }
 
-        // Precedence: manual overrides in request body take precedence
-        const hasManualAttendance = 
-          payload.workingDays !== undefined && payload.workingDays !== null ||
-          payload.paidDays !== undefined && payload.paidDays !== null ||
-          payload.unpaidLeaves !== undefined && payload.unpaidLeaves !== null ||
-          payload.paidLeaves !== undefined && payload.paidLeaves !== null;
-
-        let attendanceSource = 'default';
+        let attendanceSource = payload.attendanceSource;
         let attendanceWarning = null;
 
-        if (hasManualAttendance) {
-          attendanceSource = 'manual';
-        } else if (settings?.integration?.enabled) {
-          if (hrmsSyncError) {
-            attendanceWarning = `HRMS attendance sync failed: ${hrmsSyncError}`;
-            attendanceSource = 'default';
-          } else if (hrmsAttendanceRecords) {
-            const record = hrmsAttendanceRecords.find(r => 
-              String(r.employeeId) === String(employee._id) || 
-              String(r.employeeNumber).trim() === String(employee.employeeId).trim()
-            );
-            if (record) {
-              payload.workingDays = record.workingDays;
-              payload.paidDays = record.paidDays;
-              payload.unpaidLeaves = record.unpaidLeaves;
-              payload.paidLeaves = record.paidLeaves;
-              attendanceSource = 'hrms';
+        if (attendanceSource) {
+          // Use the source explicitly set/sent by the frontend (e.g., 'hrms', 'manual', 'default')
+        } else {
+          // Precedence: manual overrides in request body take precedence
+          const hasManualAttendance = 
+            payload.workingDays !== undefined && payload.workingDays !== null ||
+            payload.paidDays !== undefined && payload.paidDays !== null ||
+            payload.unpaidLeaves !== undefined && payload.unpaidLeaves !== null ||
+            payload.paidLeaves !== undefined && payload.paidLeaves !== null;
+
+          if (hasManualAttendance) {
+            attendanceSource = 'manual';
+          } else if (settings?.integration?.enabled) {
+            if (hrmsSyncError) {
+              attendanceWarning = `HRMS attendance sync failed: ${hrmsSyncError}`;
+              attendanceSource = 'default';
+            } else if (hrmsAttendanceRecords) {
+              const record = hrmsAttendanceRecords.find(r => 
+                String(r.employeeId) === String(employee._id) || 
+                String(r.employeeNumber).trim() === String(employee.employeeId).trim()
+              );
+              if (record) {
+                payload.workingDays = record.workingDays;
+                payload.paidDays = record.paidDays;
+                payload.unpaidLeaves = record.unpaidLeaves;
+                payload.paidLeaves = record.paidLeaves;
+                attendanceSource = 'hrms';
+              } else {
+                attendanceWarning = `Employee attendance record not found in HRMS response.`;
+                attendanceSource = 'default';
+              }
             } else {
-              attendanceWarning = `Employee attendance record not found in HRMS response.`;
+              attendanceWarning = `HRMS integration enabled but no records returned.`;
               attendanceSource = 'default';
             }
           } else {
-            attendanceWarning = `HRMS integration enabled but no records returned.`;
             attendanceSource = 'default';
           }
-        } else {
-          attendanceSource = 'default';
         }
 
         // Fallbacks for default/failed sync (no leaves, default config working days)
@@ -482,7 +490,16 @@ exports.processPayroll = async (req, res) => {
           createdAt: { $gte: startDate, $lt: endDate }
         }).lean();
 
-        adjustments.reimbursements = claims.map(c => ({
+        // If the request contains explicit adjustments.reimbursements (filtered on frontend)
+        const reqReimbursements = payload.adjustments?.reimbursements;
+        let finalClaims = claims;
+        if (reqReimbursements !== undefined) {
+          const includedIds = new Set(reqReimbursements.map(r => String(r._id || r.claimId)));
+          finalClaims = claims.filter(c => includedIds.has(String(c._id)));
+        }
+
+        adjustments.reimbursements = finalClaims.map(c => ({
+          _id: c._id,
           name: c.category,
           claimed: c.amount,
           approved: c.amount,
@@ -559,6 +576,8 @@ exports.processPayroll = async (req, res) => {
             includePfInCTC: snapshot.master.includePfInCTC !== false,
             includeGratuityInCTC: snapshot.master.includeGratuityInCTC !== false,
             useSalaryComponents: snapshot.master.useSalaryComponents !== false,
+            basicPercent: snapshot.master.basicPercent,
+            hraPercent: snapshot.master.hraPercent,
             taxRegime: employee.taxRegime,
             declarations: employee.declarations,
           },
