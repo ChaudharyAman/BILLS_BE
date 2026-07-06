@@ -478,6 +478,187 @@ exports.getTaxDashboard = async (req, res) => {
       : new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 7));
 
 
+    const revenueInvoices = await Invoice.find({
+      user: userId,
+      date: { $gte: startDate, $lte: endDate },
+      status: { $in: ACTIVE_INVOICE_STATUSES }
+    }).select('invoiceNo client.name grandTotal date status').sort({ date: -1 }).lean();
+
+    const revenueManualIncomes = await Income.find({
+      user: userId,
+      date: { $gte: startDate, $lte: endDate },
+      status: { $in: ['PAID', 'PARTIAL'] },
+      sourceType: 'manual'
+    }).select('number party grandTotal date status').sort({ date: -1 }).lean();
+
+    const revenueItems = [
+      ...revenueInvoices.map(i => ({
+        id: i._id,
+        party: i.client?.name || 'Client',
+        number: i.invoiceNo || 'Invoice',
+        amount: i.grandTotal,
+        status: i.status,
+        date: i.date,
+        source: 'Invoice'
+      })),
+      ...revenueManualIncomes.map(i => ({
+        id: i._id,
+        party: i.party || 'Manual Income',
+        number: i.number || 'Income',
+        amount: i.grandTotal,
+        status: i.status,
+        date: i.date,
+        source: 'Manual Income'
+      }))
+    ].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    const expenseDocs = await Expense.find({
+      user: userId,
+      date: { $gte: startDate, $lte: endDate },
+      status: ACTIVE_EXPENSE_STATUSES
+    }).select('expenseNumber vendor.name party grandTotal date status').sort({ date: -1 }).lean();
+
+    const expenseItems = expenseDocs.map(e => ({
+      id: e._id,
+      party: e.vendor?.name || e.party || 'Vendor',
+      number: e.expenseNumber || 'Expense',
+      amount: e.grandTotal,
+      status: e.status,
+      date: e.date,
+      source: 'Expense'
+    }));
+
+    const gstLiabilityInvoices = await Invoice.find({
+      user: userId,
+      date: { $gte: startDate, $lte: endDate },
+      status: { $in: ACTIVE_INVOICE_STATUSES },
+      taxTotal: { $gt: 0 }
+    }).select('invoiceNo client.name taxTotal totalCGST totalSGST totalIGST date status').sort({ date: -1 }).lean();
+
+    const gstLiabilityItems = gstLiabilityInvoices.map(i => ({
+      id: i._id,
+      party: i.client?.name || 'Client',
+      number: i.invoiceNo || 'Invoice',
+      amount: i.taxTotal,
+      cgst: i.totalCGST || 0,
+      sgst: i.totalSGST || 0,
+      igst: i.totalIGST || 0,
+      status: i.status,
+      date: i.date,
+      source: 'Invoice GST'
+    }));
+
+    const tdsDeductedInvoices = await Invoice.find({
+      user: userId,
+      date: { $gte: startDate, $lte: endDate },
+      status: { $in: ACTIVE_INVOICE_STATUSES },
+      $or: [
+        { tdsAmount: { $gt: 0 } },
+        { tds_amount: { $gt: 0 } },
+        { tds: { $gt: 0 } }
+      ]
+    }).select('invoiceNo client.name grandTotal tdsAmount tds_amount tds date status').sort({ date: -1 }).lean();
+
+    const tdsDeductedItems = tdsDeductedInvoices.map(i => ({
+      id: i._id,
+      party: i.client?.name || 'Client',
+      number: i.invoiceNo || 'Invoice',
+      amount: i.tdsAmount || i.tds_amount || i.tds || 0,
+      grandTotal: i.grandTotal,
+      status: i.status,
+      date: i.date,
+      source: 'Invoice TDS'
+    }));
+
+    const tdsPayableExpenses = await Expense.find({
+      user: userId,
+      date: { $gte: startDate, $lte: endDate },
+      status: ACTIVE_EXPENSE_STATUSES,
+      $or: [
+        { tdsAmount: { $gt: 0 } },
+        { tds_amount: { $gt: 0 } },
+        { tdsApplicable: true },
+        { tds_applicable: true }
+      ]
+    }).select('expenseNumber vendor.name party grandTotal tdsAmount tds_amount date status').sort({ date: -1 }).lean();
+
+    const tdsPayablePayrolls = await Payroll.find({
+      user: userId,
+      status: { $nin: ['cancelled', 'draft'] },
+      paymentDate: { $gte: startDate, $lte: endDate },
+      'deductions.tds': { $gt: 0 }
+    }).populate('employee', 'firstName lastName').sort({ paymentDate: -1 }).lean();
+
+    const tdsPayableItems = [
+      ...tdsPayableExpenses.map(e => ({
+        id: e._id,
+        party: e.vendor?.name || e.party || 'Vendor',
+        number: e.expenseNumber || 'Expense',
+        amount: e.tdsAmount || e.tds_amount || 0,
+        grandTotal: e.grandTotal,
+        status: e.status,
+        date: e.date,
+        source: 'Expense TDS'
+      })),
+      ...tdsPayablePayrolls.map(p => ({
+        id: p._id,
+        party: p.employee ? `${p.employee.firstName} ${p.employee.lastName}` : 'Employee',
+        number: `Payroll ${MONTHS[p.month - 1]} ${p.year}`,
+        amount: p.deductions?.tds || 0,
+        grandTotal: p.netSalary,
+        status: p.status,
+        date: p.paymentDate || p.createdAt,
+        source: 'Payroll TDS'
+      }))
+    ].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    const pendingPODocs = await PurchaseOrder.find({
+      user: userId,
+      status: { $nin: ['DRAFT', 'RECEIVED', 'BILLED', 'CANCELLED'] }
+    }).select('poNumber vendor.name grandTotal date status').sort({ date: -1 }).lean();
+
+    const pendingPOItems = pendingPODocs.map(po => ({
+      id: po._id,
+      party: po.vendor?.name || 'Vendor',
+      number: po.poNumber || 'PO',
+      amount: po.grandTotal,
+      status: po.status,
+      date: po.date,
+      source: 'Purchase Order'
+    }));
+
+    const receivableDocs = await Invoice.find({
+      user: userId,
+      status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] }
+    }).select('invoiceNo client.name grandTotal balanceDue date status').sort({ date: -1 }).lean();
+
+    const receivableItems = receivableDocs.map(i => ({
+      id: i._id,
+      party: i.client?.name || 'Client',
+      number: i.invoiceNo || 'Invoice',
+      amount: i.balanceDue,
+      grandTotal: i.grandTotal,
+      status: i.status,
+      date: i.date,
+      source: 'Invoice Receivable'
+    }));
+
+    const payableDocs = await Expense.find({
+      user: userId,
+      status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] }
+    }).select('expenseNumber vendor.name party grandTotal balanceDue date status').sort({ date: -1 }).lean();
+
+    const payableItems = payableDocs.map(e => ({
+      id: e._id,
+      party: e.vendor?.name || e.party || 'Vendor',
+      number: e.expenseNumber || 'Expense',
+      amount: e.balanceDue,
+      grandTotal: e.grandTotal,
+      status: e.status,
+      date: e.date,
+      source: 'Expense Payable'
+    }));
+
     res.json({
       period: { startDate, endDate, month: MONTHS[startDate.getUTCMonth()], year: startDate.getUTCFullYear() },
       summary: {
@@ -537,6 +718,16 @@ exports.getTaxDashboard = async (req, res) => {
       topClients,
       pendingPO,
       draftCounts,
+      recentIncome: revenueItems.slice(0, 10),
+      recentExpenses: expenseItems.slice(0, 10),
+      revenueItems,
+      expenseItems,
+      gstLiabilityItems,
+      tdsDeductedItems,
+      tdsPayableItems,
+      pendingPOItems,
+      receivableItems,
+      payableItems,
       previousPeriod: {
         revenue: roundTwo(previousInvoiceTotals.grandTotal),
         expenses: roundTwo(previousExpenseTotals.grandTotal),
