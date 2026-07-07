@@ -2253,6 +2253,57 @@ exports.deletePayroll = async (req, res) => {
   }
 };
 
+exports.bulkDeletePayroll = async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.filter((id) => mongoose.Types.ObjectId.isValid(String(id))) : [];
+    const month = req.body.month !== undefined ? Number(req.body.month) : undefined;
+    const year = req.body.year !== undefined ? Number(req.body.year) : undefined;
+    const filter = { user: req.user._id, status: { $ne: 'paid' } };
+
+    if (ids.length) filter._id = { $in: ids };
+    if (month !== undefined) {
+      if (!isValidMonth(month)) return res.status(400).json({ message: 'Valid month is required' });
+      filter.month = month;
+    }
+    if (year !== undefined) {
+      if (!isValidYear(year)) return res.status(400).json({ message: 'Valid year is required' });
+      filter.year = year;
+    }
+    if (!ids.length && (month === undefined || year === undefined)) {
+      return res.status(400).json({ message: 'Provide payroll IDs or month and year to delete payroll' });
+    }
+
+    const payrolls = await Payroll.find(filter);
+    let deletedCount = 0;
+
+    for (const payroll of payrolls) {
+      if (payroll.expenseRef) {
+        await Expense.deleteOne({ _id: payroll.expenseRef, user: req.user._id });
+      }
+      await Payroll.deleteOne({ _id: payroll._id });
+
+      await AuditLog.create({
+        user: req.user._id,
+        actor: req.user._id,
+        action: 'PAYROLL_DELETED',
+        targetEmployee: payroll.employee,
+        changes: { month: payroll.month, year: payroll.year, netSalary: payroll.netSalary }
+      });
+
+      deletedCount += 1;
+    }
+
+    res.json({
+      matched: payrolls.length,
+      deleted: deletedCount,
+      message: 'Payrolls deleted successfully',
+    });
+  } catch (error) {
+    console.error('Error deleting payrolls in bulk:', error);
+    res.status(500).json({ message: 'Server error deleting payrolls' });
+  }
+};
+
 exports.__private__ = {
   getOrCreateConfig,
   buildPayrollWorkbook,

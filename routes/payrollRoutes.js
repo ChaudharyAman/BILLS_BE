@@ -5,6 +5,7 @@ const { verifyMultiTenantWebhook } = require('../utils/cryptoHelper');
 const {
   processPayroll,
   bulkApprovePayroll,
+  bulkDeletePayroll,
   getPayrolls,
   getPayrollById,
   updatePayroll,
@@ -33,6 +34,7 @@ router.use(protect);
 router.post('/integration/sync-employees', syncEmployees);
 router.get('/integration/attendance-sync', syncAttendance);
 
+// Configuration routes
 router.get('/config', getPayrollConfig);
 router.put('/config', updatePayrollConfig);
 router.post('/calculate-salary', calculateSalary);
@@ -40,6 +42,7 @@ router.get('/trend', getPayrollTrend);
 router.get('/export', exportPayrollExcel);
 router.post('/process', processPayroll);
 router.put('/bulk-approve', bulkApprovePayroll);
+router.post('/bulk-delete', bulkDeletePayroll);
 router.get('/', getPayrolls);
 
 router.route('/:id')
