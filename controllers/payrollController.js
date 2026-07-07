@@ -953,7 +953,7 @@ exports.getPayrolls = async (req, res) => {
     const payrolls = await Payroll.find(query)
       .populate({
         path: 'employee',
-        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled basicPercent hraPercent payType hourlyRate',
+        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled basicPercent hraPercent payType hourlyRate useSalaryComponents employmentType salaryRevisions',
         populate: { path: 'department', select: 'name code' },
       })
       .populate('expenseRef', 'expenseNumber date grandTotal')
