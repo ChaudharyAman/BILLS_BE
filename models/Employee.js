@@ -275,12 +275,24 @@ EmployeeSchema.pre('save', async function() {
   salary.specialAllowance = master.specialAllowance;
   salary.grossSalary = master.grossSalary;
   salary.ctc = master.grossTotalSalary;
+  if (master.earningsMap) {
+    Object.entries(master.earningsMap).forEach(([cId, val]) => {
+      if (!['basic', 'hra'].includes(cId)) {
+        salary[cId] = val;
+      }
+    });
+  }
   this.salaryStructure = salary;
 
   const deductions = this.deductions || {};
   deductions.pf = master.pfEmployee;
   deductions.esi = master.esiEmployee;
   deductions.professionalTax = master.professionalTax;
+  if (master.deductionsMap) {
+    Object.entries(master.deductionsMap).forEach(([cId, val]) => {
+      deductions[cId] = val;
+    });
+  }
   this.deductions = deductions;
 });
 
@@ -291,6 +303,7 @@ const applySalaryStructureUpdate = async function() {
   const hasSalaryUpdate = Boolean(
     set.salaryStructure ||
     Object.keys(set).some((key) => key.startsWith('salaryStructure.')) ||
+    Object.keys(set).some((key) => key.endsWith('Percent')) ||
     set.monthlyCTC !== undefined ||
     set.role !== undefined ||
     set.payType !== undefined ||
@@ -394,7 +407,7 @@ const applySalaryStructureUpdate = async function() {
     }
   }
 
-  const isCTCChanging = set.monthlyCTC !== undefined || set.role !== undefined || set.basicPercent !== undefined || set.hraPercent !== undefined || set.useSalaryComponents !== undefined || set.payType !== undefined || set.employmentType !== undefined;
+  const isCTCChanging = set.monthlyCTC !== undefined || set.role !== undefined || set.basicPercent !== undefined || set.hraPercent !== undefined || set.useSalaryComponents !== undefined || set.payType !== undefined || set.employmentType !== undefined || Object.keys(set).some((key) => key.endsWith('Percent'));
   if (isCTCChanging) {
     if (set.basic === undefined && set['salaryStructure.basic'] === undefined && (set.salaryStructure === undefined || set.salaryStructure.basic === undefined)) {
       delete mergedSalary.basic;
@@ -452,6 +465,13 @@ const applySalaryStructureUpdate = async function() {
       grossSalary: master.grossSalary,
       ctc: master.grossTotalSalary
     };
+    if (master.earningsMap) {
+      Object.entries(master.earningsMap).forEach(([cId, val]) => {
+        if (!['basic', 'hra'].includes(cId)) {
+          set.salaryStructure[cId] = val;
+        }
+      });
+    }
     set.flexiAmount = master.flexi;
     set.broadband = master.broadband;
     set.petrol = master.petrol;
@@ -465,6 +485,13 @@ const applySalaryStructureUpdate = async function() {
     update.$set['salaryStructure.specialAllowance'] = master.specialAllowance;
     update.$set['salaryStructure.grossSalary'] = master.grossSalary;
     update.$set['salaryStructure.ctc'] = master.grossTotalSalary;
+    if (master.earningsMap) {
+      Object.entries(master.earningsMap).forEach(([cId, val]) => {
+        if (!['basic', 'hra'].includes(cId)) {
+          update.$set[`salaryStructure.${cId}`] = val;
+        }
+      });
+    }
     update.$set.flexiAmount = master.flexi;
     update.$set.broadband = master.broadband;
     update.$set.petrol = master.petrol;
@@ -478,11 +505,21 @@ const applySalaryStructureUpdate = async function() {
       esi: master.esiEmployee,
       professionalTax: master.professionalTax
     };
+    if (master.deductionsMap) {
+      Object.entries(master.deductionsMap).forEach(([cId, val]) => {
+        set.deductions[cId] = val;
+      });
+    }
   } else {
     if (!update.$set) update.$set = {};
     update.$set['deductions.pf'] = master.pfEmployee;
     update.$set['deductions.esi'] = master.esiEmployee;
     update.$set['deductions.professionalTax'] = master.professionalTax;
+    if (master.deductionsMap) {
+      Object.entries(master.deductionsMap).forEach(([cId, val]) => {
+        update.$set[`deductions.${cId}`] = val;
+      });
+    }
   }
 
   this.setUpdate(update);

@@ -553,17 +553,17 @@ exports.processPayroll = async (req, res) => {
           netSalary: snapshot.netSalary,
           status: statusVal,
           lopStrategy: adjustments.lopStrategy || 'proportional',
-          overrides: {
-            pfEnabled: payload.adjustments?.pfEnabled,
-            esiEnabled: payload.adjustments?.esiEnabled,
-            ptEnabled: payload.adjustments?.ptEnabled,
-            lwfEnabled: payload.adjustments?.lwfEnabled,
-            gratuityEnabled: payload.adjustments?.gratuityEnabled,
-            includePfInCTC: payload.adjustments?.includePfInCTC,
-            includeGratuityInCTC: payload.adjustments?.includeGratuityInCTC,
-            basicPercent: payload.adjustments?.basicPercent,
-            hraPercent: payload.adjustments?.hraPercent,
-          },
+          overrides: (() => {
+            const ovr = {};
+            if (payload.adjustments && typeof payload.adjustments === 'object') {
+              Object.keys(payload.adjustments).forEach(key => {
+                if (key.endsWith('Enabled') || key.endsWith('InCTC') || key.endsWith('Percent')) {
+                  ovr[key] = payload.adjustments[key];
+                }
+              });
+            }
+            return ovr;
+          })(),
           segmentLops: snapshot.segmentLops || adjustments.segmentLops || [],
           approvalWorkflow: [{
             status: statusVal,
@@ -835,6 +835,13 @@ exports.calculateSalary = async (req, res) => {
       },
     };
 
+    // Copy any custom percentage overrides from req.body to previewSource
+    Object.keys(req.body).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        previewSource[key] = req.body[key] === null || req.body[key] === '' ? null : Number(req.body[key]);
+      }
+    });
+
     const master = buildMasterSalaryStructure(previewSource, config);
     const month = Number(req.body.month) || (new Date().getMonth() + 1);
     const year = Number(req.body.year) || new Date().getFullYear();
@@ -1013,7 +1020,7 @@ exports.getPayrollById = async (req, res) => {
     );
 
     const payrollObj = payroll.toObject();
-    payrollObj.salarySplits = splits;
+    payrollObj.salarySplits = (payrollObj.salarySplits && payrollObj.salarySplits.length > 0) ? payrollObj.salarySplits : splits;
     if (!payrollObj.employee) {
       payrollObj.employee = employeeData;
     }
@@ -1534,7 +1541,7 @@ exports.generatePayslip = async (req, res) => {
           year: payroll.year,
           monthName: monthName(payroll.month),
         },
-        salarySplits: splits,
+        salarySplits: (payroll.salarySplits && payroll.salarySplits.length > 0) ? payroll.salarySplits : splits,
         earnings: payroll.earnings,
         employerContributions: payroll.employerContributions,
         variablePay: payroll.variablePay,

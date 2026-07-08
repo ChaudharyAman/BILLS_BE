@@ -790,7 +790,6 @@ exports.getActiveEmployees = async (req, res) => {
 
     const employees = await Employee.find(query)
       .populate('department', 'name code')
-      .select('employeeId firstName lastName email designation department salaryStructure deductions monthlyCTC flexiAmount broadband petrol lta employerNPS insuranceAmount joiningBonus joiningDate location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled includePfInCTC includeGratuityInCTC basicPercent hraPercent useSalaryComponents salaryRevisions payType hourlyRate')
       .sort({ firstName: 1, lastName: 1 })
       .lean();
 
@@ -1729,6 +1728,13 @@ exports.addSalaryRevision = async (req, res) => {
       },
     };
 
+    // Copy any custom percentage overrides from req.body to nextPayload
+    Object.keys(req.body).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        nextPayload[key] = req.body[key] === null || req.body[key] === '' ? null : Number(req.body[key]);
+      }
+    });
+
     const salaryStructure = buildSalaryStructureFromCTC(nextPayload, config);
 
     if (!employee.salaryRevisions || employee.salaryRevisions.length === 0) {
@@ -1814,7 +1820,7 @@ exports.addSalaryRevision = async (req, res) => {
       }
     }
 
-    employee.salaryRevisions.push({
+    const newRevisionObj = {
       effectiveDate,
       previousCTC: isHourly ? 0 : previousCTC,
       newCTC: isHourly ? 0 : newCTC,
@@ -1850,7 +1856,16 @@ exports.addSalaryRevision = async (req, res) => {
         medicalAllowance: nextPayload.salaryStructure?.medicalAllowance || 0,
         otherAllowances: nextPayload.salaryStructure?.otherAllowances || [],
       },
+    };
+
+    // Copy any custom percentage overrides from nextPayload to newRevisionObj
+    Object.keys(nextPayload).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        newRevisionObj[key] = nextPayload[key];
+      }
     });
+
+    employee.salaryRevisions.push(newRevisionObj);
 
     employee.monthlyCTC = isHourly ? 0 : newCTC;
     employee.hourlyRate = isHourly ? newHourlyRate : 0;
@@ -1875,6 +1890,13 @@ exports.addSalaryRevision = async (req, res) => {
     employee.insuranceAmount = isHourly ? 0 : nextPayload.insuranceAmount;
     employee.deductions = nextPayload.deductions;
     employee.salaryStructure = salaryStructure;
+
+    // Copy any custom percentage overrides to employee document
+    Object.keys(nextPayload).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        employee.set(key, nextPayload[key]);
+      }
+    });
 
     await employee.save();
 
@@ -2003,6 +2025,13 @@ exports.updateSalaryRevision = async (req, res) => {
       },
     };
 
+    // Copy any custom percentage overrides from req.body to nextPayload
+    Object.keys(req.body).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        nextPayload[key] = req.body[key] === null || req.body[key] === '' ? null : Number(req.body[key]);
+      }
+    });
+
     const salaryStructure = buildSalaryStructureFromCTC(nextPayload, config);
 
     // Update revision fields
@@ -2038,6 +2067,13 @@ exports.updateSalaryRevision = async (req, res) => {
       otherAllowances: nextPayload.salaryStructure?.otherAllowances || [],
     };
 
+    // Copy any custom percentage overrides from nextPayload to revision
+    Object.keys(nextPayload).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        revision.set(key, nextPayload[key]);
+      }
+    });
+
     // Sort revisions to find the latest one
     const sorted = [...employee.salaryRevisions].sort((a, b) => new Date(a.effectiveDate) - new Date(b.effectiveDate));
     const latest = sorted[sorted.length - 1];
@@ -2067,6 +2103,13 @@ exports.updateSalaryRevision = async (req, res) => {
       employee.insuranceAmount = isHourly ? 0 : nextPayload.insuranceAmount;
       employee.deductions = nextPayload.deductions;
       employee.salaryStructure = salaryStructure;
+
+      // Copy any custom percentage overrides to employee document
+      Object.keys(nextPayload).forEach(key => {
+        if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+          employee.set(key, nextPayload[key]);
+        }
+      });
     }
 
     await employee.save();
@@ -2138,6 +2181,21 @@ exports.deleteSalaryRevision = async (req, res) => {
           specialAllowance: newLatest.salaryStructure?.specialAllowance || 0,
           otherAllowances: newLatest.salaryStructure?.otherAllowances || [],
         };
+
+        // Reset existing overrides to null first
+        Object.keys(employee.toObject ? employee.toObject() : employee).forEach(key => {
+          if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+            employee.set(key, null);
+          }
+        });
+
+        // Copy custom percentage overrides from newLatest to employee
+        const newLatestObj = newLatest.toObject ? newLatest.toObject() : newLatest;
+        Object.keys(newLatestObj).forEach(key => {
+          if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+            employee.set(key, newLatestObj[key]);
+          }
+        });
       }
     }
 

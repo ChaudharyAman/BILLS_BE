@@ -36,6 +36,7 @@ const PayrollSchema = new mongoose.Schema({
     conveyance: { type: Number, default: 0 },
     medicalAllowance: { type: Number, default: 0 },
     otherEarnings: [NamedAmountSchema],
+    earningsMap: { type: mongoose.Schema.Types.Mixed, default: {} },
     totalEarnings: { type: Number, required: true },
   },
 
@@ -71,6 +72,7 @@ const PayrollSchema = new mongoose.Schema({
     loanDeduction: { type: Number, default: 0 },
     advanceDeduction: { type: Number, default: 0 },
     otherDeductions: [NamedAmountSchema],
+    deductionsMap: { type: mongoose.Schema.Types.Mixed, default: {} },
     totalDeductions: { type: Number, required: true },
   },
 
@@ -126,15 +128,8 @@ const PayrollSchema = new mongoose.Schema({
     billUrl: { type: String, default: '' },
   }],
   overrides: {
-    pfEnabled: Boolean,
-    esiEnabled: Boolean,
-    ptEnabled: Boolean,
-    lwfEnabled: Boolean,
-    gratuityEnabled: Boolean,
-    includePfInCTC: Boolean,
-    includeGratuityInCTC: Boolean,
-    basicPercent: Number,
-    hraPercent: Number,
+    type: mongoose.Schema.Types.Mixed,
+    default: {},
   },
   totalReimbursementApproved: { type: Number, default: 0 },
   paymentMethod: String,
@@ -160,6 +155,13 @@ PayrollSchema.pre('validate', function() {
   const variablePay = this.variablePay || {};
   const deductions = this.deductions || {};
 
+  const standardEarningKeys = ['basic', 'hra', 'flexi', 'flexiAmount', 'broadband', 'petrol', 'lta', 'special', 'specialAllowance', 'conveyance', 'medical', 'medicalAllowance'];
+  const dynamicEarningsSum = earnings.earningsMap 
+    ? Object.entries(earnings.earningsMap)
+        .filter(([k]) => !standardEarningKeys.includes(k))
+        .reduce((sum, [, v]) => sum + (Number(v) || 0), 0) 
+    : 0;
+
   earnings.totalEarnings =
     (Number(earnings.basic) || 0) +
     (Number(earnings.hra) || 0) +
@@ -171,7 +173,8 @@ PayrollSchema.pre('validate', function() {
     (Number(earnings.overtime) || 0) +
     (Number(earnings.conveyance) || 0) +
     (Number(earnings.medicalAllowance) || 0) +
-    sumNamedAmounts(earnings.otherEarnings);
+    sumNamedAmounts(earnings.otherEarnings) +
+    dynamicEarningsSum;
 
   employerContributions.grossTotalSalary =
     earnings.totalEarnings +
@@ -191,6 +194,13 @@ PayrollSchema.pre('validate', function() {
 
   this.totalPayable = employerContributions.grossTotalSalary + variablePay.totalVariablePay;
 
+  const standardDeductionKeys = ['pfEmployee', 'esiEmployee', 'professionalTax', 'tds', 'insuranceEmployee', 'lwfEmployee', 'gratuityDeduction', 'loanDeduction', 'advanceDeduction'];
+  const dynamicDeductionsSum = deductions.deductionsMap 
+    ? Object.entries(deductions.deductionsMap)
+        .filter(([k]) => !standardDeductionKeys.includes(k))
+        .reduce((sum, [, v]) => sum + (Number(v) || 0), 0) 
+    : 0;
+
   deductions.totalDeductions =
     (Number(deductions.pfEmployee) || 0) +
     (Number(deductions.esiEmployee) || 0) +
@@ -201,7 +211,8 @@ PayrollSchema.pre('validate', function() {
     (Number(deductions.gratuityDeduction) || 0) +
     (Number(deductions.loanDeduction) || 0) +
     (Number(deductions.advanceDeduction) || 0) +
-    sumNamedAmounts(deductions.otherDeductions);
+    sumNamedAmounts(deductions.otherDeductions) +
+    dynamicDeductionsSum;
 
   this.totalReimbursementApproved = (this.reimbursements || []).reduce((sum, item) => sum + (Number(item.approved) || 0), 0);
 
