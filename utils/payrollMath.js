@@ -746,6 +746,8 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     return {
       monthlyCTC,
       employmentType: getVal('employmentType', 'full-time'),
+      compensationModel: getVal('compensationModel', 'SALARIED'),
+      paymentBasis: getVal('paymentBasis', 'MONTHLY'),
       payType: getVal('payType', 'salaried'),
       hourlyRate: getVal('hourlyRate', 0),
       pfEnabled: getVal('pfEnabled', true),
@@ -988,6 +990,27 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     return true;
   };
 
+  const variableTransactions = Array.isArray(adjustments.variableTransactions)
+    ? adjustments.variableTransactions
+    : [];
+
+  let variableEarningsTotal = 0;
+  const variableEarningsDetails = [];
+
+  for (const tx of variableTransactions) {
+    const txAmount = Number(tx.amount) || 0;
+    variableEarningsTotal += txAmount;
+    variableEarningsDetails.push({
+      paymentType: tx.paymentType,
+      reference: tx.reference || '',
+      client: tx.client || '',
+      quantity: Number(tx.quantity) || 1,
+      rate: Number(tx.rate) || 0,
+      amount: txAmount,
+      remarks: tx.remarks || '',
+    });
+  }
+
   const hasDynamicComponents = config.salaryComponents && config.salaryComponents.length > 0;
   let earnings = {};
 
@@ -1042,8 +1065,10 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       sumNamedAmounts(earnings.otherEarnings) +
       Object.entries(averagedEarningsMap)
         .filter(([key]) => !['basic', 'hra', 'flexi', 'broadband', 'petrol', 'lta', 'special', 'conveyance', 'medical'].includes(key))
-        .reduce((sum, [, val]) => sum + val, 0)
+        .reduce((sum, [, val]) => sum + val, 0) +
+      variableEarningsTotal
     );
+    earnings.variableCompensation = variableEarningsDetails;
 
     // Compute dynamic custom deductions in buildPayrollSnapshot
     config.salaryComponents.forEach(c => {
@@ -1084,8 +1109,10 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     };
     earnings.totalEarnings = roundAmount(
       Object.values(earnings).filter((value) => typeof value === 'number').reduce((sum, value) => sum + value, 0) +
-      sumNamedAmounts(earnings.otherEarnings)
+      sumNamedAmounts(earnings.otherEarnings) +
+      variableEarningsTotal
     );
+    earnings.variableCompensation = variableEarningsDetails;
   }
 
   let sumPfEmployee = 0;
@@ -1191,7 +1218,15 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     pfEmployee,
     esiEmployee,
     professionalTax: master.ptEnabled ? roundAmount(employee.deductions?.professionalTax) : 0,
-    tds: roundAmount(adjustments.tds ?? (Number(employee.deductions?.tds) > 0 ? employee.deductions.tds : master.tds)),
+    tds: roundAmount(
+      adjustments.tds !== undefined && adjustments.tds !== null
+        ? adjustments.tds
+        : (Number(employee.deductions?.tds) > 0
+            ? employee.deductions.tds
+            : (employee.compensationModel && employee.compensationModel !== 'SALARIED'
+                ? roundAmount(earnings.totalEarnings * 0.10)
+                : master.tds))
+    ),
     insuranceEmployee: roundAmount(adjustments.insuranceEmployee),
     lwfEmployee: master.lwfEmployee,
     gratuityDeduction: roundAmount(adjustments.gratuityDeduction),
@@ -1314,6 +1349,8 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
     return {
       monthlyCTC,
       employmentType: getVal('employmentType', 'full-time'),
+      compensationModel: getVal('compensationModel', 'SALARIED'),
+      paymentBasis: getVal('paymentBasis', 'MONTHLY'),
       payType: getVal('payType', 'salaried'),
       hourlyRate: getVal('hourlyRate', 0),
       pfEnabled: getVal('pfEnabled', true),

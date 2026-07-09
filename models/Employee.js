@@ -5,6 +5,12 @@ const AllowanceSchema = new mongoose.Schema({
   amount: { type: Number, default: 0, min: 0 },
 }, { _id: false });
 
+const RateCardItemSchema = new mongoose.Schema({
+  paymentType: { type: String, required: true },
+  rate: { type: Number, required: true, default: 0 },
+  unit: { type: String, default: '' },
+}, { _id: false });
+
 const EmployeeSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
@@ -35,6 +41,17 @@ const EmployeeSchema = new mongoose.Schema({
     enum: ['full-time', 'part-time', 'contract', 'intern'],
     default: 'full-time',
   },
+  compensationModel: {
+    type: String,
+    enum: ['SALARIED', 'CONSULTANT', 'PROJECT', 'POSITION', 'INTERVIEW', 'HOURLY', 'CUSTOM'],
+    default: 'SALARIED',
+  },
+  paymentBasis: {
+    type: String,
+    enum: ['MONTHLY', 'PROJECT', 'POSITION', 'INTERVIEW', 'HOUR', 'DAY', 'MILESTONE', 'CUSTOM'],
+    default: 'MONTHLY',
+  },
+  rateCard: [RateCardItemSchema],
   status: {
     type: String,
     enum: ['active', 'inactive', 'terminated'],
@@ -140,6 +157,9 @@ const EmployeeSchema = new mongoose.Schema({
     role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null, set: v => v === '' ? null : v },
     useSalaryComponents: { type: Boolean },
     employmentType: { type: String },
+    compensationModel: { type: String },
+    paymentBasis: { type: String },
+    rateCard: [RateCardItemSchema],
 
     // Configuration snapshot fields
     monthlyCTC: { type: Number },
@@ -180,7 +200,7 @@ EmployeeSchema.pre('save', async function() {
   // Guard: cannot compute salary without a user reference
   if (!this.user) return;
 
-  if (!this.isNew && (this.isModified('monthlyCTC') || this.isModified('role') || this.isModified('basicPercent') || this.isModified('hraPercent') || this.isModified('useSalaryComponents') || this.isModified('payType') || this.isModified('employmentType'))) {
+  if (!this.isNew && (this.isModified('monthlyCTC') || this.isModified('role') || this.isModified('basicPercent') || this.isModified('hraPercent') || this.isModified('useSalaryComponents') || this.isModified('payType') || this.isModified('employmentType') || this.isModified('compensationModel') || this.isModified('paymentBasis'))) {
     if (!this.isModified('salaryStructure.basic') && !this.isModified('basic')) {
       if (this.salaryStructure) {
         this.salaryStructure.basic = undefined;
@@ -193,7 +213,7 @@ EmployeeSchema.pre('save', async function() {
     }
   }
 
-  if (this.payType === 'hourly' || this.employmentType === 'intern') {
+  if (this.payType === 'hourly' || this.employmentType === 'intern' || (this.compensationModel && this.compensationModel !== 'SALARIED')) {
     this.pfEnabled = false;
     this.esiEnabled = false;
     this.ptEnabled = false;
@@ -380,7 +400,8 @@ const applySalaryStructureUpdate = async function() {
 
   const resolvedPayType = getField('payType', 'salaried');
   const resolvedEmploymentType = getField('employmentType', 'full-time');
-  if (resolvedPayType === 'hourly' || resolvedEmploymentType === 'intern') {
+  const resolvedCompensationModel = getField('compensationModel', 'SALARIED');
+  if (resolvedPayType === 'hourly' || resolvedEmploymentType === 'intern' || resolvedCompensationModel !== 'SALARIED') {
     const fieldsToForceFalse = [
       'pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled', 'gratuityEnabled',
       'includePfInCTC', 'includeGratuityInCTC', 'useSalaryComponents'
@@ -407,7 +428,7 @@ const applySalaryStructureUpdate = async function() {
     }
   }
 
-  const isCTCChanging = set.monthlyCTC !== undefined || set.role !== undefined || set.basicPercent !== undefined || set.hraPercent !== undefined || set.useSalaryComponents !== undefined || set.payType !== undefined || set.employmentType !== undefined || Object.keys(set).some((key) => key.endsWith('Percent'));
+  const isCTCChanging = set.monthlyCTC !== undefined || set.role !== undefined || set.basicPercent !== undefined || set.hraPercent !== undefined || set.useSalaryComponents !== undefined || set.payType !== undefined || set.employmentType !== undefined || set.compensationModel !== undefined || set.paymentBasis !== undefined || Object.keys(set).some((key) => key.endsWith('Percent'));
   if (isCTCChanging) {
     if (set.basic === undefined && set['salaryStructure.basic'] === undefined && (set.salaryStructure === undefined || set.salaryStructure.basic === undefined)) {
       delete mergedSalary.basic;
@@ -431,7 +452,8 @@ const applySalaryStructureUpdate = async function() {
     includePfInCTC: getField('includePfInCTC', false),
     includeGratuityInCTC: getField('includeGratuityInCTC', true),
     basicPercent: getField('basicPercent', null),
-    hraPercent: getField('hraPercent', null),
+    compensationModel: getField('compensationModel', 'SALARIED'),
+    paymentBasis: getField('paymentBasis', 'MONTHLY'),
     useSalaryComponents: getField('useSalaryComponents', true),
     salaryStructure: {
       ...(currentDoc.salaryStructure || {}),

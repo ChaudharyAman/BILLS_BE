@@ -22,6 +22,8 @@ exports.getRoles = async (req, res) => {
         gratuityEnabled: true,
         includePfInCTC: false,
         includeGratuityInCTC: false,
+        compensationModel: 'CONSULTANT',
+        paymentBasis: 'HOUR',
       },
       {
         user: req.user._id,
@@ -39,6 +41,8 @@ exports.getRoles = async (req, res) => {
         gratuityEnabled: false,
         includePfInCTC: false,
         includeGratuityInCTC: false,
+        compensationModel: 'SALARIED',
+        paymentBasis: 'MONTHLY',
       },
       {
         user: req.user._id,
@@ -56,6 +60,8 @@ exports.getRoles = async (req, res) => {
         gratuityEnabled: true,
         includePfInCTC: false,
         includeGratuityInCTC: true,
+        compensationModel: 'SALARIED',
+        paymentBasis: 'MONTHLY',
       }
     ];
 

@@ -36,6 +36,15 @@ const PayrollSchema = new mongoose.Schema({
     conveyance: { type: Number, default: 0 },
     medicalAllowance: { type: Number, default: 0 },
     otherEarnings: [NamedAmountSchema],
+    variableCompensation: [{
+      paymentType: { type: String },
+      reference: { type: String, default: '' },
+      client: { type: String, default: '' },
+      quantity: { type: Number, default: 1 },
+      rate: { type: Number, default: 0 },
+      amount: { type: Number, required: true },
+      remarks: { type: String }
+    }],
     earningsMap: { type: mongoose.Schema.Types.Mixed, default: {} },
     totalEarnings: { type: Number, required: true },
   },
