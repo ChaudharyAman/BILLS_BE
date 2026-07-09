@@ -426,7 +426,13 @@ exports.processPayroll = async (req, res) => {
             errors.push({ employeeId, employeeName, error: 'Payroll already exists for this period' });
             continue;
           }
-          // If it's a draft, delete it first so we can re-create/update it successfully
+          // If it's a draft, unlink transactions before deleting
+          const PayrollVariableTransaction = require('../models/PayrollVariableTransaction');
+          await PayrollVariableTransaction.updateMany(
+            { payroll: existing._id, user: req.user._id },
+            { $set: { status: 'approved', payroll: null } }
+          );
+          // Delete it first so we can re-create/update it successfully
           await Payroll.deleteOne({ _id: existing._id });
         }
 
@@ -483,6 +489,16 @@ exports.processPayroll = async (req, res) => {
         // Fetch approved claims for this employee in the month & year
         const startDate = new Date(year, month - 1, 1);
         const endDate = new Date(year, month, 1);
+
+        const PayrollVariableTransaction = require('../models/PayrollVariableTransaction');
+        const transactions = await PayrollVariableTransaction.find({
+          employee: employee._id,
+          user: req.user._id,
+          status: 'approved',
+          date: { $gte: startDate, $lt: endDate }
+        });
+        adjustments.variableTransactions = transactions;
+
         const claims = await ReimbursementClaim.find({
           employee: employee._id,
           user: req.user._id,
@@ -553,17 +569,17 @@ exports.processPayroll = async (req, res) => {
           netSalary: snapshot.netSalary,
           status: statusVal,
           lopStrategy: adjustments.lopStrategy || 'proportional',
-          overrides: {
-            pfEnabled: payload.adjustments?.pfEnabled,
-            esiEnabled: payload.adjustments?.esiEnabled,
-            ptEnabled: payload.adjustments?.ptEnabled,
-            lwfEnabled: payload.adjustments?.lwfEnabled,
-            gratuityEnabled: payload.adjustments?.gratuityEnabled,
-            includePfInCTC: payload.adjustments?.includePfInCTC,
-            includeGratuityInCTC: payload.adjustments?.includeGratuityInCTC,
-            basicPercent: payload.adjustments?.basicPercent,
-            hraPercent: payload.adjustments?.hraPercent,
-          },
+          overrides: (() => {
+            const ovr = {};
+            if (payload.adjustments && typeof payload.adjustments === 'object') {
+              Object.keys(payload.adjustments).forEach(key => {
+                if (key.endsWith('Enabled') || key.endsWith('InCTC') || key.endsWith('Percent')) {
+                  ovr[key] = payload.adjustments[key];
+                }
+              });
+            }
+            return ovr;
+          })(),
           segmentLops: snapshot.segmentLops || adjustments.segmentLops || [],
           approvalWorkflow: [{
             status: statusVal,
@@ -607,6 +623,19 @@ exports.processPayroll = async (req, res) => {
             notes: notesList.join('. ')
           }]
         });
+
+        if (transactions.length > 0) {
+          const transactionIds = transactions.map(t => t._id);
+          await PayrollVariableTransaction.updateMany(
+            { _id: { $in: transactionIds } },
+            {
+              $set: {
+                payroll: payroll._id,
+                status: saveAsDraft ? 'approved' : 'paid'
+              }
+            }
+          );
+        }
 
         await AuditLog.create({
           user: req.user._id,
@@ -788,11 +817,15 @@ exports.calculateSalary = async (req, res) => {
     const hourlyRate = Number(req.body.hourlyRate) || 0;
     const hoursWorked = req.body.hoursWorked !== undefined ? Number(req.body.hoursWorked) : 160;
 
-    if (payType === 'hourly') {
+    const isHourly = payType === 'hourly';
+    const isConsultant = req.body.compensationModel && req.body.compensationModel !== 'SALARIED';
+    const disableStatutory = isHourly || isConsultant;
+
+    if (isHourly) {
       monthlyCTC = hourlyRate * hoursWorked;
     }
 
-    if (payType !== 'hourly' && (!monthlyCTC || monthlyCTC < 0)) {
+    if (!isHourly && (!monthlyCTC || monthlyCTC < 0)) {
       return res.status(400).json({ message: 'Monthly CTC or Annual CTC is required' });
     }
 
@@ -802,7 +835,9 @@ exports.calculateSalary = async (req, res) => {
       hourlyRate,
       hoursWorked,
       employmentType: req.body.employmentType,
-      useSalaryComponents: req.body.useSalaryComponents !== false && payType !== 'hourly',
+      compensationModel: req.body.compensationModel || 'SALARIED',
+      paymentBasis: req.body.paymentBasis || 'MONTHLY',
+      useSalaryComponents: req.body.useSalaryComponents !== false && !disableStatutory,
       basicPercent: req.body.basicPercent !== undefined && req.body.basicPercent !== null ? Number(req.body.basicPercent) : null,
       hraPercent: req.body.hraPercent !== undefined && req.body.hraPercent !== null ? Number(req.body.hraPercent) : null,
       basic: req.body.basic !== undefined ? Number(req.body.basic) : undefined,
@@ -815,13 +850,13 @@ exports.calculateSalary = async (req, res) => {
       employerNPS: Number(req.body.employerNPS) || 0,
       insuranceAmount: req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : config.defaultInsurance,
       taxRegime: req.body.taxRegime || 'new',
-      pfEnabled: payType === 'hourly' ? false : req.body.pfEnabled !== false,
-      esiEnabled: payType === 'hourly' ? false : req.body.esiEnabled !== false,
-      ptEnabled: payType === 'hourly' ? false : req.body.ptEnabled !== false,
-      lwfEnabled: payType === 'hourly' ? false : req.body.lwfEnabled !== false,
-      gratuityEnabled: payType === 'hourly' ? false : req.body.gratuityEnabled !== false,
-      includePfInCTC: payType === 'hourly' ? false : req.body.includePfInCTC === true,
-      includeGratuityInCTC: payType === 'hourly' ? false : req.body.includeGratuityInCTC !== false,
+      pfEnabled: disableStatutory ? false : req.body.pfEnabled !== false,
+      esiEnabled: disableStatutory ? false : req.body.esiEnabled !== false,
+      ptEnabled: disableStatutory ? false : req.body.ptEnabled !== false,
+      lwfEnabled: disableStatutory ? false : req.body.lwfEnabled !== false,
+      gratuityEnabled: disableStatutory ? false : req.body.gratuityEnabled !== false,
+      includePfInCTC: disableStatutory ? false : req.body.includePfInCTC === true,
+      includeGratuityInCTC: disableStatutory ? false : req.body.includeGratuityInCTC !== false,
       declarations: req.body.declarations || {},
       deductions: {
         professionalTax: payType === 'hourly' ? 0 : (Number(req.body.professionalTax) || 0),
@@ -834,6 +869,13 @@ exports.calculateSalary = async (req, res) => {
         otherAllowances: Array.isArray(req.body.otherAllowances) ? req.body.otherAllowances : (Array.isArray(req.body.salaryStructure?.otherAllowances) ? req.body.salaryStructure.otherAllowances : []),
       },
     };
+
+    // Copy any custom percentage overrides from req.body to previewSource
+    Object.keys(req.body).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        previewSource[key] = req.body[key] === null || req.body[key] === '' ? null : Number(req.body[key]);
+      }
+    });
 
     const master = buildMasterSalaryStructure(previewSource, config);
     const month = Number(req.body.month) || (new Date().getMonth() + 1);
@@ -1013,7 +1055,7 @@ exports.getPayrollById = async (req, res) => {
     );
 
     const payrollObj = payroll.toObject();
-    payrollObj.salarySplits = splits;
+    payrollObj.salarySplits = (payrollObj.salarySplits && payrollObj.salarySplits.length > 0) ? payrollObj.salarySplits : splits;
     if (!payrollObj.employee) {
       payrollObj.employee = employeeData;
     }
@@ -1534,7 +1576,7 @@ exports.generatePayslip = async (req, res) => {
           year: payroll.year,
           monthName: monthName(payroll.month),
         },
-        salarySplits: splits,
+        salarySplits: (payroll.salarySplits && payroll.salarySplits.length > 0) ? payroll.salarySplits : splits,
         earnings: payroll.earnings,
         employerContributions: payroll.employerContributions,
         variablePay: payroll.variablePay,
@@ -2236,6 +2278,12 @@ exports.deletePayroll = async (req, res) => {
       await Expense.deleteOne({ _id: payroll.expenseRef, user: req.user._id });
     }
 
+    const PayrollVariableTransaction = require('../models/PayrollVariableTransaction');
+    await PayrollVariableTransaction.updateMany(
+      { payroll: id, user: req.user._id },
+      { $set: { status: 'approved', payroll: null } }
+    );
+
     await Payroll.deleteOne({ _id: id, user: req.user._id });
 
     await AuditLog.create({
@@ -2280,6 +2328,11 @@ exports.bulkDeletePayroll = async (req, res) => {
       if (payroll.expenseRef) {
         await Expense.deleteOne({ _id: payroll.expenseRef, user: req.user._id });
       }
+      const PayrollVariableTransaction = require('../models/PayrollVariableTransaction');
+      await PayrollVariableTransaction.updateMany(
+        { payroll: payroll._id, user: req.user._id },
+        { $set: { status: 'approved', payroll: null } }
+      );
       await Payroll.deleteOne({ _id: payroll._id });
 
       await AuditLog.create({

@@ -7,6 +7,16 @@ const RoleSchema = new mongoose.Schema({
 
   // Employment classification
   employmentType: { type: String, enum: ['full-time', 'part-time', 'contract', 'intern'], default: 'full-time' },
+  compensationModel: {
+    type: String,
+    enum: ['SALARIED', 'CONSULTANT', 'PROJECT', 'POSITION', 'INTERVIEW', 'HOURLY', 'CUSTOM'],
+    default: 'SALARIED',
+  },
+  paymentBasis: {
+    type: String,
+    enum: ['MONTHLY', 'PROJECT', 'POSITION', 'INTERVIEW', 'HOUR', 'DAY', 'MILESTONE', 'CUSTOM'],
+    default: 'MONTHLY',
+  },
 
   // Pay structure
   payType: { type: String, enum: ['salaried', 'hourly'], default: 'salaried', required: true },

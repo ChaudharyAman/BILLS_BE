@@ -66,7 +66,7 @@ const SettingsSchema = new mongoose.Schema({
   publicSubmissions: {
     enabled: { type: Boolean, default: false },
     // Randomly generated hex token; NEVER derived from or equal to the User _id
-    token: { type: String, default: null },
+    token: { type: String },
     // Display name shown on the public page (not necessarily the same as companyName)
     companyDisplayName: { type: String, default: '' },
     // Which document categories the submitter may choose from

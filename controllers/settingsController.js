@@ -210,8 +210,11 @@ function buildPortalLink(token) {
  */
 exports.getPublicSubmissionsConfig = async (req, res) => {
   try {
-    const settings = await Settings.findOne({ user: req.user._id });
-    if (!settings) return res.status(404).json({ message: 'Settings not found' });
+    let settings = await Settings.findOne({ user: req.user._id });
+    if (!settings) {
+      settings = new Settings({ user: req.user._id });
+      await settings.save();
+    }
 
     const ps = settings.publicSubmissions || {};
     return res.json({

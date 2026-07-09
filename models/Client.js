@@ -95,7 +95,6 @@ function hasValidGstin(gstin) {
 ClientSchema.pre('save', function() {
   if (hasValidGstin(this.gstin)) {
     this.clientType = 'Company';
-    this.tds_applicable = true;
     this.tds_default_section = this.tds_default_section || this.default_tds_section || '194J';
     this.tds_default_rate = Number(this.tds_default_rate || this.default_tds_rate || 10);
     this.default_tds_section = this.tds_default_section;

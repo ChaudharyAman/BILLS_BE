@@ -282,6 +282,8 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
   columns.push({ header: 'Employment Type', group: 'Employment Details', key: 'employmentType', sample: 'full-time' });
   columns.push({ header: 'Status', group: 'Employment Details', key: 'status', sample: 'active' });
   columns.push({ header: 'Pay Type', group: 'Employment Details', key: 'payType', sample: 'salaried', getValue: (employee) => employee?.payType || 'salaried' });
+  columns.push({ header: 'Compensation Model', group: 'Employment Details', key: 'compensationModel', sample: 'SALARIED', getValue: (employee) => employee?.compensationModel || 'SALARIED' });
+  columns.push({ header: 'Payment Basis', group: 'Employment Details', key: 'paymentBasis', sample: 'MONTHLY', getValue: (employee) => employee?.paymentBasis || 'MONTHLY' });
   columns.push({ header: 'Job Role Template', group: 'Employment Details', key: 'role', sample: 'EMPLOYEE', getValue: (employee) => {
     if (!employee?.role) return '';
     if (typeof employee.role === 'object' && employee.role.name) {
@@ -790,7 +792,6 @@ exports.getActiveEmployees = async (req, res) => {
 
     const employees = await Employee.find(query)
       .populate('department', 'name code')
-      .select('employeeId firstName lastName email designation department salaryStructure deductions monthlyCTC flexiAmount broadband petrol lta employerNPS insuranceAmount joiningBonus joiningDate location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled includePfInCTC includeGratuityInCTC basicPercent hraPercent useSalaryComponents salaryRevisions payType hourlyRate')
       .sort({ firstName: 1, lastName: 1 })
       .lean();
 
@@ -1073,6 +1074,12 @@ exports.importEmployees = async (req, res) => {
       const payTypeRaw = String(getCellValue(rawRow, ['PAY TYPE', 'PAYTYPE', 'PAY_TYPE']) || '').trim().toLowerCase();
       const payType = ['salaried', 'hourly'].includes(payTypeRaw) ? payTypeRaw : 'salaried';
 
+      const compensationModelRaw = String(getCellValue(rawRow, ['COMPENSATION MODEL', 'COMPENSATIONMODEL', 'COMPENSATION_MODEL']) || '').trim().toUpperCase();
+      const compensationModel = ['SALARIED', 'CONSULTANT', 'PROJECT', 'POSITION', 'INTERVIEW', 'HOURLY', 'CUSTOM'].includes(compensationModelRaw) ? compensationModelRaw : 'SALARIED';
+
+      const paymentBasisRaw = String(getCellValue(rawRow, ['PAYMENT BASIS', 'PAYMENTBASIS', 'PAYMENT_BASIS']) || '').trim().toUpperCase();
+      const paymentBasis = ['MONTHLY', 'PROJECT', 'POSITION', 'INTERVIEW', 'HOUR', 'DAY', 'MILESTONE', 'CUSTOM'].includes(paymentBasisRaw) ? paymentBasisRaw : 'MONTHLY';
+
       const hourlyRate = Number(getCellValue(rawRow, ['HOURLY RATE', 'HOURLYRATE', 'HOURLY_RATE'])) || 0;
 
       // Salary ratio overrides
@@ -1213,6 +1220,8 @@ exports.importEmployees = async (req, res) => {
         ...(departmentId && { department: departmentId }),
         ...(roleId && { role: roleId }),
         employmentType,
+        compensationModel,
+        paymentBasis,
         status,
         monthlyCTC: isHourly ? 0 : monthlyCTC,
         payType,
@@ -1427,7 +1436,8 @@ exports.exportEmployeesExcel = async (req, res) => {
       'joiningBonus', 'basicPercent', 'hraPercent', 'pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled',
       'gratuityEnabled', 'includePfInCTC', 'includeGratuityInCTC', 'salaryStructure', 'deductions',
       'bankDetails', 'panNumber', 'uanNumber', 'aadharNumber', 'taxRegime', 'declarations', 'documents',
-      'salaryRevisions', 'createdAt', 'updatedAt', '__v', 'payType', 'hourlyRate', 'role'
+      'salaryRevisions', 'createdAt', 'updatedAt', '__v', 'payType', 'hourlyRate', 'role',
+      'compensationModel', 'paymentBasis'
     ]);
 
     const rootCustomKeysSet = new Set();
@@ -1698,6 +1708,9 @@ exports.addSalaryRevision = async (req, res) => {
       hourlyRate: isHourly ? newHourlyRate : 0,
       useSalaryComponents: isHourly ? false : getVal('useSalaryComponents'),
       employmentType: isHourly ? 'contract' : getVal('employmentType'),
+      compensationModel: req.body.compensationModel !== undefined ? req.body.compensationModel : employee.compensationModel,
+      paymentBasis: req.body.paymentBasis !== undefined ? req.body.paymentBasis : employee.paymentBasis,
+      rateCard: req.body.rateCard !== undefined ? req.body.rateCard : employee.rateCard,
       pfEnabled: isHourly ? false : getVal('pfEnabled'),
       esiEnabled: isHourly ? false : getVal('esiEnabled'),
       ptEnabled: isHourly ? false : getVal('ptEnabled'),
@@ -1729,6 +1742,13 @@ exports.addSalaryRevision = async (req, res) => {
       },
     };
 
+    // Copy any custom percentage overrides from req.body to nextPayload
+    Object.keys(req.body).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        nextPayload[key] = req.body[key] === null || req.body[key] === '' ? null : Number(req.body[key]);
+      }
+    });
+
     const salaryStructure = buildSalaryStructureFromCTC(nextPayload, config);
 
     if (!employee.salaryRevisions || employee.salaryRevisions.length === 0) {
@@ -1745,6 +1765,8 @@ exports.addSalaryRevision = async (req, res) => {
         role: employee.role || null,
         useSalaryComponents: isHourly ? false : employee.useSalaryComponents !== false,
         employmentType: employee.employmentType || 'full-time',
+        compensationModel: employee.compensationModel || 'SALARIED',
+        paymentBasis: employee.paymentBasis || 'MONTHLY',
         
         monthlyCTC: isHourly ? 0 : previousCTC,
         pfEnabled: isHourly ? false : employee.pfEnabled !== false,
@@ -1784,6 +1806,8 @@ exports.addSalaryRevision = async (req, res) => {
           latestInDoc.hourlyRate = isHourly ? (Number(latestInDoc.newHourlyRate) || previousHourlyRate) : 0;
           latestInDoc.useSalaryComponents = isHourly ? false : employee.useSalaryComponents !== false;
           latestInDoc.employmentType = latestInDoc.employmentType || employee.employmentType || 'full-time';
+          latestInDoc.compensationModel = latestInDoc.compensationModel || employee.compensationModel || 'SALARIED';
+          latestInDoc.paymentBasis = latestInDoc.paymentBasis || employee.paymentBasis || 'MONTHLY';
           latestInDoc.pfEnabled = isHourly ? false : employee.pfEnabled !== false;
           latestInDoc.esiEnabled = isHourly ? false : employee.esiEnabled !== false;
           latestInDoc.ptEnabled = isHourly ? false : employee.ptEnabled !== false;
@@ -1814,7 +1838,7 @@ exports.addSalaryRevision = async (req, res) => {
       }
     }
 
-    employee.salaryRevisions.push({
+    const newRevisionObj = {
       effectiveDate,
       previousCTC: isHourly ? 0 : previousCTC,
       newCTC: isHourly ? 0 : newCTC,
@@ -1825,6 +1849,9 @@ exports.addSalaryRevision = async (req, res) => {
       role: revisedRole,
       useSalaryComponents: isHourly ? false : nextPayload.useSalaryComponents,
       employmentType: isHourly ? 'contract' : nextPayload.employmentType,
+      compensationModel: req.body.compensationModel || employee.compensationModel || 'SALARIED',
+      paymentBasis: req.body.paymentBasis || employee.paymentBasis || 'MONTHLY',
+      rateCard: req.body.rateCard !== undefined ? req.body.rateCard : employee.rateCard,
 
       monthlyCTC: isHourly ? 0 : newCTC,
       hourlyRate: isHourly ? newHourlyRate : 0,
@@ -1850,13 +1877,27 @@ exports.addSalaryRevision = async (req, res) => {
         medicalAllowance: nextPayload.salaryStructure?.medicalAllowance || 0,
         otherAllowances: nextPayload.salaryStructure?.otherAllowances || [],
       },
+    };
+
+    // Copy any custom percentage overrides from nextPayload to newRevisionObj
+    Object.keys(nextPayload).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        newRevisionObj[key] = nextPayload[key];
+      }
     });
+
+    employee.salaryRevisions.push(newRevisionObj);
 
     employee.monthlyCTC = isHourly ? 0 : newCTC;
     employee.hourlyRate = isHourly ? newHourlyRate : 0;
     employee.role = revisedRole;
     employee.useSalaryComponents = isHourly ? false : nextPayload.useSalaryComponents;
     employee.employmentType = isHourly ? 'contract' : nextPayload.employmentType;
+    employee.compensationModel = req.body.compensationModel || employee.compensationModel || 'SALARIED';
+    employee.paymentBasis = req.body.paymentBasis || employee.paymentBasis || 'MONTHLY';
+    if (req.body.rateCard !== undefined) {
+      employee.rateCard = req.body.rateCard;
+    }
     employee.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
     employee.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
     employee.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
@@ -1875,6 +1916,13 @@ exports.addSalaryRevision = async (req, res) => {
     employee.insuranceAmount = isHourly ? 0 : nextPayload.insuranceAmount;
     employee.deductions = nextPayload.deductions;
     employee.salaryStructure = salaryStructure;
+
+    // Copy any custom percentage overrides to employee document
+    Object.keys(nextPayload).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        employee.set(key, nextPayload[key]);
+      }
+    });
 
     await employee.save();
 
@@ -1972,6 +2020,9 @@ exports.updateSalaryRevision = async (req, res) => {
       hourlyRate: isHourly ? newHourlyRate : 0,
       useSalaryComponents: isHourly ? false : getVal('useSalaryComponents'),
       employmentType: isHourly ? 'contract' : getVal('employmentType'),
+      compensationModel: getVal('compensationModel'),
+      paymentBasis: getVal('paymentBasis'),
+      rateCard: req.body.rateCard !== undefined ? req.body.rateCard : (revision.rateCard || employee.rateCard),
       pfEnabled: isHourly ? false : getVal('pfEnabled'),
       esiEnabled: isHourly ? false : getVal('esiEnabled'),
       ptEnabled: isHourly ? false : getVal('ptEnabled'),
@@ -2003,6 +2054,13 @@ exports.updateSalaryRevision = async (req, res) => {
       },
     };
 
+    // Copy any custom percentage overrides from req.body to nextPayload
+    Object.keys(req.body).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        nextPayload[key] = req.body[key] === null || req.body[key] === '' ? null : Number(req.body[key]);
+      }
+    });
+
     const salaryStructure = buildSalaryStructureFromCTC(nextPayload, config);
 
     // Update revision fields
@@ -2013,6 +2071,11 @@ exports.updateSalaryRevision = async (req, res) => {
     revision.role = revisedRole;
     revision.useSalaryComponents = isHourly ? false : nextPayload.useSalaryComponents;
     revision.employmentType = isHourly ? 'contract' : nextPayload.employmentType;
+    revision.compensationModel = nextPayload.compensationModel;
+    revision.paymentBasis = nextPayload.paymentBasis;
+    if (req.body.rateCard !== undefined) {
+      revision.rateCard = req.body.rateCard;
+    }
     revision.monthlyCTC = isHourly ? 0 : newCTC;
     revision.hourlyRate = isHourly ? newHourlyRate : 0;
     revision.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
@@ -2038,6 +2101,13 @@ exports.updateSalaryRevision = async (req, res) => {
       otherAllowances: nextPayload.salaryStructure?.otherAllowances || [],
     };
 
+    // Copy any custom percentage overrides from nextPayload to revision
+    Object.keys(nextPayload).forEach(key => {
+      if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+        revision.set(key, nextPayload[key]);
+      }
+    });
+
     // Sort revisions to find the latest one
     const sorted = [...employee.salaryRevisions].sort((a, b) => new Date(a.effectiveDate) - new Date(b.effectiveDate));
     const latest = sorted[sorted.length - 1];
@@ -2049,6 +2119,11 @@ exports.updateSalaryRevision = async (req, res) => {
       employee.role = revisedRole;
       employee.useSalaryComponents = isHourly ? false : nextPayload.useSalaryComponents;
       employee.employmentType = isHourly ? 'contract' : nextPayload.employmentType;
+      employee.compensationModel = nextPayload.compensationModel;
+      employee.paymentBasis = nextPayload.paymentBasis;
+      if (req.body.rateCard !== undefined) {
+        employee.rateCard = req.body.rateCard;
+      }
       employee.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
       employee.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
       employee.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
@@ -2067,6 +2142,13 @@ exports.updateSalaryRevision = async (req, res) => {
       employee.insuranceAmount = isHourly ? 0 : nextPayload.insuranceAmount;
       employee.deductions = nextPayload.deductions;
       employee.salaryStructure = salaryStructure;
+
+      // Copy any custom percentage overrides to employee document
+      Object.keys(nextPayload).forEach(key => {
+        if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+          employee.set(key, nextPayload[key]);
+        }
+      });
     }
 
     await employee.save();
@@ -2138,6 +2220,21 @@ exports.deleteSalaryRevision = async (req, res) => {
           specialAllowance: newLatest.salaryStructure?.specialAllowance || 0,
           otherAllowances: newLatest.salaryStructure?.otherAllowances || [],
         };
+
+        // Reset existing overrides to null first
+        Object.keys(employee.toObject ? employee.toObject() : employee).forEach(key => {
+          if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+            employee.set(key, null);
+          }
+        });
+
+        // Copy custom percentage overrides from newLatest to employee
+        const newLatestObj = newLatest.toObject ? newLatest.toObject() : newLatest;
+        Object.keys(newLatestObj).forEach(key => {
+          if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
+            employee.set(key, newLatestObj[key]);
+          }
+        });
       }
     }
 
