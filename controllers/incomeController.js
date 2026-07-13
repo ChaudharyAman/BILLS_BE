@@ -647,7 +647,7 @@ exports.deleteIncome = async (req, res) => {
           sourceInvoice: income.sourceInvoice,
         });
       }
-      await income.deleteOne();
+      await Income.updateOne({ _id: income._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
       res.json({ message: 'Income removed' });
     } else {
       res.status(404).json({ message: 'Income not found' });

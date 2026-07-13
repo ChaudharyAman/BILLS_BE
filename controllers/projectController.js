@@ -79,7 +79,7 @@ exports.deleteProject = async (req, res) => {
       Expense.exists({ user: req.user._id, project: req.params.id }),
     ]);
     if (inUse.some(Boolean)) return res.status(400).json({ message: 'Cannot delete a project with transactions' });
-    const project = await Project.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const project = await Project.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!project) return res.status(404).json({ message: 'Project not found' });
     res.json({ message: 'Project deleted successfully' });
   } catch (error) {

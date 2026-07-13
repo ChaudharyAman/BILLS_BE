@@ -333,7 +333,7 @@ exports.updateClient = async (req, res) => {
 // Delete client
 exports.deleteClient = async (req, res) => {
   try {
-    const client = await Client.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const client = await Client.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
     }

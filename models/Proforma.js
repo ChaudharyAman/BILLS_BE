@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const ProformaItemSchema = new mongoose.Schema({
   itemRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
@@ -92,5 +93,7 @@ const ProformaSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 ProformaSchema.index({ user: 1, proformaNo: 1 }, { unique: true });
+
+ProformaItemSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Proforma', ProformaSchema);

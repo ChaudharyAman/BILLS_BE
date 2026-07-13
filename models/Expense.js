@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const ExpenseItemSchema = new mongoose.Schema({
   itemRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
@@ -134,5 +135,7 @@ ExpenseSchema.pre('save', async function() {
 ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true });
 ExpenseSchema.index({ user: 1, date: 1 });
 ExpenseSchema.index({ user: 1, 'items.taxRate': 1 });
+
+ExpenseItemSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

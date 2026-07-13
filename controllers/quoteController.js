@@ -482,7 +482,7 @@ exports.deleteQuote = async (req, res) => {
        return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
     }
     // -------------------------------------------
-    await quote.deleteOne();
+    await Quote.updateOne({ _id: quote._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     res.json({ message: 'Quote deleted' });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };

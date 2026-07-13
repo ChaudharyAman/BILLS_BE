@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const PartySchema = new mongoose.Schema({
   vendorRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' },
@@ -35,5 +36,7 @@ const RecurringTransactionSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 RecurringTransactionSchema.index({ user: 1, type: 1, isActive: 1, nextProcessDate: 1 });
+
+PartySchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('RecurringTransaction', RecurringTransactionSchema);

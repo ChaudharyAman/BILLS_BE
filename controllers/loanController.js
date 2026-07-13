@@ -114,7 +114,7 @@ exports.deleteLoan = async (req, res) => {
       return res.status(404).json({ message: 'Loan not found' });
     }
 
-    const loan = await Loan.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const loan = await Loan.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!loan) {
       return res.status(404).json({ message: 'Loan not found' });
     }

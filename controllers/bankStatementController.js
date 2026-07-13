@@ -160,7 +160,7 @@ exports.deleteBankStatement = async (req, res) => {
     if (!statement)
       return res.status(404).json({ message: 'Bank statement not found' });
 
-    await statement.deleteOne();
+    await BankStatement.updateOne({ _id: statement._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     res.json({ message: 'Bank statement deleted' });
   } catch (error) {

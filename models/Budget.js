@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const BudgetSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -67,5 +68,7 @@ BudgetSchema.pre('findOneAndUpdate', async function() {
 });
 
 BudgetSchema.index({ user: 1, category: 1, startDate: 1, endDate: 1 });
+
+BudgetSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Budget', BudgetSchema);

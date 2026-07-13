@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const BankTransactionSchema = new mongoose.Schema({
   date:        { type: Date, required: true },
@@ -37,5 +38,7 @@ const BankStatementSchema = new mongoose.Schema({
 
 // One user can have many statements — index for fast lookups
 BankStatementSchema.index({ user: 1, createdAt: -1 });
+
+BankTransactionSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('BankStatement', BankStatementSchema);

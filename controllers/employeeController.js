@@ -881,17 +881,17 @@ exports.deleteEmployee = async (req, res) => {
     const payrolls = await Payroll.find({ user: req.user._id, employee: employeeId }).select('expenseRef');
     const expenseIds = payrolls.map(p => p.expenseRef).filter(Boolean);
     if (expenseIds.length > 0) {
-      await Expense.deleteMany({ user: req.user._id, _id: { $in: expenseIds } });
+      await Expense.updateMany({ user: req.user._id, _id: { $in: expenseIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
     }
 
     // 2. Delete payroll records
-    await Payroll.deleteMany({ user: req.user._id, employee: employeeId });
+    await Payroll.updateMany({ user: req.user._id, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 3. Delete loans
-    await Loan.deleteMany({ user: req.user._id, employee: employeeId });
+    await Loan.updateMany({ user: req.user._id, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 4. Delete reimbursement claims
-    await ReimbursementClaim.deleteMany({ user: req.user._id, employee: employeeId });
+    await ReimbursementClaim.updateMany({ user: req.user._id, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 5. Pull employee from project teams
     await Project.updateMany(
@@ -900,7 +900,7 @@ exports.deleteEmployee = async (req, res) => {
     );
 
     // 6. Delete the employee profile itself
-    await Employee.findOneAndDelete({ _id: employeeId, user: req.user._id });
+    await Employee.findOneAndUpdate({ _id: employeeId, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     res.json({ message: 'Employee and all associated payrolls, expenses, loans, and claims deleted successfully' });
   } catch (error) {
@@ -925,17 +925,17 @@ exports.bulkDeleteEmployees = async (req, res) => {
     const payrolls = await Payroll.find({ user: req.user._id, employee: { $in: employeeIds } }).select('expenseRef');
     const expenseIds = payrolls.map(p => p.expenseRef).filter(Boolean);
     if (expenseIds.length > 0) {
-      await Expense.deleteMany({ user: req.user._id, _id: { $in: expenseIds } });
+      await Expense.updateMany({ user: req.user._id, _id: { $in: expenseIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
     }
 
     // 2. Delete payroll records
-    await Payroll.deleteMany({ user: req.user._id, employee: { $in: employeeIds } });
+    await Payroll.updateMany({ user: req.user._id, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 3. Delete loans
-    await Loan.deleteMany({ user: req.user._id, employee: { $in: employeeIds } });
+    await Loan.updateMany({ user: req.user._id, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 4. Delete reimbursement claims
-    await ReimbursementClaim.deleteMany({ user: req.user._id, employee: { $in: employeeIds } });
+    await ReimbursementClaim.updateMany({ user: req.user._id, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 5. Pull employees from project teams
     await Project.updateMany(
@@ -944,7 +944,7 @@ exports.bulkDeleteEmployees = async (req, res) => {
     );
 
     // 6. Delete the employee profiles
-    const result = await Employee.deleteMany({ _id: { $in: employeeIds }, user: req.user._id });
+    const result = await Employee.updateMany({ _id: { $in: employeeIds }, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     res.json({ 
       message: `${result.deletedCount} employees and all associated payrolls, expenses, loans, and claims deleted successfully`,

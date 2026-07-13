@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const LiabilitySchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -16,5 +17,7 @@ const LiabilitySchema = new mongoose.Schema({
   dueDate: Date,
   status: { type: String, enum: ['active', 'paid', 'defaulted'], default: 'active', index: true },
 }, { timestamps: true });
+
+LiabilitySchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Liability', LiabilitySchema);

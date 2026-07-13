@@ -120,7 +120,7 @@ exports.updateRecurringTransaction = async (req, res) => {
 exports.deleteRecurringTransaction = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Recurring transaction not found' });
-    const rt = await RecurringTransaction.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const rt = await RecurringTransaction.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!rt) return res.status(404).json({ message: 'Recurring transaction not found' });
     res.json({ message: 'Recurring transaction deleted successfully' });
   } catch (error) {

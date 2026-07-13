@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const PurchaseOrderItemSchema = new mongoose.Schema({
   itemRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
@@ -84,5 +85,7 @@ const PurchaseOrderSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 PurchaseOrderSchema.index({ user: 1, poNumber: 1 }, { unique: true });
+
+PurchaseOrderItemSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('PurchaseOrder', PurchaseOrderSchema);

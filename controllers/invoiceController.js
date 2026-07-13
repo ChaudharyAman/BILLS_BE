@@ -711,7 +711,7 @@ exports.createInvoice = async (req, res) => {
         await linkedPo.save();
       } catch (error) {
         if (newInvoice) {
-          await Invoice.deleteOne({ _id: newInvoice._id });
+          await Invoice.updateOne({ _id: newInvoice._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
         }
         throw error;
       }
@@ -1078,7 +1078,7 @@ exports.deleteInvoice = async (req, res) => {
       }
     }
 
-    await invoice.deleteOne();
+    await Invoice.updateOne({ _id: invoice._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     await removeIncomeForInvoice(invoice._id, invoice.user);
     res.json({ message: 'Invoice deleted successfully' });
   } catch (error) {

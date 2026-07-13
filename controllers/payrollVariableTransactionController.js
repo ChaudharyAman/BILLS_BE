@@ -155,7 +155,7 @@ exports.deleteTransaction = async (req, res) => {
       return res.status(400).json({ message: 'Paid transaction is locked and cannot be deleted' });
     }
 
-    await PayrollVariableTransaction.deleteOne({ _id: id });
+    await PayrollVariableTransaction.updateOne({ _id: id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     res.json({ message: 'Transaction deleted successfully' });
   } catch (error) {
     console.error('Error deleting variable transaction:', error);

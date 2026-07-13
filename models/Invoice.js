@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 
 
@@ -213,5 +214,7 @@ InvoiceSchema.index({ user: 1, date: 1 });
 InvoiceSchema.index({ user: 1, invoiceType: 1 });
 InvoiceSchema.index({ user: 1, gstInvoiceType: 1 });
 InvoiceSchema.index({ user: 1, 'items.taxRate': 1 });
+
+InvoiceItemSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Invoice', InvoiceSchema);

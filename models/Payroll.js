@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const NamedAmountSchema = new mongoose.Schema({
   name: String,
@@ -235,5 +236,7 @@ PayrollSchema.pre('validate', function() {
 
 PayrollSchema.index({ user: 1, employee: 1, month: 1, year: 1 }, { unique: true });
 PayrollSchema.index({ user: 1, year: -1, month: -1 });
+
+NamedAmountSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Payroll', PayrollSchema);

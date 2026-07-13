@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const AllowanceSchema = new mongoose.Schema({
   name: { type: String, trim: true },
@@ -587,5 +588,7 @@ const removeEmployeePII = (doc, ret) => {
 };
 EmployeeSchema.set('toJSON', { transform: removeEmployeePII });
 EmployeeSchema.set('toObject', { transform: removeEmployeePII });
+
+AllowanceSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Employee', EmployeeSchema);

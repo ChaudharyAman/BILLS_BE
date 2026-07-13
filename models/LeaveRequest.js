@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const LeaveRequestSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -16,5 +17,7 @@ const LeaveRequestSchema = new mongoose.Schema({
   reason: { type: String, default: '' },
   approverRemarks: { type: String, default: '' },
 }, { timestamps: true });
+
+LeaveRequestSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('LeaveRequest', LeaveRequestSchema);

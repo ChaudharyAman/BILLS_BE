@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const IncomeItemSchema = new mongoose.Schema({
   itemRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
@@ -99,5 +100,7 @@ IncomeSchema.pre('save', function() {
 // Compound unique index: same income number is allowed across different users
 IncomeSchema.index({ user: 1, incomeNumber: 1 }, { unique: true });
 IncomeSchema.index({ user: 1, sourceInvoice: 1 }, { unique: true, sparse: true });
+
+IncomeItemSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Income', IncomeSchema);
