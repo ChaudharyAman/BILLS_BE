@@ -16,11 +16,14 @@ const app = express();
 
 app.set('trust proxy', 1);
 
-// HTTP request logging
+// HTTP request logging with local timestamp and user email
+morgan.token('time', () => new Date().toLocaleString());
+morgan.token('user-email', (req) => (req.user && req.user.email ? req.user.email : 'guest'));
+
 if (process.env.NODE_ENV === 'production') {
-  app.use(morgan('combined'));
+  app.use(morgan('[:time] (:user-email) :remote-addr - :remote-user ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent"'));
 } else {
-  app.use(morgan('dev'));
+  app.use(morgan('[:time] (:user-email) :method :url :status :response-time ms - :res[content-length]'));
 }
 
 app.use(helmet());
