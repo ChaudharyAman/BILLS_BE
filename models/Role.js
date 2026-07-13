@@ -26,6 +26,7 @@ const RoleSchema = new mongoose.Schema({
 
   // Statutory switches
   pfEnabled: { type: Boolean, default: true },
+  tdsEnabled: { type: Boolean, default: true },
   esiEnabled: { type: Boolean, default: true },
   ptEnabled: { type: Boolean, default: true },
   lwfEnabled: { type: Boolean, default: true },

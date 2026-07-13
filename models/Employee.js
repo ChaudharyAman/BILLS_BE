@@ -75,6 +75,7 @@ const EmployeeSchema = new mongoose.Schema({
   useSalaryComponents: { type: Boolean, default: true },
 
   pfEnabled: { type: Boolean, default: true },
+  tdsEnabled: { type: Boolean, default: true },
   esiEnabled: { type: Boolean, default: true },
   ptEnabled: { type: Boolean, default: true },
   // State code used for automatic PT slab lookup (e.g. 'MH', 'KA').
@@ -164,6 +165,7 @@ const EmployeeSchema = new mongoose.Schema({
     // Configuration snapshot fields
     monthlyCTC: { type: Number },
     pfEnabled: { type: Boolean },
+    tdsEnabled: { type: Boolean },
     esiEnabled: { type: Boolean },
     ptEnabled: { type: Boolean },
     ptState: { type: String },
@@ -241,6 +243,7 @@ EmployeeSchema.pre('save', async function() {
         this.monthlyCTC = this.monthlyCTC || roleDoc.monthlyCTC;
         this.hourlyRate = this.hourlyRate || roleDoc.hourlyRate;
         this.pfEnabled = this.pfEnabled !== undefined ? this.pfEnabled : roleDoc.pfEnabled;
+        this.tdsEnabled = this.tdsEnabled !== undefined ? this.tdsEnabled : roleDoc.tdsEnabled;
         this.esiEnabled = this.esiEnabled !== undefined ? this.esiEnabled : roleDoc.esiEnabled;
         this.ptEnabled = this.ptEnabled !== undefined ? this.ptEnabled : roleDoc.ptEnabled;
         this.lwfEnabled = this.lwfEnabled !== undefined ? this.lwfEnabled : roleDoc.lwfEnabled;
@@ -329,6 +332,7 @@ const applySalaryStructureUpdate = async function() {
     set.payType !== undefined ||
     set.hourlyRate !== undefined ||
     set.pfEnabled !== undefined ||
+    set.tdsEnabled !== undefined ||
     set.esiEnabled !== undefined ||
     set.ptEnabled !== undefined ||
     set.lwfEnabled !== undefined ||
@@ -368,7 +372,7 @@ const applySalaryStructureUpdate = async function() {
   const currentDesignation = set.designation !== undefined ? set.designation : currentDoc.designation;
   if (roleDoc) {
     const fieldsToSync = [
-      'payType', 'monthlyCTC', 'hourlyRate', 'pfEnabled', 'esiEnabled',
+      'payType', 'monthlyCTC', 'hourlyRate', 'pfEnabled', 'tdsEnabled', 'esiEnabled',
       'ptEnabled', 'lwfEnabled', 'gratuityEnabled', 'includePfInCTC',
       'includeGratuityInCTC', 'basicPercent', 'hraPercent', 'useSalaryComponents'
     ];
@@ -445,6 +449,7 @@ const applySalaryStructureUpdate = async function() {
     monthlyCTC: getField('monthlyCTC', 0),
     hourlyRate: getField('hourlyRate', 0),
     pfEnabled: getField('pfEnabled', true),
+    tdsEnabled: getField('tdsEnabled', true),
     esiEnabled: getField('esiEnabled', true),
     ptEnabled: getField('ptEnabled', true),
     lwfEnabled: getField('lwfEnabled', true),

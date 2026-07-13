@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
+const morgan = require('morgan');
 const connectDB = require('./db');
 const bootstrapAdmin = require('./utils/bootstrap');
 const { startScheduler } = require('./services/recurringTransactionScheduler');
@@ -14,6 +15,13 @@ dotenv.config();
 const app = express();
 
 app.set('trust proxy', 1);
+
+// HTTP request logging
+if (process.env.NODE_ENV === 'production') {
+  app.use(morgan('combined'));
+} else {
+  app.use(morgan('dev'));
+}
 
 app.use(helmet());
 app.use(cors({

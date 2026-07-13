@@ -299,6 +299,7 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
   // Group: Statutory Toggles
   columns.push({ header: 'Tax Regime', group: 'Statutory Toggles', key: 'taxRegime', sample: 'new' });
   columns.push({ header: 'PF Enabled', group: 'Statutory Toggles', key: 'pfEnabled', sample: 'No' });
+  columns.push({ header: 'TDS Enabled', group: 'Statutory Toggles', key: 'tdsEnabled', sample: 'Yes' });
   columns.push({ header: 'ESI Enabled', group: 'Statutory Toggles', key: 'esiEnabled', sample: 'No' });
   columns.push({ header: 'PT Enabled', group: 'Statutory Toggles', key: 'ptEnabled', sample: 'No' });
   columns.push({ header: 'LWF Enabled', group: 'Statutory Toggles', key: 'lwfEnabled', sample: 'No' });
@@ -1095,6 +1096,7 @@ exports.importEmployees = async (req, res) => {
 
       // Statutory toggles
       const pfEnabled = parseYesNo(getCellValue(rawRow, ['PF ENABLED']));
+      const tdsEnabled = parseYesNo(getCellValue(rawRow, ['TDS ENABLED']));
       const esiEnabled = parseYesNo(getCellValue(rawRow, ['ESI ENABLED']));
       const ptEnabled = parseYesNo(getCellValue(rawRow, ['PT ENABLED']));
       const lwfEnabled = parseYesNo(getCellValue(rawRow, ['LWF ENABLED']));
@@ -1108,6 +1110,7 @@ exports.importEmployees = async (req, res) => {
       const defaultToggle = (!isIntern && !isHourly);
 
       const pfEnabledVal = pfEnabled !== undefined ? pfEnabled : defaultToggle;
+      const tdsEnabledVal = tdsEnabled !== undefined ? tdsEnabled : defaultToggle;
       const esiEnabledVal = esiEnabled !== undefined ? esiEnabled : defaultToggle;
       const ptEnabledVal = ptEnabled !== undefined ? ptEnabled : defaultToggle;
       const lwfEnabledVal = lwfEnabled !== undefined ? lwfEnabled : defaultToggle;
@@ -1239,6 +1242,7 @@ exports.importEmployees = async (req, res) => {
         ...(hraOverride > 0 && { hra: hraOverride }),
         taxRegime,
         pfEnabled: pfEnabledVal,
+        tdsEnabled: tdsEnabledVal,
         esiEnabled: esiEnabledVal,
         ptEnabled: ptEnabledVal,
         lwfEnabled: lwfEnabledVal,
@@ -1433,7 +1437,7 @@ exports.exportEmployeesExcel = async (req, res) => {
       '_id', 'user', 'employeeId', 'firstName', 'lastName', 'email', 'phone', 'dateOfBirth', 'gender',
       'address', 'designation', 'department', 'joiningDate', 'location', 'dateOfLeaving', 'employmentType',
       'status', 'monthlyCTC', 'flexiAmount', 'broadband', 'petrol', 'lta', 'employerNPS', 'insuranceAmount',
-      'joiningBonus', 'basicPercent', 'hraPercent', 'pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled',
+      'joiningBonus', 'basicPercent', 'hraPercent', 'pfEnabled', 'tdsEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled',
       'gratuityEnabled', 'includePfInCTC', 'includeGratuityInCTC', 'salaryStructure', 'deductions',
       'bankDetails', 'panNumber', 'uanNumber', 'aadharNumber', 'taxRegime', 'declarations', 'documents',
       'salaryRevisions', 'createdAt', 'updatedAt', '__v', 'payType', 'hourlyRate', 'role',
@@ -1488,7 +1492,7 @@ exports.exportEmployeesExcel = async (req, res) => {
         for (const k of keys) {
           val = val ? val[k] : undefined;
         }
-        if (['pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled', 'gratuityEnabled', 'includePfInCTC', 'includeGratuityInCTC'].includes(col.key)) {
+        if (['pfEnabled', 'tdsEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled', 'gratuityEnabled', 'includePfInCTC', 'includeGratuityInCTC'].includes(col.key)) {
           if (val === true || val === 'true') return 'Yes';
           if (val === false || val === 'false') return 'No';
           if (col.key === 'includePfInCTC') return 'No';
@@ -1712,6 +1716,7 @@ exports.addSalaryRevision = async (req, res) => {
       paymentBasis: req.body.paymentBasis !== undefined ? req.body.paymentBasis : employee.paymentBasis,
       rateCard: req.body.rateCard !== undefined ? req.body.rateCard : employee.rateCard,
       pfEnabled: isHourly ? false : getVal('pfEnabled'),
+      tdsEnabled: getVal('tdsEnabled') !== false,
       esiEnabled: isHourly ? false : getVal('esiEnabled'),
       ptEnabled: isHourly ? false : getVal('ptEnabled'),
       lwfEnabled: isHourly ? false : getVal('lwfEnabled'),
@@ -1809,6 +1814,7 @@ exports.addSalaryRevision = async (req, res) => {
           latestInDoc.compensationModel = latestInDoc.compensationModel || employee.compensationModel || 'SALARIED';
           latestInDoc.paymentBasis = latestInDoc.paymentBasis || employee.paymentBasis || 'MONTHLY';
           latestInDoc.pfEnabled = isHourly ? false : employee.pfEnabled !== false;
+          latestInDoc.tdsEnabled = employee.tdsEnabled !== false;
           latestInDoc.esiEnabled = isHourly ? false : employee.esiEnabled !== false;
           latestInDoc.ptEnabled = isHourly ? false : employee.ptEnabled !== false;
           latestInDoc.lwfEnabled = isHourly ? false : employee.lwfEnabled !== false;
@@ -1856,6 +1862,7 @@ exports.addSalaryRevision = async (req, res) => {
       monthlyCTC: isHourly ? 0 : newCTC,
       hourlyRate: isHourly ? newHourlyRate : 0,
       pfEnabled: isHourly ? false : nextPayload.pfEnabled,
+      tdsEnabled: nextPayload.tdsEnabled !== false,
       esiEnabled: isHourly ? false : nextPayload.esiEnabled,
       ptEnabled: isHourly ? false : nextPayload.ptEnabled,
       lwfEnabled: isHourly ? false : nextPayload.lwfEnabled,
@@ -1899,6 +1906,7 @@ exports.addSalaryRevision = async (req, res) => {
       employee.rateCard = req.body.rateCard;
     }
     employee.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
+    employee.tdsEnabled = nextPayload.tdsEnabled !== false;
     employee.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
     employee.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
     employee.lwfEnabled = isHourly ? false : nextPayload.lwfEnabled;
@@ -2024,6 +2032,7 @@ exports.updateSalaryRevision = async (req, res) => {
       paymentBasis: getVal('paymentBasis'),
       rateCard: req.body.rateCard !== undefined ? req.body.rateCard : (revision.rateCard || employee.rateCard),
       pfEnabled: isHourly ? false : getVal('pfEnabled'),
+      tdsEnabled: getVal('tdsEnabled') !== false,
       esiEnabled: isHourly ? false : getVal('esiEnabled'),
       ptEnabled: isHourly ? false : getVal('ptEnabled'),
       lwfEnabled: isHourly ? false : getVal('lwfEnabled'),
@@ -2079,6 +2088,7 @@ exports.updateSalaryRevision = async (req, res) => {
     revision.monthlyCTC = isHourly ? 0 : newCTC;
     revision.hourlyRate = isHourly ? newHourlyRate : 0;
     revision.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
+    revision.tdsEnabled = nextPayload.tdsEnabled !== false;
     revision.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
     revision.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
     revision.lwfEnabled = isHourly ? false : nextPayload.lwfEnabled;
@@ -2125,6 +2135,7 @@ exports.updateSalaryRevision = async (req, res) => {
         employee.rateCard = req.body.rateCard;
       }
       employee.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
+      employee.tdsEnabled = nextPayload.tdsEnabled !== false;
       employee.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
       employee.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
       employee.lwfEnabled = isHourly ? false : nextPayload.lwfEnabled;
@@ -2190,6 +2201,7 @@ exports.deleteSalaryRevision = async (req, res) => {
         employee.useSalaryComponents = newLatest.useSalaryComponents !== false;
         employee.employmentType = newLatest.employmentType || 'full-time';
         employee.pfEnabled = newLatest.pfEnabled !== false;
+        employee.tdsEnabled = newLatest.tdsEnabled !== false;
         employee.esiEnabled = newLatest.esiEnabled !== false;
         employee.ptEnabled = newLatest.ptEnabled !== false;
         employee.lwfEnabled = newLatest.lwfEnabled !== false;

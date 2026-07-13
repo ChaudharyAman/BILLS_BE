@@ -116,6 +116,7 @@ const PayrollSchema = new mongoose.Schema({
     joiningDate: Date,
     monthlyCTC: Number,
     pfEnabled: Boolean,
+    tdsEnabled: Boolean,
     esiEnabled: Boolean,
     ptEnabled: Boolean,
     lwfEnabled: Boolean,
