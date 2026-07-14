@@ -17,7 +17,7 @@ const app = express();
 app.set('trust proxy', 1);
 
 // HTTP request logging with local timestamp and user email
-morgan.token('time', () => new Date().toLocaleString());
+morgan.token('time', () => new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }));
 morgan.token('user-email', (req) => (req.user && req.user.email ? req.user.email : 'guest'));
 
 if (process.env.NODE_ENV === 'production') {
