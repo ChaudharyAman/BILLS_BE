@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const RepaymentSchema = new mongoose.Schema({
   month: { type: Number, required: true },
@@ -22,5 +23,7 @@ const LoanSchema = new mongoose.Schema({
   },
   repaymentLedger: [RepaymentSchema]
 }, { timestamps: true });
+
+RepaymentSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Loan', LoanSchema);

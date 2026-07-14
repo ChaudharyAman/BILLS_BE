@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const AssetSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -25,5 +26,7 @@ AssetSchema.pre('save', async function() {
     this.currentValue = this.purchaseValue;
   }
 });
+
+AssetSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Asset', AssetSchema);

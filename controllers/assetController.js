@@ -65,7 +65,7 @@ exports.updateAsset = async (req, res) => {
 exports.deleteAsset = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Asset not found' });
-    const asset = await Asset.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const asset = await Asset.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!asset) return res.status(404).json({ message: 'Asset not found' });
     res.json({ message: 'Asset deleted successfully' });
   } catch (error) {

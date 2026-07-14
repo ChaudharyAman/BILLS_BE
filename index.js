@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
+const morgan = require('morgan');
 const connectDB = require('./db');
 const bootstrapAdmin = require('./utils/bootstrap');
 const { startScheduler } = require('./services/recurringTransactionScheduler');
@@ -14,6 +15,16 @@ dotenv.config();
 const app = express();
 
 app.set('trust proxy', 1);
+
+// HTTP request logging with local timestamp and user email
+morgan.token('time', () => new Date().toLocaleString());
+morgan.token('user-email', (req) => (req.user && req.user.email ? req.user.email : 'guest'));
+
+if (process.env.NODE_ENV === 'production') {
+  app.use(morgan('[:time] (:user-email) :remote-addr - :remote-user ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent"'));
+} else {
+  app.use(morgan('[:time] (:user-email) :method :url :status :response-time ms - :res[content-length]'));
+}
 
 app.use(helmet());
 app.use(cors({
@@ -86,6 +97,7 @@ app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/pdf', require('./routes/pdfRoutes'));
 app.use('/api/bank-statements', require('./routes/bankStatementRoutes'));
+app.use('/api/recycle-bin', require('./routes/recycleBinRoutes'));
 
 // ── Public Submission Portal (no auth — token-scoped) ────────────────────────
 app.use('/api/public', require('./routes/publicSubmissionRoutes'));

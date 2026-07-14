@@ -334,7 +334,7 @@ exports.deleteLeaveRequest = async (req, res) => {
     const employeeId = request.employee;
     const year = new Date(request.startDate).getFullYear();
 
-    await LeaveRequest.deleteOne({ _id: req.params.id, user: req.user._id });
+    await LeaveRequest.updateOne({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // Recalculate balances
     await recalculateLeaveBalances(employeeId, year, req.user._id);

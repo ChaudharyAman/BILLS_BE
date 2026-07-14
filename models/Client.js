@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const ClientSchema = new mongoose.Schema({
   user: {
@@ -108,5 +109,7 @@ ClientSchema.pre('save', function() {
     this.default_tds_rate = 0;
   }
 });
+
+ClientSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Client', ClientSchema);

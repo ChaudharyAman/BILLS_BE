@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const PayrollComponentSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -29,5 +30,7 @@ const PayrollComponentSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 PayrollComponentSchema.index({ user: 1, name: 1, type: 1 }, { unique: true });
+
+PayrollComponentSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('PayrollComponent', PayrollComponentSchema);

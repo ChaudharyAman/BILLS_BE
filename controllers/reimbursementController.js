@@ -122,7 +122,7 @@ exports.deleteClaim = async (req, res) => {
       return res.status(404).json({ message: 'Claim not found' });
     }
 
-    const claim = await ReimbursementClaim.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const claim = await ReimbursementClaim.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!claim) {
       return res.status(404).json({ message: 'Claim not found' });
     }

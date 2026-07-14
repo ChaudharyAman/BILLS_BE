@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const RoleSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -26,6 +27,7 @@ const RoleSchema = new mongoose.Schema({
 
   // Statutory switches
   pfEnabled: { type: Boolean, default: true },
+  tdsEnabled: { type: Boolean, default: true },
   esiEnabled: { type: Boolean, default: true },
   ptEnabled: { type: Boolean, default: true },
   lwfEnabled: { type: Boolean, default: true },
@@ -42,5 +44,7 @@ const RoleSchema = new mongoose.Schema({
 
 // Ensure unique job role names per user/company
 RoleSchema.index({ user: 1, name: 1 }, { unique: true });
+
+RoleSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Role', RoleSchema);

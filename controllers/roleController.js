@@ -143,7 +143,7 @@ exports.deleteRole = async (req, res) => {
       return res.status(400).json({ message: 'Cannot delete role as it is assigned to one or more employees.' });
     }
 
-    const role = await Role.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const role = await Role.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!role) return res.status(404).json({ message: 'Role not found' });
     res.json({ message: 'Role deleted successfully' });
   } catch (error) {

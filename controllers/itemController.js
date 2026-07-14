@@ -184,7 +184,7 @@ exports.updateItem = async (req, res) => {
 // Delete item
 exports.deleteItem = async (req, res) => {
   try {
-    const item = await Item.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const item = await Item.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!item) {
       return res.status(404).json({ message: 'Item not found' });
     }

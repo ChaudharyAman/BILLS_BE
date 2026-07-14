@@ -66,7 +66,7 @@ exports.updateLiability = async (req, res) => {
 exports.deleteLiability = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Liability not found' });
-    const liability = await Liability.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const liability = await Liability.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!liability) return res.status(404).json({ message: 'Liability not found' });
     res.json({ message: 'Liability deleted successfully' });
   } catch (error) {

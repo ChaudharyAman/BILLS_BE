@@ -478,7 +478,7 @@ exports.deletePurchaseOrder = async (req, res) => {
        return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
     }
     // -------------------------------------------
-    await purchaseOrder.deleteOne();
+    await PurchaseOrder.updateOne({ _id: purchaseOrder._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     res.json({ message: 'PurchaseOrder deleted' });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };

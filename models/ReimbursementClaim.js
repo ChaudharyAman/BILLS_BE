@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const ReimbursementClaimSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -19,5 +20,7 @@ const ReimbursementClaimSchema = new mongoose.Schema({
   },
   approverRemarks: { type: String, default: '' }
 }, { timestamps: true });
+
+ReimbursementClaimSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('ReimbursementClaim', ReimbursementClaimSchema);

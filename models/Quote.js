@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const QuoteItemSchema = new mongoose.Schema({
   itemRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
@@ -93,5 +94,7 @@ const QuoteSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 QuoteSchema.index({ user: 1, quoteNo: 1 }, { unique: true });
+
+QuoteItemSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Quote', QuoteSchema);

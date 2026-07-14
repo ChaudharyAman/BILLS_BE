@@ -433,7 +433,7 @@ exports.processPayroll = async (req, res) => {
             { $set: { status: 'approved', payroll: null } }
           );
           // Delete it first so we can re-create/update it successfully
-          await Payroll.deleteOne({ _id: existing._id });
+          await Payroll.updateOne({ _id: existing._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
         }
 
         let attendanceSource = payload.attendanceSource;
@@ -2275,7 +2275,7 @@ exports.deletePayroll = async (req, res) => {
     }
 
     if (payroll.expenseRef) {
-      await Expense.deleteOne({ _id: payroll.expenseRef, user: req.user._id });
+      await Expense.updateOne({ _id: payroll.expenseRef, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     }
 
     const PayrollVariableTransaction = require('../models/PayrollVariableTransaction');
@@ -2284,7 +2284,7 @@ exports.deletePayroll = async (req, res) => {
       { $set: { status: 'approved', payroll: null } }
     );
 
-    await Payroll.deleteOne({ _id: id, user: req.user._id });
+    await Payroll.updateOne({ _id: id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     await AuditLog.create({
       user: req.user._id,
@@ -2326,14 +2326,14 @@ exports.bulkDeletePayroll = async (req, res) => {
 
     for (const payroll of payrolls) {
       if (payroll.expenseRef) {
-        await Expense.deleteOne({ _id: payroll.expenseRef, user: req.user._id });
+        await Expense.updateOne({ _id: payroll.expenseRef, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
       }
       const PayrollVariableTransaction = require('../models/PayrollVariableTransaction');
       await PayrollVariableTransaction.updateMany(
         { payroll: payroll._id, user: req.user._id },
         { $set: { status: 'approved', payroll: null } }
       );
-      await Payroll.deleteOne({ _id: payroll._id });
+      await Payroll.updateOne({ _id: payroll._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
       await AuditLog.create({
         user: req.user._id,

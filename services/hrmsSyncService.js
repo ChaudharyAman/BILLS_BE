@@ -28,6 +28,7 @@ const PAY_TYPE_ROLE_MAP = {
     employmentType: 'full-time',
     useSalaryComponents: true,
     pfEnabled: true,
+    tdsEnabled: true,
     esiEnabled: true,
     ptEnabled: true,
     lwfEnabled: true,
@@ -42,6 +43,7 @@ const PAY_TYPE_ROLE_MAP = {
     employmentType: 'contract',
     useSalaryComponents: false,
     pfEnabled: false,
+    tdsEnabled: true,
     esiEnabled: false,
     ptEnabled: false,
     lwfEnabled: false,
@@ -56,6 +58,7 @@ const PAY_TYPE_ROLE_MAP = {
     employmentType: 'full-time',
     useSalaryComponents: false,
     pfEnabled: false,
+    tdsEnabled: true,
     esiEnabled: false,
     ptEnabled: false,
     lwfEnabled: false,
@@ -97,6 +100,7 @@ const resolvePayrollRoleTemplate = async (userId, hrmsPayType) => {
         employmentType: template.employmentType,
         useSalaryComponents: template.useSalaryComponents,
         pfEnabled: template.pfEnabled,
+        tdsEnabled: template.tdsEnabled !== false,
         esiEnabled: template.esiEnabled,
         ptEnabled: template.ptEnabled,
         lwfEnabled: template.lwfEnabled,
@@ -115,6 +119,7 @@ const resolvePayrollRoleTemplate = async (userId, hrmsPayType) => {
     useSalaryComponents: template.useSalaryComponents,
     // For flat/hourly: disable all statutory deductions to match HRMS intent
     pfEnabled: template.pfEnabled,
+    tdsEnabled: template.tdsEnabled !== false,
     esiEnabled: template.esiEnabled,
     ptEnabled: template.ptEnabled,
     lwfEnabled: template.lwfEnabled,
@@ -329,6 +334,7 @@ exports.syncEmployeesFromExternal = async (userId) => {
         };
 
         const pfEnabled = extEmp.compensation?.pfEnabled !== undefined ? extEmp.compensation.pfEnabled : true;
+        const tdsEnabled = extEmp.compensation?.tdsEnabled !== undefined ? extEmp.compensation.tdsEnabled : true;
         const esiEnabled = extEmp.compensation?.esiEnabled !== undefined ? extEmp.compensation.esiEnabled : true;
         const ptEnabled = extEmp.compensation?.ptEnabled !== undefined ? extEmp.compensation.ptEnabled : true;
         const lwfEnabled = extEmp.compensation?.lwfEnabled !== undefined ? extEmp.compensation.lwfEnabled : true;
@@ -376,7 +382,7 @@ exports.syncEmployeesFromExternal = async (userId) => {
 
         // Base standard keys that are NOT custom/other allowances (infrastructure/statutory flags/computed values)
         const baseStandardKeys = new Set([
-          'pfenabled', 'esienabled', 'ptenabled', 'lwfenabled', 'gratuityenabled',
+          'pfenabled', 'tdsenabled', 'esienabled', 'ptenabled', 'lwfenabled', 'gratuityenabled',
           'includepfinctc', 'includegratuityinctc', 'basicpercent', 'hrapercent',
           'usesalarycomponents', 'ptstate', 'paytype',
           'annualctc', 'monthlyctc', 'monthlygross', 'pfemployer', 'pfemployee', 'gratuity',
@@ -465,6 +471,7 @@ exports.syncEmployeesFromExternal = async (userId) => {
         // over the template defaults (the template sets the structural type, but the
         // admin may have individually toggled PF/ESI for this specific employee).
         const resolvedPfEnabled = hrmsPayType === 'salaried' ? pfEnabled : roleTemplate.pfEnabled;
+        const resolvedTdsEnabled = hrmsPayType === 'salaried' ? tdsEnabled : roleTemplate.tdsEnabled;
         const resolvedEsiEnabled = hrmsPayType === 'salaried' ? esiEnabled : roleTemplate.esiEnabled;
         const resolvedPtEnabled = hrmsPayType === 'salaried' ? ptEnabled : roleTemplate.ptEnabled;
         const resolvedLwfEnabled = hrmsPayType === 'salaried' ? lwfEnabled : roleTemplate.lwfEnabled;
@@ -497,6 +504,7 @@ exports.syncEmployeesFromExternal = async (userId) => {
           employmentType: roleTemplate.employmentType,
           // Statutory flags — HRMS-level overrides respected for salaried; template governs otherwise
           pfEnabled: resolvedPfEnabled,
+          tdsEnabled: resolvedTdsEnabled,
           esiEnabled: resolvedEsiEnabled,
           ptEnabled: resolvedPtEnabled,
           lwfEnabled: resolvedLwfEnabled,
@@ -563,6 +571,7 @@ exports.syncEmployeesFromExternal = async (userId) => {
           monthlyCTC: monthlyCTC,
           roleTemplateName: PAY_TYPE_ROLE_MAP[hrmsPayType]?.name || PAY_TYPE_ROLE_MAP.salaried.name,
           pfEnabled: resolvedPfEnabled,
+          tdsEnabled: resolvedTdsEnabled,
           esiEnabled: resolvedEsiEnabled,
           flexiAmount: flexiAmount,
           customAllowances: otherAllowances.map(a => `${a.name}: ₹${a.amount}`).join(', ') || 'None',

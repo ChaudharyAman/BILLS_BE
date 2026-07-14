@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const ProjectSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -19,5 +20,7 @@ const ProjectSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 ProjectSchema.index({ user: 1, code: 1 }, { unique: true });
+
+ProjectSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Project', ProjectSchema);

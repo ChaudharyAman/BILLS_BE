@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const NamedAmountSchema = new mongoose.Schema({
   name: String,
@@ -116,6 +117,7 @@ const PayrollSchema = new mongoose.Schema({
     joiningDate: Date,
     monthlyCTC: Number,
     pfEnabled: Boolean,
+    tdsEnabled: Boolean,
     esiEnabled: Boolean,
     ptEnabled: Boolean,
     lwfEnabled: Boolean,
@@ -234,5 +236,7 @@ PayrollSchema.pre('validate', function() {
 
 PayrollSchema.index({ user: 1, employee: 1, month: 1, year: 1 }, { unique: true });
 PayrollSchema.index({ user: 1, year: -1, month: -1 });
+
+NamedAmountSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Payroll', PayrollSchema);

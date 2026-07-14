@@ -52,7 +52,7 @@ exports.updatePayrollComponent = async (req, res) => {
 exports.deletePayrollComponent = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Payroll component not found' });
-    const component = await PayrollComponent.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const component = await PayrollComponent.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!component) return res.status(404).json({ message: 'Payroll component not found' });
     res.json({ message: 'Payroll component deleted successfully' });
   } catch (error) {

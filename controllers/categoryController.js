@@ -255,7 +255,7 @@ exports.deleteCategory = async (req, res) => {
       return res.status(400).json({ message: 'Cannot delete a category that is used by transactions' });
     }
 
-    await category.deleteOne();
+    await Category.updateOne({ _id: category._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     res.json({ message: 'Category deleted successfully' });
   } catch (error) {
     console.error('Error deleting category:', error);

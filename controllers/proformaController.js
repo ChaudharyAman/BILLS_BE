@@ -355,7 +355,7 @@ exports.deleteProforma = async (req, res) => {
     }
     // --------------------------
 
-    await proforma.deleteOne();
+    await Proforma.updateOne({ _id: proforma._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     res.json({ message: 'Proforma deleted' });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };

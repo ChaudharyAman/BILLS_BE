@@ -173,7 +173,7 @@ exports.deleteBudget = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Budget not found' });
     }
-    const budget = await Budget.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const budget = await Budget.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!budget) return res.status(404).json({ message: 'Budget not found' });
     res.json({ message: 'Budget deleted successfully' });
   } catch (error) {

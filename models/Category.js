@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const CategorySchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -14,5 +15,7 @@ const CategorySchema = new mongoose.Schema({
 
 CategorySchema.index({ user: 1, name: 1, type: 1 }, { unique: true });
 CategorySchema.index({ user: 1, type: 1, parent: 1 });
+
+CategorySchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Category', CategorySchema);

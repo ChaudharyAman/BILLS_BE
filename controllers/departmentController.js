@@ -116,7 +116,7 @@ exports.deleteDepartment = async (req, res) => {
       return res.status(400).json({ message: 'Cannot delete a department with employees. Reassign employees first.' });
     }
 
-    const department = await Department.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    const department = await Department.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!department) {
       return res.status(404).json({ message: 'Department not found' });
     }

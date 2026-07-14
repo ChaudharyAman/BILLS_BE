@@ -676,7 +676,7 @@ exports.deleteExpense = async (req, res) => {
 
     if (expense) {
       const oldCategory = expense.category;
-      await expense.deleteOne();
+      await Expense.updateOne({ _id: expense._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
       if (oldCategory) await updateBudgetSpent(oldCategory, req.user._id);
       res.json({ message: 'Expense removed' });
     } else {

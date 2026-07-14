@@ -295,6 +295,7 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const esiEnabled = !isIntern && !isHourly && src.esiEnabled !== false;
   const ptEnabled = !isIntern && !isHourly && src.ptEnabled !== false;
   const lwfEnabled = !isIntern && !isHourly && src.lwfEnabled !== false;
+  const tdsEnabled = src.tdsEnabled !== false;
   const gratuityEnabled = !isIntern && !isHourly && src.gratuityEnabled !== false;
   const includePfInCTC = !isIntern && !isHourly && src.includePfInCTC === true;
   const includeGratuityInCTC = !isIntern && !isHourly && src.includeGratuityInCTC !== false;
@@ -565,7 +566,9 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   }, monthlyCTC, config, basicMaster, hraMaster, totalEarnings);
 
   const calculatedTdsMonthly = taxDetails[taxRegime === 'old' ? 'oldRegime' : 'newRegime'].monthlyTax;
-  const tds = Number(src.deductions?.tds) > 0 ? Number(src.deductions?.tds) : roundAmount(calculatedTdsMonthly);
+  const tds = tdsEnabled
+    ? (Number(src.deductions?.tds) > 0 ? Number(src.deductions?.tds) : roundAmount(calculatedTdsMonthly))
+    : 0;
 
   // Professional Tax: prefer manual override when non-zero, otherwise
   // auto-compute from state slab (getMonthlyPT returns 0 if no state set).
@@ -659,6 +662,7 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     esiEnabled,
     ptEnabled,
     lwfEnabled,
+    tdsEnabled,
     gratuityEnabled,
     includePfInCTC,
     includeGratuityInCTC,
@@ -755,6 +759,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       ptEnabled: getVal('ptEnabled', true),
       ptState: getVal('ptState', ''),
       lwfEnabled: getVal('lwfEnabled', true),
+      tdsEnabled: getVal('tdsEnabled', true),
       gratuityEnabled: getVal('gratuityEnabled', true),
       includePfInCTC: getVal('includePfInCTC', false),
       includeGratuityInCTC: getVal('includeGratuityInCTC', true),
@@ -801,6 +806,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       ptEnabled: adjustments.ptEnabled !== undefined ? adjustments.ptEnabled : activeParams.ptEnabled,
       ptState: adjustments.ptState !== undefined ? adjustments.ptState : activeParams.ptState,
       lwfEnabled: adjustments.lwfEnabled !== undefined ? adjustments.lwfEnabled : activeParams.lwfEnabled,
+      tdsEnabled: adjustments.tdsEnabled !== undefined ? adjustments.tdsEnabled : activeParams.tdsEnabled,
       gratuityEnabled: adjustments.gratuityEnabled !== undefined ? adjustments.gratuityEnabled : activeParams.gratuityEnabled,
       includePfInCTC: adjustments.includePfInCTC !== undefined ? adjustments.includePfInCTC : activeParams.includePfInCTC,
       includeGratuityInCTC: adjustments.includeGratuityInCTC !== undefined ? adjustments.includeGratuityInCTC : activeParams.includeGratuityInCTC,
@@ -915,7 +921,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
   for (let d = 1; d <= totalDaysInMonth; d++) {
     const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const activeParams = getEmployeeParamsForDate(currentStr);
-    const key = `${activeParams.monthlyCTC}-${activeParams.pfEnabled}-${activeParams.esiEnabled}-${activeParams.gratuityEnabled}`;
+    const key = `${activeParams.monthlyCTC}-${activeParams.pfEnabled}-${activeParams.esiEnabled}-${activeParams.tdsEnabled}-${activeParams.gratuityEnabled}`;
 
     if (!currentSegment || currentSegment.key !== key) {
       if (currentSegment) {
@@ -1214,11 +1220,15 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     });
   }
 
+  const isTdsEnabled = adjustments.tdsEnabled !== undefined 
+    ? adjustments.tdsEnabled 
+    : (employee.tdsEnabled !== false);
+
   const deductions = {
     pfEmployee,
     esiEmployee,
     professionalTax: master.ptEnabled ? roundAmount(employee.deductions?.professionalTax) : 0,
-    tds: roundAmount(
+    tds: !isTdsEnabled ? 0 : roundAmount(
       adjustments.tds !== undefined && adjustments.tds !== null
         ? adjustments.tds
         : (Number(employee.deductions?.tds) > 0
@@ -1358,6 +1368,7 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
       ptEnabled: getVal('ptEnabled', true),
       ptState: getVal('ptState', ''),
       lwfEnabled: getVal('lwfEnabled', true),
+      tdsEnabled: getVal('tdsEnabled', true),
       gratuityEnabled: getVal('gratuityEnabled', true),
       includePfInCTC: getVal('includePfInCTC', false),
       includeGratuityInCTC: getVal('includeGratuityInCTC', true),
@@ -1389,7 +1400,7 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
   for (let d = 1; d <= totalDaysInMonth; d++) {
     const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const activeParams = getEmployeeParamsForDate(currentStr);
-    const key = `${activeParams.monthlyCTC}-${activeParams.pfEnabled}-${activeParams.esiEnabled}-${activeParams.gratuityEnabled}`;
+    const key = `${activeParams.monthlyCTC}-${activeParams.pfEnabled}-${activeParams.esiEnabled}-${activeParams.tdsEnabled}-${activeParams.gratuityEnabled}`;
 
     if (!currentSegment || currentSegment.key !== key) {
       if (currentSegment) {
@@ -1442,6 +1453,7 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
       ptEnabled: adjustments.ptEnabled !== undefined ? adjustments.ptEnabled : seg.activeParams.ptEnabled,
       ptState: adjustments.ptState !== undefined ? adjustments.ptState : seg.activeParams.ptState,
       lwfEnabled: adjustments.lwfEnabled !== undefined ? adjustments.lwfEnabled : seg.activeParams.lwfEnabled,
+      tdsEnabled: adjustments.tdsEnabled !== undefined ? adjustments.tdsEnabled : seg.activeParams.tdsEnabled,
       gratuityEnabled: adjustments.gratuityEnabled !== undefined ? adjustments.gratuityEnabled : seg.activeParams.gratuityEnabled,
       includePfInCTC: adjustments.includePfInCTC !== undefined ? adjustments.includePfInCTC : seg.activeParams.includePfInCTC,
       includeGratuityInCTC: adjustments.includeGratuityInCTC !== undefined ? adjustments.includeGratuityInCTC : seg.activeParams.includeGratuityInCTC,
