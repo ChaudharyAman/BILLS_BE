@@ -1,0 +1,23 @@
+name: Deploy Flance Backend to VPS
+
+on:
+  push:
+    branches: [ "master" ]   # change to "main" if needed
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /var/www/flance/backend   # or /var/www/flance if it's a single repo
+            git pull origin master
+            npm install --production
+            pm2 restart flance-backend   # use a unique PM2 name
+            pm2 save
