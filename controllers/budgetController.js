@@ -45,6 +45,7 @@ const refreshOneBudget = async (budget) => {
         category: categoryId,
         date: { $gte: budget.startDate, $lte: budget.endDate },
         status: { $ne: 'CANCELLED' },
+        isDeleted: { $ne: true },
       },
     },
     { $group: { _id: null, total: { $sum: '$grandTotal' } } },

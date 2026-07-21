@@ -90,19 +90,24 @@ ExpenseSchema.pre('save', async function() {
   const activeTdsSection = this.tds_section !== undefined && this.tds_section !== "" ? this.tds_section : this.tdsSection;
   const activeTdsRate = this.tds_rate !== undefined ? this.tds_rate : this.tdsRate;
 
-  if (activeTdsApplicable && activeTdsRate) {
+  if (activeTdsApplicable) {
     const baseAmount = Number(this.subTotal) || 0;
-    const computedTds = Math.round((baseAmount * (activeTdsRate / 100)) * 100) / 100;
+    const providedTds = this.tds_amount || this.tdsAmount;
+    const computedTds = providedTds && Number(providedTds) > 0
+      ? Number(providedTds)
+      : Math.round((baseAmount * ((Number(activeTdsRate) || 0) / 100)) * 100) / 100;
+
+    const sectionStr = String(activeTdsSection || 'Manual');
 
     this.tdsApplicable = true;
-    this.tdsSection = ['194C', '194J', '194I', '194A', 'Manual'].includes(activeTdsSection) ? activeTdsSection : 'Manual';
-    this.tdsRate = activeTdsRate;
+    this.tdsSection = ['194C', '194J', '194I', '194A', 'Manual'].includes(sectionStr) ? sectionStr : 'Manual';
+    this.tdsRate = Number(activeTdsRate) || 0;
     this.tdsAmount = computedTds;
     this.tdsReceivable = computedTds;
 
     this.tds_applicable = true;
-    this.tds_section = String(activeTdsSection || 'Manual');
-    this.tds_rate = activeTdsRate;
+    this.tds_section = sectionStr;
+    this.tds_rate = Number(activeTdsRate) || 0;
     this.tds_amount = computedTds;
   } else {
     this.tdsApplicable = false;
