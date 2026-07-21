@@ -25,7 +25,7 @@ const YEAR   = Number(getArg('--year',   new Date().getFullYear()));
 const SAMPLE = Number(getArg('--sample', 20));
 
 async function run() {
-  await mongoose.connect(process.env.MONGODB_URI);
+  await mongoose.connect(process.env.MONGO_URI || process.env.MONGODB_URI);
   console.log(`Parity check: month=${MONTH} year=${YEAR} sample=${SAMPLE}`);
 
   const Payroll      = require('../models/Payroll');
@@ -77,6 +77,9 @@ async function run() {
       hoursWorked:       p.hoursWorked || 0,
       otherEarnings:     p.earnings?.otherEarnings || [],
       otherDeductions:   p.deductions?.otherDeductions || [],
+      lopStrategy:       p.lopStrategy,
+      segmentLops:       p.segmentLops,
+      ...(p.overrides || {}),
     };
 
     try {
@@ -91,6 +94,11 @@ async function run() {
           recomputed: snapshot.netSalary,
           diff,
         });
+        if (failures.length === 1) {
+          console.log("Detailed Breakdown for first failure:");
+          console.log("Stored payroll:", JSON.stringify(p, null, 2));
+          console.log("Recomputed snapshot:", JSON.stringify(snapshot, null, 2));
+        }
       } else {
         passed++;
       }

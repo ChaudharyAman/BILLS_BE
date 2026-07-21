@@ -10,12 +10,21 @@
  */
 'use strict';
 
+const { roundAmount } = require('../payrollMath');
+
 module.exports = {
   requiredPeriodInputFields: ['hoursWorked'],
 
-  computeGrossEarnings(_src, _config, _periodInput) {
-    // Existing isHourly branch in buildMasterSalaryStructure handles this.
-    return null; // null = "use existing logic"
+  computeGrossEarnings(src, config, periodInput) {
+    const hourlyRate = Number(src.hourlyRate || 0);
+    const hours = src.hoursWorked !== undefined ? Number(src.hoursWorked) : 160;
+    const gross = roundAmount(hourlyRate * hours);
+    return {
+      gross,
+      earningsMap: { basic: gross },
+      basicMaster: gross,
+      hraMaster: 0,
+    };
   },
 
   defaultStatutoryFlags() {

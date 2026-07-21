@@ -282,6 +282,9 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
   columns.push({ header: 'Employment Type', group: 'Employment Details', key: 'employmentType', sample: 'full-time' });
   columns.push({ header: 'Status', group: 'Employment Details', key: 'status', sample: 'active' });
   columns.push({ header: 'Pay Type', group: 'Employment Details', key: 'payType', sample: 'salaried', getValue: (employee) => employee?.payType || 'salaried' });
+  columns.push({ header: 'Compensation Type', group: 'Employment Details', key: 'compensationType', sample: 'monthly_salary', getValue: (employee) => employee?.compensationType || '' });
+  columns.push({ header: 'Pay Frequency', group: 'Employment Details', key: 'payFrequency', sample: 'monthly', getValue: (employee) => employee?.payFrequency || 'monthly' });
+  columns.push({ header: 'Attendance Mode', group: 'Employment Details', key: 'attendanceMode', sample: 'attendance', getValue: (employee) => employee?.attendanceMode || 'attendance' });
   columns.push({ header: 'Compensation Model', group: 'Employment Details', key: 'compensationModel', sample: 'SALARIED', getValue: (employee) => employee?.compensationModel || 'SALARIED' });
   columns.push({ header: 'Payment Basis', group: 'Employment Details', key: 'paymentBasis', sample: 'MONTHLY', getValue: (employee) => employee?.paymentBasis || 'MONTHLY' });
   columns.push({ header: 'Job Role Template', group: 'Employment Details', key: 'role', sample: 'EMPLOYEE', getValue: (employee) => {
@@ -1081,6 +1084,23 @@ exports.importEmployees = async (req, res) => {
       const paymentBasisRaw = String(getCellValue(rawRow, ['PAYMENT BASIS', 'PAYMENTBASIS', 'PAYMENT_BASIS']) || '').trim().toUpperCase();
       const paymentBasis = ['MONTHLY', 'PROJECT', 'POSITION', 'INTERVIEW', 'HOUR', 'DAY', 'MILESTONE', 'CUSTOM'].includes(paymentBasisRaw) ? paymentBasisRaw : 'MONTHLY';
 
+      // New canonical compensation dimensions
+      const VALID_COMP_TYPES = [
+        'monthly_salary', 'hourly', 'daily_wage', 'weekly_salary', 'piece_rate',
+        'project_based', 'milestone_based', 'attendance_based', 'timesheet_based',
+        'commission_only', 'salary_plus_commission', 'retainer',
+      ];
+      const compensationTypeRaw = String(getCellValue(rawRow, ['COMPENSATION TYPE', 'COMPENSATIONTYPE', 'COMPENSATION_TYPE']) || '').trim().toLowerCase();
+      const compensationType = VALID_COMP_TYPES.includes(compensationTypeRaw) ? compensationTypeRaw : null;
+
+      const VALID_PAY_FREQ = ['monthly', 'weekly', 'biweekly', 'semi_monthly'];
+      const payFrequencyRaw = String(getCellValue(rawRow, ['PAY FREQUENCY', 'PAYFREQUENCY', 'PAY_FREQUENCY']) || '').trim().toLowerCase();
+      const payFrequency = VALID_PAY_FREQ.includes(payFrequencyRaw) ? payFrequencyRaw : 'monthly';
+
+      const VALID_ATTEND_MODES = ['attendance', 'timesheet', 'shift', 'unit_count', 'fixed', 'none'];
+      const attendanceModeRaw = String(getCellValue(rawRow, ['ATTENDANCE MODE', 'ATTENDANCEMODE', 'ATTENDANCE_MODE']) || '').trim().toLowerCase();
+      const attendanceMode = VALID_ATTEND_MODES.includes(attendanceModeRaw) ? attendanceModeRaw : 'attendance';
+
       const hourlyRate = Number(getCellValue(rawRow, ['HOURLY RATE', 'HOURLYRATE', 'HOURLY_RATE'])) || 0;
 
       // Salary ratio overrides
@@ -1106,8 +1126,12 @@ exports.importEmployees = async (req, res) => {
       const useSalaryComponents = parseYesNo(getCellValue(rawRow, ['USE SALARY COMPONENTS', 'USE_SALARY_COMPONENTS']));
 
       const isIntern = employmentType === 'intern';
-      const isHourly = payType === 'hourly';
-      const defaultToggle = (!isIntern && !isHourly);
+      // Resolve effective compensation type for statutory flag defaults
+      const { deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
+      const effectiveCompType = compensationType || deriveCompensationTypeFromLegacy({ payType, compensationModel, employmentType });
+      const stratFlags = getStrategyStatutoryDefaults(effectiveCompType);
+      const isHourly = payType === 'hourly' || effectiveCompType === 'hourly';
+      const defaultToggle = stratFlags.pfEligible !== false && !isIntern;
 
       const pfEnabledVal = pfEnabled !== undefined ? pfEnabled : defaultToggle;
       const tdsEnabledVal = tdsEnabled !== undefined ? tdsEnabled : defaultToggle;
@@ -1228,6 +1252,9 @@ exports.importEmployees = async (req, res) => {
         status,
         monthlyCTC: isHourly ? 0 : monthlyCTC,
         payType,
+        compensationType,
+        payFrequency,
+        attendanceMode,
         hourlyRate: isHourly ? hourlyRate : 0,
         flexiAmount,
         broadband,

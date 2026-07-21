@@ -38,7 +38,7 @@ function deriveAttendanceMode(compensationType) {
 }
 
 async function run() {
-  await mongoose.connect(process.env.MONGODB_URI);
+  await mongoose.connect(process.env.MONGO_URI || process.env.MONGODB_URI);
   console.log(`Connected to MongoDB${DRY_RUN ? ' (DRY RUN — no writes)' : ''}`);
 
   const Employee = require('../models/Employee');
