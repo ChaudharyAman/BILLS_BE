@@ -281,24 +281,72 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
 
   let monthlyCTC = roundAmount(getMonthlyCTCValue(src));
 
-  if (src.payType === 'hourly') {
-    const hours = src.hoursWorked !== undefined ? Number(src.hoursWorked) : 160;
-    monthlyCTC = roundAmount((Number(src.hourlyRate) || 0) * hours);
+  // ── Strategy dispatch ───────────────────────────────────────────────────────────────────────────
+  // Resolve compensationType from new canonical field or legacy payType/compensationModel.
+  // This replaces the scattered isHourly / isIntern ternary chains.
+  const { resolveCompensationType, resolveStrategy, getStrategyStatutoryDefaults } = require('./payrollStrategies/index');
+  const effectiveCompType = resolveCompensationType(src);
+  const strategy = resolveStrategy(effectiveCompType);
+
+  // For strategies that compute their own gross (non-null return), inject their result
+  // and return early — bypassing the salary component loop entirely.
+  const strategyResult = strategy.computeGrossEarnings(src, config, src._periodInput || {});
+  if (strategyResult !== null) {
+    // Non-null: piece_rate, daily_wage, timesheet_based, commission, etc.
+    // These strategies produce a flat gross; no PF/ESI/PT/LWF/gratuity by default.
+    const flags = getStrategyStatutoryDefaults(effectiveCompType, config.compensationTypeDefaults);
+    return {
+      basicMaster: strategyResult.basicMaster || strategyResult.gross || 0,
+      hraMaster: strategyResult.hraMaster || 0,
+      grossSalary: strategyResult.gross || 0,
+      grossTotalSalary: strategyResult.gross || 0,
+      earningsMap: strategyResult.earningsMap || { basic: strategyResult.gross || 0 },
+      deductionsMap: {},
+      flexi: 0, broadband: 0, petrol: 0, lta: 0,
+      conveyance: 0, medicalAllowance: 0, specialAllowance: 0,
+      pfEmployee: 0, pfEmployer: 0,
+      esiEmployee: 0, esiEmployer: 0,
+      professionalTax: 0,
+      gratuity: 0,
+      lwfEmployee: 0, lwfEmployer: 0,
+      insurance: 0,
+      employerNPS: 0,
+      tds: 0,
+      netSalary: strategyResult.gross || 0,
+      pfEnabled: flags.pfEligible && src.pfEnabled !== false,
+      esiEnabled: flags.esiEligible && src.esiEnabled !== false,
+      ptEnabled: flags.ptApplicable && src.ptEnabled !== false,
+      gratuityEnabled: flags.gratuityEligible && src.gratuityEnabled !== false,
+      lwfEnabled: flags.lwfApplicable && src.lwfEnabled !== false,
+      tdsEnabled: src.tdsEnabled !== false,
+      includePfInCTC: false,
+      includeGratuityInCTC: false,
+      useComponents: false,
+      monthlyCTC: strategyResult.gross || 0,
+    };
   }
 
+  // null-returning strategies (monthly_salary, hourly, attendance_based,
+  // salary_plus_commission, weekly_salary, retainer*) fall through to the
+  // existing salary-component logic below — byte-identical results guaranteed.
+  // *retainer returns non-null above.
+
   const isIntern = src.employmentType === 'intern';
-  const isHourly = src.payType === 'hourly';
+  // isHourly: preserve legacy check AND check effectiveCompType for safety
+  const isHourly = src.payType === 'hourly' || effectiveCompType === 'hourly';
   const useComponents = src.useSalaryComponents !== false && !isIntern && !isHourly;
 
-  // Toggles integration
-  const pfEnabled = !isIntern && !isHourly && src.pfEnabled !== false;
-  const esiEnabled = !isIntern && !isHourly && src.esiEnabled !== false;
-  const ptEnabled = !isIntern && !isHourly && src.ptEnabled !== false;
-  const lwfEnabled = !isIntern && !isHourly && src.lwfEnabled !== false;
-  const tdsEnabled = src.tdsEnabled !== false;
-  const gratuityEnabled = !isIntern && !isHourly && src.gratuityEnabled !== false;
-  const includePfInCTC = !isIntern && !isHourly && src.includePfInCTC === true;
-  const includeGratuityInCTC = !isIntern && !isHourly && src.includeGratuityInCTC !== false;
+  // Statutory flags: delegate to strategy, then apply per-employee overrides.
+  // This replaces the 7 !isIntern && !isHourly && ... inline guards.
+  const stratFlags = getStrategyStatutoryDefaults(effectiveCompType, config.compensationTypeDefaults || {});
+  const pfEnabled     = stratFlags.pfEligible       && src.pfEnabled !== false;
+  const esiEnabled    = stratFlags.esiEligible      && src.esiEnabled !== false;
+  const ptEnabled     = stratFlags.ptApplicable     && src.ptEnabled !== false;
+  const lwfEnabled    = stratFlags.lwfApplicable    && src.lwfEnabled !== false;
+  const tdsEnabled    = src.tdsEnabled !== false;
+  const gratuityEnabled    = stratFlags.gratuityEligible && src.gratuityEnabled !== false;
+  const includePfInCTC     = stratFlags.pfEligible       && src.includePfInCTC === true;
+  const includeGratuityInCTC = stratFlags.gratuityEligible && src.includeGratuityInCTC !== false;
 
   let basicPercent = !useComponents ? 1.0 : config.basicPercent;
   if (useComponents && src.basicPercent !== undefined && src.basicPercent !== null && Number(src.basicPercent) > 0) {
@@ -791,7 +839,9 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
   const dailyOtherAllowances = [];
   const dailyOtherDeductions = [];
 
-  const isHourly = employee.payType === 'hourly';
+  const { resolveCompensationType } = require('./payrollStrategies/index');
+  const effectiveCompType = resolveCompensationType(employee);
+  const isHourly = effectiveCompType === 'hourly' || employee.payType === 'hourly';
   const hoursWorked = isHourly ? (Number(attendance?.hoursWorked) || Number(adjustments?.hoursWorked) || Number(employee.hoursWorked) || 0) : 0;
 
   for (let d = 1; d <= totalDaysInMonth; d++) {
@@ -1422,7 +1472,9 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
     segments.push(currentSegment);
   }
 
-  const isHourly = employee.payType === 'hourly';
+  const { resolveCompensationType } = require('./payrollStrategies/index');
+  const effectiveCompTypeSplits = resolveCompensationType(employee);
+  const isHourly = effectiveCompTypeSplits === 'hourly' || employee.payType === 'hourly';
   const hoursWorked = isHourly ? (Number(adjustments?.hoursWorked) || Number(employee.hoursWorked) || 0) : 0;
 
   const workingDays = isHourly ? totalDaysInMonth : Math.max(Number(workingDaysCount) || config.defaultWorkingDays, 1);

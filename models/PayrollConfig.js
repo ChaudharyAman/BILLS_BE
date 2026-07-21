@@ -33,6 +33,12 @@ const PayrollConfigSchema = new mongoose.Schema({
       { id: 'medical',                  name: 'Medical Allowance',             type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
     ]
   },
+  // Per-compensation-type statutory flag overrides.
+  // e.g. { retainer: { pfEligible: false, esiEligible: false } }
+  // Strategy defaults apply when a type is not listed here.
+  compensationTypeDefaults: { type: mongoose.Schema.Types.Mixed, default: {} },
+  // Used by timesheet_based strategy: (monthlyCTC / standardMonthlyHours) × hoursLogged
+  standardMonthlyHours: { type: Number, default: 160 },
 }, { timestamps: true });
 
 module.exports = mongoose.model('PayrollConfig', PayrollConfigSchema);

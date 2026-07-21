@@ -24,6 +24,9 @@ const PayrollSchema = new mongoose.Schema({
   attendanceSource: { type: String, enum: ['hrms', 'manual', 'default'], default: 'default' },
   payType: { type: String, enum: ['salaried', 'hourly'], default: 'salaried' },
   hourlyRate: { type: Number, default: 0 },
+  // Raw strategy-specific inputs for this pay run (e.g. {unitsProduced:150} for piece_rate).
+  // Stored so historical payslips remain fully reproducible.
+  periodInput: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   earnings: {
     basic: { type: Number, default: 0 },
@@ -130,6 +133,11 @@ const PayrollSchema = new mongoose.Schema({
     ptState: String,
     taxRegime: String,
     declarations: mongoose.Schema.Types.Mixed,
+    // Compensation dimension snapshot — required for reproducible historical payslips
+    compensationType: String,
+    payFrequency: String,
+    attendanceMode: String,
+    overtimePolicy: mongoose.Schema.Types.Mixed,
   },
   reimbursements: [{
     _id: { type: mongoose.Schema.Types.ObjectId, ref: 'ReimbursementClaim' },

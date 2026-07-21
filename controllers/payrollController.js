@@ -607,6 +607,11 @@ exports.processPayroll = async (req, res) => {
             hraPercent: snapshot.master.hraPercent,
             taxRegime: employee.taxRegime,
             declarations: employee.declarations,
+            // Compensation dimension snapshot — required for reproducible historical payslips
+            compensationType: employee.compensationType || null,
+            payFrequency: employee.payFrequency || 'monthly',
+            attendanceMode: employee.attendanceMode || 'attendance',
+            overtimePolicy: employee.overtimePolicy || {},
           },
           paymentMethod: payload.paymentMethod || '',
           transactionId: payload.transactionId || '',
@@ -2357,8 +2362,48 @@ exports.bulkDeletePayroll = async (req, res) => {
   }
 };
 
+
 exports.__private__ = {
   getOrCreateConfig,
   buildPayrollWorkbook,
+};
+
+/**
+ * POST /payroll/preview
+ *
+ * Runs buildPayrollSnapshot() server-side and returns the result without
+ * writing to the database. Replaces the 71 KB client-side payroll.js copy.
+ *
+ * Body: { employeeId, month, year, attendance, adjustments }
+ */
+exports.previewPayroll = async (req, res) => {
+  try {
+    const { employeeId, month, year, attendance = {}, adjustments = {} } = req.body;
+
+    if (!employeeId || !month || !year) {
+      return res.status(400).json({ message: 'employeeId, month, and year are required' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(String(employeeId))) {
+      return res.status(400).json({ message: 'Invalid employeeId' });
+    }
+
+    const employee = await Employee.findOne({ _id: employeeId, user: req.user._id })
+      .populate('department', 'name code')
+      .lean();
+    if (!employee) return res.status(404).json({ message: 'Employee not found' });
+
+    const config = await getOrCreateConfig(req.user._id);
+
+    // Propagate ptState so the correct PT slab is used
+    if (adjustments.ptState === undefined) {
+      adjustments.ptState = employee.ptState || '';
+    }
+
+    const snapshot = buildPayrollSnapshot(employee, config, attendance, adjustments, month, year);
+    res.json(snapshot);
+  } catch (error) {
+    console.error('Error generating payroll preview:', error);
+    res.status(500).json({ message: 'Server error generating payroll preview' });
+  }
 };
 

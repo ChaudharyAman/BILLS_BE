@@ -4,6 +4,7 @@ const { protect } = require('../middleware/authMiddleware');
 const { verifyMultiTenantWebhook } = require('../utils/cryptoHelper');
 const {
   processPayroll,
+  previewPayroll,
   bulkApprovePayroll,
   bulkDeletePayroll,
   getPayrolls,
@@ -41,6 +42,7 @@ router.post('/calculate-salary', calculateSalary);
 router.get('/trend', getPayrollTrend);
 router.get('/export', exportPayrollExcel);
 router.post('/process', processPayroll);
+router.post('/preview', previewPayroll);
 router.put('/bulk-approve', bulkApprovePayroll);
 router.post('/bulk-delete', bulkDeletePayroll);
 router.get('/', getPayrolls);

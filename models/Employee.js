@@ -37,9 +37,17 @@ const EmployeeSchema = new mongoose.Schema({
   joiningDate: { type: Date, required: true },
   location: { type: String, default: '' },
   dateOfLeaving: { type: Date, default: null },
+
+  // ── Legacy classification fields (kept for backward compat; deprecated after migration) ──
   employmentType: {
     type: String,
-    enum: ['full-time', 'part-time', 'contract', 'intern'],
+    // Extended to cover all real employment relationships.
+    // Old values (full-time, part-time, contract, intern) remain valid.
+    enum: [
+      'full-time', 'part-time', 'contract', 'intern',
+      'permanent', 'probation', 'temporary', 'consultant',
+      'freelancer', 'casual', 'seasonal',
+    ],
     default: 'full-time',
   },
   compensationModel: {
@@ -53,6 +61,54 @@ const EmployeeSchema = new mongoose.Schema({
     default: 'MONTHLY',
   },
   rateCard: [RateCardItemSchema],
+
+  // ── New canonical compensation dimensions ──────────────────────────────────────────────────
+  // compensationType is THE key field that selects the payroll compute strategy.
+  // null = not yet migrated; engine falls back to payType/compensationModel during transition.
+  compensationType: {
+    type: String,
+    enum: [
+      'monthly_salary',        // Standard CTC-based monthly salary (existing salaried path)
+      'hourly',                // Hours × hourly rate (existing hourly path)
+      'daily_wage',            // Days worked × daily rate
+      'weekly_salary',         // Weekly salary (pay-frequency future)
+      'piece_rate',            // Units produced × rate per unit
+      'project_based',         // Flat project fee
+      'milestone_based',       // Payment on milestone completion
+      'attendance_based',      // Like monthly_salary but proration is always mandatory
+      'timesheet_based',       // Hours logged from timesheet × blended rate
+      'commission_only',       // Commission from variableTransactions[] only
+      'salary_plus_commission',// Base (monthly_salary) + commission
+      'retainer',              // Fixed monthly retainer; no attendance proration
+    ],
+    default: null,
+    index: true,
+  },
+  payFrequency: {
+    type: String,
+    enum: ['monthly', 'weekly', 'biweekly', 'semi_monthly'],
+    default: 'monthly',
+  },
+  // attendanceMode declares what raw input the compute strategy expects.
+  attendanceMode: {
+    type: String,
+    enum: [
+      'attendance',   // paidDays / workingDays (default — existing HRMS sync)
+      'timesheet',    // hoursLogged from timesheet entries
+      'shift',        // shiftsWorked, shiftType[]
+      'unit_count',   // unitsProduced for piece-rate
+      'fixed',        // Always fully paid (retainer / consultant flat monthly)
+      'none',         // No attendance concept applies
+    ],
+    default: 'attendance',
+  },
+  overtimePolicy: {
+    enabled:              { type: Boolean, default: false },
+    multiplier:           { type: Number,  default: 1.5,  min: 1 },
+    holidayMultiplier:    { type: Number,  default: 2.0,  min: 1 },
+    thresholdHoursPerDay: { type: Number,  default: 8,    min: 0 },
+  },
+
   status: {
     type: String,
     enum: ['active', 'inactive', 'terminated'],
@@ -162,6 +218,10 @@ const EmployeeSchema = new mongoose.Schema({
     compensationModel: { type: String },
     paymentBasis: { type: String },
     rateCard: [RateCardItemSchema],
+    // New canonical fields — stored per-revision so getEmployeeParamsForDate() can snapshot them
+    compensationType: { type: String },
+    payFrequency: { type: String },
+    attendanceMode: { type: String },
 
     // Configuration snapshot fields
     monthlyCTC: { type: Number },
@@ -203,7 +263,7 @@ EmployeeSchema.pre('save', async function() {
   // Guard: cannot compute salary without a user reference
   if (!this.user) return;
 
-  if (!this.isNew && (this.isModified('monthlyCTC') || this.isModified('role') || this.isModified('basicPercent') || this.isModified('hraPercent') || this.isModified('useSalaryComponents') || this.isModified('payType') || this.isModified('employmentType') || this.isModified('compensationModel') || this.isModified('paymentBasis'))) {
+  if (!this.isNew && (this.isModified('monthlyCTC') || this.isModified('role') || this.isModified('basicPercent') || this.isModified('hraPercent') || this.isModified('useSalaryComponents') || this.isModified('payType') || this.isModified('employmentType') || this.isModified('compensationModel') || this.isModified('paymentBasis') || this.isModified('compensationType') || this.isModified('attendanceMode'))) {
     if (!this.isModified('salaryStructure.basic') && !this.isModified('basic')) {
       if (this.salaryStructure) {
         this.salaryStructure.basic = undefined;
@@ -216,7 +276,22 @@ EmployeeSchema.pre('save', async function() {
     }
   }
 
-  if (this.payType === 'hourly' || this.employmentType === 'intern' || (this.compensationModel && this.compensationModel !== 'SALARIED')) {
+  // Resolve the effective compensation type (new canonical field OR derived from legacy fields).
+  // The strategy registry provides defaultStatutoryFlags() so the pre-save hook no longer
+  // contains inline isHourly / isIntern logic.
+  const { deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
+  const effectiveCompType = this.compensationType || deriveCompensationTypeFromLegacy({
+    payType: this.payType,
+    compensationModel: this.compensationModel,
+    employmentType: this.employmentType,
+  });
+  // Sync compensationType from legacy fields if it was not explicitly set
+  if (!this.compensationType && effectiveCompType) {
+    this.compensationType = effectiveCompType;
+  }
+
+  const statutoryDefaults = getStrategyStatutoryDefaults(effectiveCompType);
+  if (!statutoryDefaults.pfEligible) {
     this.pfEnabled = false;
     this.esiEnabled = false;
     this.ptEnabled = false;
@@ -225,7 +300,8 @@ EmployeeSchema.pre('save', async function() {
     this.includePfInCTC = false;
     this.includeGratuityInCTC = false;
     this.useSalaryComponents = false;
-    if (this.payType === 'hourly') {
+    // Hourly: monthlyCTC is meaningless (income = rate × hours)
+    if (effectiveCompType === 'hourly') {
       this.monthlyCTC = 0;
     }
   }
@@ -332,6 +408,8 @@ const applySalaryStructureUpdate = async function() {
     set.role !== undefined ||
     set.payType !== undefined ||
     set.hourlyRate !== undefined ||
+    set.compensationType !== undefined ||
+    set.attendanceMode !== undefined ||
     set.pfEnabled !== undefined ||
     set.tdsEnabled !== undefined ||
     set.esiEnabled !== undefined ||
@@ -403,10 +481,27 @@ const applySalaryStructureUpdate = async function() {
     }
   }
 
+  // Resolve effective compensation type using strategy registry
+  const { deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
   const resolvedPayType = getField('payType', 'salaried');
   const resolvedEmploymentType = getField('employmentType', 'full-time');
   const resolvedCompensationModel = getField('compensationModel', 'SALARIED');
-  if (resolvedPayType === 'hourly' || resolvedEmploymentType === 'intern' || resolvedCompensationModel !== 'SALARIED') {
+  const resolvedCompensationType = getField('compensationType', null);
+
+  const effectiveCompType = resolvedCompensationType || deriveCompensationTypeFromLegacy({
+    payType: resolvedPayType,
+    compensationModel: resolvedCompensationModel,
+    employmentType: resolvedEmploymentType,
+  });
+  // Sync compensationType into the update if not already supplied
+  if (!resolvedCompensationType && effectiveCompType) {
+    if (!update.$set) update.$set = {};
+    update.$set.compensationType = effectiveCompType;
+    set.compensationType = effectiveCompType;
+  }
+
+  const statutoryDefaults = getStrategyStatutoryDefaults(effectiveCompType);
+  if (!statutoryDefaults.pfEligible) {
     const fieldsToForceFalse = [
       'pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled', 'gratuityEnabled',
       'includePfInCTC', 'includeGratuityInCTC', 'useSalaryComponents'
@@ -416,7 +511,7 @@ const applySalaryStructureUpdate = async function() {
       update.$set[field] = false;
       set[field] = false;
     });
-    if (resolvedPayType === 'hourly') {
+    if (effectiveCompType === 'hourly') {
       update.$set.monthlyCTC = 0;
       set.monthlyCTC = 0;
     }
@@ -433,7 +528,7 @@ const applySalaryStructureUpdate = async function() {
     }
   }
 
-  const isCTCChanging = set.monthlyCTC !== undefined || set.role !== undefined || set.basicPercent !== undefined || set.hraPercent !== undefined || set.useSalaryComponents !== undefined || set.payType !== undefined || set.employmentType !== undefined || set.compensationModel !== undefined || set.paymentBasis !== undefined || Object.keys(set).some((key) => key.endsWith('Percent'));
+  const isCTCChanging = set.monthlyCTC !== undefined || set.role !== undefined || set.basicPercent !== undefined || set.hraPercent !== undefined || set.useSalaryComponents !== undefined || set.payType !== undefined || set.employmentType !== undefined || set.compensationModel !== undefined || set.paymentBasis !== undefined || set.compensationType !== undefined || set.attendanceMode !== undefined || Object.keys(set).some((key) => key.endsWith('Percent'));
   if (isCTCChanging) {
     if (set.basic === undefined && set['salaryStructure.basic'] === undefined && (set.salaryStructure === undefined || set.salaryStructure.basic === undefined)) {
       delete mergedSalary.basic;
@@ -460,6 +555,8 @@ const applySalaryStructureUpdate = async function() {
     basicPercent: getField('basicPercent', null),
     compensationModel: getField('compensationModel', 'SALARIED'),
     paymentBasis: getField('paymentBasis', 'MONTHLY'),
+    compensationType: getField('compensationType', null),
+    attendanceMode: getField('attendanceMode', 'attendance'),
     useSalaryComponents: getField('useSalaryComponents', true),
     salaryStructure: {
       ...(currentDoc.salaryStructure || {}),

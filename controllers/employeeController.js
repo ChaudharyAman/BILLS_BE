@@ -1979,7 +1979,12 @@ exports.updateSalaryRevision = async (req, res) => {
     if (!revision) return res.status(404).json({ message: 'Salary revision not found' });
 
     const effectiveDate = parsePossibleDate(req.body.effectiveDate);
-    const isHourly = employee.payType === 'hourly';
+    const { resolveCompensationType, resolveStrategy } = require('../utils/payrollStrategies/index');
+    // Resolve from explicit body field first, then employee's current value
+    const effectiveCompType = req.body.compensationType || resolveCompensationType(employee);
+    const strategy = resolveStrategy(effectiveCompType);
+    const stratFlags = strategy.defaultStatutoryFlags();
+    const isHourly = effectiveCompType === 'hourly';
     let newCTC = Number(req.body.newCTC);
     let newHourlyRate = Number(req.body.newHourlyRate);
 
@@ -2078,8 +2083,11 @@ exports.updateSalaryRevision = async (req, res) => {
     revision.newHourlyRate = isHourly ? newHourlyRate : undefined;
     revision.reason = req.body.reason || '';
     revision.role = revisedRole;
-    revision.useSalaryComponents = isHourly ? false : nextPayload.useSalaryComponents;
-    revision.employmentType = isHourly ? 'contract' : nextPayload.employmentType;
+    revision.compensationType = effectiveCompType;
+    revision.attendanceMode = req.body.attendanceMode || employee.attendanceMode || 'attendance';
+    revision.payFrequency = req.body.payFrequency || employee.payFrequency || 'monthly';
+    revision.useSalaryComponents = stratFlags.pfEligible ? nextPayload.useSalaryComponents : false;
+    revision.employmentType = nextPayload.employmentType;
     revision.compensationModel = nextPayload.compensationModel;
     revision.paymentBasis = nextPayload.paymentBasis;
     if (req.body.rateCard !== undefined) {
@@ -2087,23 +2095,23 @@ exports.updateSalaryRevision = async (req, res) => {
     }
     revision.monthlyCTC = isHourly ? 0 : newCTC;
     revision.hourlyRate = isHourly ? newHourlyRate : 0;
-    revision.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
+    revision.pfEnabled = stratFlags.pfEligible ? nextPayload.pfEnabled : false;
     revision.tdsEnabled = nextPayload.tdsEnabled !== false;
-    revision.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
-    revision.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
-    revision.lwfEnabled = isHourly ? false : nextPayload.lwfEnabled;
-    revision.gratuityEnabled = isHourly ? false : nextPayload.gratuityEnabled;
-    revision.includePfInCTC = isHourly ? false : nextPayload.includePfInCTC;
-    revision.includeGratuityInCTC = isHourly ? false : nextPayload.includeGratuityInCTC;
-    revision.basicPercent = isHourly ? null : nextPayload.basicPercent;
-    revision.hraPercent = isHourly ? null : nextPayload.hraPercent;
-    revision.joiningBonus = isHourly ? 0 : nextPayload.joiningBonus;
-    revision.flexiAmount = isHourly ? 0 : nextPayload.flexiAmount;
-    revision.broadband = isHourly ? 0 : nextPayload.broadband;
-    revision.petrol = isHourly ? 0 : nextPayload.petrol;
-    revision.lta = isHourly ? 0 : nextPayload.lta;
-    revision.employerNPS = isHourly ? 0 : nextPayload.employerNPS;
-    revision.insuranceAmount = isHourly ? 0 : nextPayload.insuranceAmount;
+    revision.esiEnabled = stratFlags.esiEligible ? nextPayload.esiEnabled : false;
+    revision.ptEnabled = stratFlags.ptApplicable ? nextPayload.ptEnabled : false;
+    revision.lwfEnabled = stratFlags.lwfApplicable ? nextPayload.lwfEnabled : false;
+    revision.gratuityEnabled = stratFlags.gratuityEligible ? nextPayload.gratuityEnabled : false;
+    revision.includePfInCTC = stratFlags.pfEligible ? nextPayload.includePfInCTC : false;
+    revision.includeGratuityInCTC = stratFlags.gratuityEligible ? nextPayload.includeGratuityInCTC : false;
+    revision.basicPercent = stratFlags.pfEligible ? nextPayload.basicPercent : null;
+    revision.hraPercent = stratFlags.pfEligible ? nextPayload.hraPercent : null;
+    revision.joiningBonus = stratFlags.pfEligible ? nextPayload.joiningBonus : 0;
+    revision.flexiAmount = stratFlags.pfEligible ? nextPayload.flexiAmount : 0;
+    revision.broadband = stratFlags.pfEligible ? nextPayload.broadband : 0;
+    revision.petrol = stratFlags.pfEligible ? nextPayload.petrol : 0;
+    revision.lta = stratFlags.pfEligible ? nextPayload.lta : 0;
+    revision.employerNPS = stratFlags.pfEligible ? nextPayload.employerNPS : 0;
+    revision.insuranceAmount = stratFlags.pfEligible ? nextPayload.insuranceAmount : 0;
     revision.deductions = nextPayload.deductions;
     revision.salaryStructure = {
       conveyance: nextPayload.salaryStructure?.conveyance || 0,
@@ -2127,30 +2135,33 @@ exports.updateSalaryRevision = async (req, res) => {
       employee.monthlyCTC = isHourly ? 0 : newCTC;
       employee.hourlyRate = isHourly ? newHourlyRate : 0;
       employee.role = revisedRole;
-      employee.useSalaryComponents = isHourly ? false : nextPayload.useSalaryComponents;
-      employee.employmentType = isHourly ? 'contract' : nextPayload.employmentType;
+      employee.compensationType = effectiveCompType;
+      employee.attendanceMode = req.body.attendanceMode || employee.attendanceMode;
+      employee.payFrequency = req.body.payFrequency || employee.payFrequency;
+      employee.useSalaryComponents = stratFlags.pfEligible ? nextPayload.useSalaryComponents : false;
+      employee.employmentType = nextPayload.employmentType;
       employee.compensationModel = nextPayload.compensationModel;
       employee.paymentBasis = nextPayload.paymentBasis;
       if (req.body.rateCard !== undefined) {
         employee.rateCard = req.body.rateCard;
       }
-      employee.pfEnabled = isHourly ? false : nextPayload.pfEnabled;
+      employee.pfEnabled = stratFlags.pfEligible ? nextPayload.pfEnabled : false;
       employee.tdsEnabled = nextPayload.tdsEnabled !== false;
-      employee.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
-      employee.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
-      employee.lwfEnabled = isHourly ? false : nextPayload.lwfEnabled;
-      employee.gratuityEnabled = isHourly ? false : nextPayload.gratuityEnabled;
-      employee.includePfInCTC = isHourly ? false : nextPayload.includePfInCTC;
-      employee.includeGratuityInCTC = isHourly ? false : nextPayload.includeGratuityInCTC;
-      employee.basicPercent = isHourly ? null : nextPayload.basicPercent;
-      employee.hraPercent = isHourly ? null : nextPayload.hraPercent;
-      employee.joiningBonus = isHourly ? 0 : nextPayload.joiningBonus;
-      employee.flexiAmount = isHourly ? 0 : nextPayload.flexiAmount;
-      employee.broadband = isHourly ? 0 : nextPayload.broadband;
-      employee.petrol = isHourly ? 0 : nextPayload.petrol;
-      employee.lta = isHourly ? 0 : nextPayload.lta;
-      employee.employerNPS = isHourly ? 0 : nextPayload.employerNPS;
-      employee.insuranceAmount = isHourly ? 0 : nextPayload.insuranceAmount;
+      employee.esiEnabled = stratFlags.esiEligible ? nextPayload.esiEnabled : false;
+      employee.ptEnabled = stratFlags.ptApplicable ? nextPayload.ptEnabled : false;
+      employee.lwfEnabled = stratFlags.lwfApplicable ? nextPayload.lwfEnabled : false;
+      employee.gratuityEnabled = stratFlags.gratuityEligible ? nextPayload.gratuityEnabled : false;
+      employee.includePfInCTC = stratFlags.pfEligible ? nextPayload.includePfInCTC : false;
+      employee.includeGratuityInCTC = stratFlags.gratuityEligible ? nextPayload.includeGratuityInCTC : false;
+      employee.basicPercent = stratFlags.pfEligible ? nextPayload.basicPercent : null;
+      employee.hraPercent = stratFlags.pfEligible ? nextPayload.hraPercent : null;
+      employee.joiningBonus = stratFlags.pfEligible ? nextPayload.joiningBonus : 0;
+      employee.flexiAmount = stratFlags.pfEligible ? nextPayload.flexiAmount : 0;
+      employee.broadband = stratFlags.pfEligible ? nextPayload.broadband : 0;
+      employee.petrol = stratFlags.pfEligible ? nextPayload.petrol : 0;
+      employee.lta = stratFlags.pfEligible ? nextPayload.lta : 0;
+      employee.employerNPS = stratFlags.pfEligible ? nextPayload.employerNPS : 0;
+      employee.insuranceAmount = stratFlags.pfEligible ? nextPayload.insuranceAmount : 0;
       employee.deductions = nextPayload.deductions;
       employee.salaryStructure = salaryStructure;
 
