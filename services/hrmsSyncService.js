@@ -3,6 +3,7 @@ const Settings = require('../models/Settings');
 const Employee = require('../models/Employee');
 const PayrollConfig = require('../models/PayrollConfig');
 const Role = require('../models/Role');
+const escapeRegex = require('../utils/escapeRegex');
 const { decryptPayload } = require('../utils/cryptoHelper');
 const { buildMasterSalaryStructure } = require('../utils/payrollMath');
 
@@ -354,19 +355,15 @@ exports.syncEmployeesFromExternal = async (userId) => {
         let departmentId = null;
         if (departmentName) {
           const Department = require('../models/Department');
-          const escapeRegex = (string) => string.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
           let dept = await Department.findOne({
             user: userId,
             name: { $regex: new RegExp(`^${escapeRegex(departmentName)}$`, 'i') },
           });
           if (!dept) {
-            let baseCode = departmentName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 5).toUpperCase();
-            if (!baseCode) baseCode = 'DEPT';
+            let baseCode = departmentName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 5).toUpperCase() || 'DEPT';
             let code = baseCode;
-            let counter = 1;
-            while (await Department.exists({ user: userId, code })) {
-              code = `${baseCode}${counter}`;
-              counter += 1;
+            if (await Department.exists({ user: userId, code })) {
+              code = `${baseCode}_${Math.floor(1000 + Math.random() * 9000)}`;
             }
             dept = await Department.create({
               user: userId,
@@ -393,24 +390,18 @@ exports.syncEmployeesFromExternal = async (userId) => {
         const standardBreakupKeys = new Set(baseStandardKeys);
         const activeComponents = config?.salaryComponents && config.salaryComponents.length > 0 ? config.salaryComponents : DEFAULT_SALARY_COMPONENTS;
 
-        // Add config-defined components to standardBreakupKeys dynamically
+        const componentAliases = {
+          medical: ['medicalallowance'],
+          flexi: ['flexiallowance', 'flexiamount'],
+          insurance: ['default_insurance_amount', 'insuranceamount'],
+          special: ['specialallowance']
+        };
+
         activeComponents.forEach(c => {
           if (!c.id) return;
-          standardBreakupKeys.add(c.id.toLowerCase());
-          // Add standard spelling variations of config-defined components
-          if (c.id === 'medical') {
-            standardBreakupKeys.add('medicalallowance');
-          } else if (c.id === 'flexi') {
-            standardBreakupKeys.add('flexiallowance');
-            standardBreakupKeys.add('flexiamount');
-          } else if (c.id === 'default_insurance_amount' || c.id === 'insurance') {
-            standardBreakupKeys.add('default_insurance_amount');
-            standardBreakupKeys.add('insurance');
-            standardBreakupKeys.add('insuranceamount');
-          } else if (c.id === 'special' || c.id === 'specialAllowance') {
-            standardBreakupKeys.add('specialallowance');
-            standardBreakupKeys.add('special');
-          }
+          const key = c.id.toLowerCase();
+          standardBreakupKeys.add(key);
+          (componentAliases[key] || []).forEach(alias => standardBreakupKeys.add(alias));
         });
 
         // Dynamic helper to extract active component values from the HRMS payload
