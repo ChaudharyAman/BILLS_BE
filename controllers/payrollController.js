@@ -427,6 +427,16 @@ exports.processPayroll = async (req, res) => {
           continue;
         }
 
+        if (payload.skip === true || payload._skipPeriod === true || payload.skipPeriod === true) {
+          skippedNoActivity.push({
+            employeeId,
+            employeeName,
+            compensationType: employee.compensationType || 'monthly_salary',
+            message: 'Marked skip for this period'
+          });
+          continue;
+        }
+
         const existing = await Payroll.findOne({ user: req.user._id, employee: employeeId, month, year });
         if (existing) {
           if (existing.status !== 'draft') {

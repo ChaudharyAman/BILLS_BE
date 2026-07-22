@@ -121,6 +121,7 @@ function listCompensationTypes() {
 
   const REQUIRED_PERIOD_INPUT_FIELDS = {
     monthly_salary:        ['paidDays', 'workingDays'],
+    weekly_salary:         ['paidDays', 'workingDays'],
     attendance_based:      ['paidDays', 'workingDays'],
     salary_plus_commission:['paidDays', 'workingDays'],
     hourly:                ['hoursWorked'],

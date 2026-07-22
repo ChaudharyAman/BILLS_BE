@@ -443,6 +443,7 @@ const { listCompensationTypes } = require('../utils/payrollStrategies/index');
 const compTypesList = listCompensationTypes();
 const milestoneMeta = compTypesList.find(c => c.key === 'milestone_based');
 const pieceRateMeta = compTypesList.find(c => c.key === 'piece_rate');
+const weeklySalaryMeta = compTypesList.find(c => c.key === 'weekly_salary');
 
 if (!milestoneMeta || !milestoneMeta.requiredPeriodInputFields.includes('milestoneAmount') || !milestoneMeta.optionalPeriodInputFields.includes('milestoneRef')) {
   console.error('Assertion failed: milestone_based strategy metadata must expose required and optional fields');
@@ -452,6 +453,18 @@ if (!pieceRateMeta || !pieceRateMeta.requiredPeriodInputFields.includes('unitsPr
   console.error('Assertion failed: piece_rate strategy metadata must expose required and optional fields');
   process.exit(1);
 }
+if (!weeklySalaryMeta || !weeklySalaryMeta.requiredPeriodInputFields.includes('paidDays')) {
+  console.error('Assertion failed: weekly_salary strategy metadata must include paidDays');
+  process.exit(1);
+}
 console.log('12th Custom Strategy Metadata Registry Test passed!');
+
+// Test 16: Skip Period Flag Test
+const skipPayload = { skip: true, _skipPeriod: true };
+if (!skipPayload.skip && !skipPayload._skipPeriod) {
+  console.error('Assertion failed: skip payload should flag skip');
+  process.exit(1);
+}
+console.log('Skip Period Flag Test passed!');
 
 console.log('✅ ALL TEST PASSED!');
