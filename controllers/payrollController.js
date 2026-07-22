@@ -427,7 +427,14 @@ exports.processPayroll = async (req, res) => {
           continue;
         }
 
-        if (payload.skip === true || payload._skipPeriod === true || payload.skipPeriod === true) {
+        if (
+          payload.skip === true ||
+          payload._skipPeriod === true ||
+          payload.skipPeriod === true ||
+          payload.adjustments?.skip === true ||
+          payload.adjustments?._skipPeriod === true ||
+          payload.adjustments?.skipPeriod === true
+        ) {
           skippedNoActivity.push({
             employeeId,
             employeeName,
