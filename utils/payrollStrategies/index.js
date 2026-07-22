@@ -119,11 +119,33 @@ function listCompensationTypes() {
     retainer:              'none',
   };
 
+  const REQUIRED_PERIOD_INPUT_FIELDS = {
+    monthly_salary:        ['paidDays', 'workingDays'],
+    attendance_based:      ['paidDays', 'workingDays'],
+    salary_plus_commission:['paidDays', 'workingDays'],
+    hourly:                ['hoursWorked'],
+    timesheet_based:       ['hoursLogged'],
+    daily_wage:            ['daysWorked'],
+    piece_rate:            ['unitsProduced'],
+    project_based:         ['projectFee'],
+    milestone_based:       ['milestoneAmount'],
+    commission_only:       ['variableTransactions'],
+    retainer:              ['retainer'],
+  };
+
+  const OPTIONAL_PERIOD_INPUT_FIELDS = {
+    piece_rate:            ['ratePerUnit'],
+    milestone_based:       ['milestoneRef'],
+    salary_plus_commission:['variableTransactions'],
+    retainer:              ['skipPeriod'],
+  };
+
   return Object.entries(strategies).map(([key, strategy]) => {
     return {
       key,
       label: strategy.label || LABELS[key] || key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
-      requiredPeriodInputFields: strategy.requiredPeriodInputFields || [],
+      requiredPeriodInputFields: strategy.requiredPeriodInputFields || REQUIRED_PERIOD_INPUT_FIELDS[key] || ['paidDays', 'workingDays'],
+      optionalPeriodInputFields: strategy.optionalPeriodInputFields || OPTIONAL_PERIOD_INPUT_FIELDS[key] || [],
       usesSalaryComponents: strategy.usesSalaryComponents ?? true,
       zeroesFixedAllowances: strategy.zeroesFixedAllowances ?? false,
       defaultStatutoryFlags: strategy.defaultStatutoryFlags(),

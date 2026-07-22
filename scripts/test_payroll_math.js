@@ -438,4 +438,20 @@ if (!otSnapshot.earnings.overtimeCapWarning || !otSnapshot.earnings.overtimeCapW
 }
 console.log('Overtime Multiplier & Cap Warning Test passed!');
 
+// Test 15: Custom Strategy Metadata Registry Test
+const { listCompensationTypes } = require('../utils/payrollStrategies/index');
+const compTypesList = listCompensationTypes();
+const milestoneMeta = compTypesList.find(c => c.key === 'milestone_based');
+const pieceRateMeta = compTypesList.find(c => c.key === 'piece_rate');
+
+if (!milestoneMeta || !milestoneMeta.requiredPeriodInputFields.includes('milestoneAmount') || !milestoneMeta.optionalPeriodInputFields.includes('milestoneRef')) {
+  console.error('Assertion failed: milestone_based strategy metadata must expose required and optional fields');
+  process.exit(1);
+}
+if (!pieceRateMeta || !pieceRateMeta.requiredPeriodInputFields.includes('unitsProduced') || !pieceRateMeta.optionalPeriodInputFields.includes('ratePerUnit')) {
+  console.error('Assertion failed: piece_rate strategy metadata must expose required and optional fields');
+  process.exit(1);
+}
+console.log('12th Custom Strategy Metadata Registry Test passed!');
+
 console.log('✅ ALL TEST PASSED!');
