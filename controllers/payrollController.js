@@ -100,7 +100,7 @@ const buildAdjustmentsPayload = (employee, payload = {}, month, year) => {
 };
 
 const buildPayrollWorkbook = (payrolls, config) => {
-  const headerGroups = ['MASTER DATA', 'Monthly Salary', 'Other Payables', 'Deductions'];
+  const headerGroups = ['MASTER DATA', '', '', '', '', '', '', '', '', '', '', '', '', 'COMPENSATION MODEL', '', 'Monthly Salary', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'Other Payables', '', '', '', '', '', 'Deductions'];
 
   const getComponentName = (id, defaultName) => {
     if (!config || !Array.isArray(config.salaryComponents)) return defaultName;
@@ -118,6 +118,7 @@ const buildPayrollWorkbook = (payrolls, config) => {
 
   const columns = [
     'Sr No', 'Name', 'DOJ', 'DOL', 'Gender', 'Emp No', 'Email', 'Bank A/C', 'IFSC', 'PAN', 'Aadhar', 'Location', 'Designation',
+    'Compensation Type', 'Period Input Summary',
     'Monthly CTC', `${basicName}(master)`, `${hraName}(master)`, `${flexiName}(master)`, 'PF Employer', `${specialName}`, 'DIFF',
     'Working Days', 'Paid Days', 'Hours Worked', 'Hourly Rate', `${basicName}(paid)`, `${hraName}(paid)`, `${flexiName}`, `${broadbandName}`, `${petrolName}`, `${ltaName}`, 'Employer NPS', 'Insurance',
     'PF(Emp Contrib)', 'Gratuity', 'LWF', 'GROSS TOTAL', 'Joining Bonus', 'Loyalty Bonus', 'Incentive', 'Other Allowance', 'Special Bonus', 'Total Payable',
@@ -126,6 +127,11 @@ const buildPayrollWorkbook = (payrolls, config) => {
 
   const rows = payrolls.map((payroll, index) => {
     const employee = payroll.employee || {};
+    const compType = payroll.employeeSnapshot?.compensationType || employee.compensationType || (payroll.payType === 'hourly' ? 'hourly' : 'monthly_salary');
+
+    const lineItems = buildPayslipEarningsLineItems(payroll);
+    const periodInputSummary = lineItems.map(item => `${item.name}: ${item.details || `₹${item.amount}`}`).join('; ') || 'Standard Monthly';
+
     const payrollPaidRatio = Number(payroll.workingDays) > 0 ? Number(payroll.paidDays) / Number(payroll.workingDays) : 1;
     const safeRatio = payrollPaidRatio > 0 ? payrollPaidRatio : 1;
     const basicMaster = roundAmount((Number(payroll.earnings?.basic) || 0) / safeRatio);
@@ -133,8 +139,10 @@ const buildPayrollWorkbook = (payrolls, config) => {
     const flexiMaster = roundAmount((Number(payroll.earnings?.flexiAmount) || 0) / safeRatio);
     const broadbandMaster = roundAmount((Number(payroll.earnings?.broadband) || 0) / safeRatio);
     const specialMaster = roundAmount((Number(payroll.earnings?.specialAllowance) || 0) / safeRatio);
-    const employeeMonthlyCTC = Number(employee.monthlyCTC) || 0;
-    const diff = roundAmount(
+    const usesSalaryComponents = payroll.employeeSnapshot?.useSalaryComponents !== false &&
+      ['monthly_salary', 'attendance_based', 'salary_plus_commission', 'weekly_salary'].includes(compType);
+
+    const diff = usesSalaryComponents ? roundAmount(
       employeeMonthlyCTC -
       basicMaster -
       hraMaster -
@@ -144,7 +152,7 @@ const buildPayrollWorkbook = (payrolls, config) => {
       specialMaster -
       (Number(payroll.earnings?.petrol) || 0) -
       (Number(payroll.earnings?.lta) || 0)
-    );
+    ) : 'N/A — non-CTC compensation type';
 
     return [
       index + 1,
@@ -160,6 +168,8 @@ const buildPayrollWorkbook = (payrolls, config) => {
       employee.aadharNumber || '',
       employee.location || '',
       employee.designation || '',
+      compType,
+      periodInputSummary,
       employeeMonthlyCTC,
       basicMaster,
       hraMaster,
@@ -169,8 +179,8 @@ const buildPayrollWorkbook = (payrolls, config) => {
       diff,
       Number(payroll.workingDays) || 0,
       Number(payroll.paidDays) || 0,
-      payroll.payType === 'hourly' ? (Number(payroll.hoursWorked) || 0) : 0,
-      payroll.payType === 'hourly' ? (Number(payroll.hourlyRate) || 0) : 0,
+      payroll.payType === 'hourly' || compType === 'hourly' || compType === 'timesheet_based' ? (Number(payroll.hoursWorked) || Number(payroll.periodInput?.hoursWorked) || Number(payroll.periodInput?.hoursLogged) || 0) : 0,
+      payroll.payType === 'hourly' || compType === 'hourly' || compType === 'timesheet_based' ? (Number(payroll.hourlyRate) || Number(payroll.employeeSnapshot?.hourlyRate) || Number(employee.hourlyRate) || 0) : 0,
       Number(payroll.earnings?.basic) || 0,
       Number(payroll.earnings?.hra) || 0,
       Number(payroll.earnings?.flexiAmount) || 0,
@@ -201,10 +211,11 @@ const buildPayrollWorkbook = (payrolls, config) => {
     ];
   });
 
-  const totals = ['TOTAL', '', '', '', '', '', '', '', '', '', '', '', ''];
-  for (let columnIndex = 13; columnIndex < columns.length; columnIndex += 1) {
-    const total = rows.reduce((sum, row) => sum + (Number(row[columnIndex]) || 0), 0);
-    totals[columnIndex] = total;
+  const totals = new Array(columns.length).fill('');
+  totals[0] = 'TOTAL';
+  for (let columnIndex = 15; columnIndex < columns.length; columnIndex += 1) {
+    const total = rows.reduce((sum, row) => sum + (typeof row[columnIndex] === 'number' ? row[columnIndex] : 0), 0);
+    totals[columnIndex] = roundAmount(total);
   }
   totals[totals.length - 1] = '';
 
@@ -217,9 +228,10 @@ const buildPayrollWorkbook = (payrolls, config) => {
 
   sheet['!merges'] = [
     XLSX.utils.decode_range('A1:M1'),
-    XLSX.utils.decode_range('N1:AJ1'),
-    XLSX.utils.decode_range('AK1:AP1'),
-    XLSX.utils.decode_range('AQ1:AY1'),
+    XLSX.utils.decode_range('N1:O1'),
+    XLSX.utils.decode_range('P1:AL1'),
+    XLSX.utils.decode_range('AM1:AR1'),
+    XLSX.utils.decode_range('AS1:AZ1'),
   ];
 
   const headerCells = [];
@@ -1016,7 +1028,7 @@ exports.exportPayrollExcel = async (req, res) => {
     const payrolls = await Payroll.find({ user: req.user._id, month, year })
       .populate({
         path: 'employee',
-        select: '+bankDetails.accountNumber +panNumber +aadharNumber firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode payType hourlyRate',
+        select: '+bankDetails.accountNumber +panNumber +aadharNumber firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode payType hourlyRate compensationType payFrequency attendanceMode useSalaryComponents',
       })
       .sort({ createdAt: 1 })
       .lean();
@@ -1081,7 +1093,7 @@ exports.getPayrolls = async (req, res) => {
     const payrolls = await Payroll.find(query)
       .populate({
         path: 'employee',
-        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled basicPercent hraPercent payType hourlyRate useSalaryComponents employmentType salaryRevisions',
+        select: 'employeeId firstName lastName designation department monthlyCTC location dateOfLeaving pfEnabled esiEnabled ptEnabled lwfEnabled gratuityEnabled basicPercent hraPercent payType hourlyRate compensationType payFrequency attendanceMode useSalaryComponents employmentType salaryRevisions',
         populate: { path: 'department', select: 'name code' },
       })
       .populate('expenseRef', 'expenseNumber date grandTotal')
