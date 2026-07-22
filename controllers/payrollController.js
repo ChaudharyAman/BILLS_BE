@@ -1777,27 +1777,16 @@ exports.emailPayslip = async (req, res) => {
     });
 
     let deductionsRows = '';
-    const addDedRow = (label, val) => {
-      if (Number(val) > 0) {
-        deductionsRows += `
-          <tr>
-            <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; color: #475569;">${label}</td>
-            <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; text-align: right; font-weight: 500; color: #e11d48;">-${fmt(val)}</td>
-          </tr>`;
-      }
-    };
-
-    addDedRow('PF Employee Share', payroll.deductions?.pfEmployee);
-    addDedRow('ESI Employee Share', payroll.deductions?.esiEmployee);
-    addDedRow('Professional Tax (PT)', payroll.deductions?.professionalTax);
-    addDedRow('Income Tax (TDS)', payroll.deductions?.tds);
-    addDedRow('Insurance Employee Share', payroll.deductions?.insuranceEmployee);
-    addDedRow('LWF Employee Share', payroll.deductions?.lwfEmployee);
-    addDedRow('Gratuity Deduction', payroll.deductions?.gratuityDeduction);
-    addDedRow('Loan Deduction', payroll.deductions?.loanDeduction);
-    addDedRow('Advance Deduction', payroll.deductions?.advanceDeduction);
-    (payroll.deductions?.otherDeductions || []).forEach(item => {
-      addDedRow(item.name, item.amount);
+    const deductionItems = buildPayslipDeductionsLineItems(payroll);
+    deductionItems.forEach((item) => {
+      deductionsRows += `
+        <tr>
+          <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; color: #475569;">
+            <div style="font-weight: 500;">${item.name}</div>
+            ${item.details ? `<div style="font-size: 11px; color: #94a3b8;">${item.details}</div>` : ''}
+          </td>
+          <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; text-align: right; font-weight: 500; color: #e11d48;">-${fmt(item.amount)}</td>
+        </tr>`;
     });
 
     const emailHtmlBody = `
