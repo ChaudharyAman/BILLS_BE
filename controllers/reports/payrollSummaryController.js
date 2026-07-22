@@ -99,16 +99,52 @@ exports.getBankTransferSheet = async (req, res) => {
       .sort({ createdAt: 1 })
       .lean();
 
+    const validPayrolls = [];
+    const excludedPayrolls = [];
+
+    payrolls.forEach((p) => {
+      const netSalary = Number(p.netSalary) || 0;
+      const accountNo = p.employee?.bankDetails?.accountNumber || p.employeeSnapshot?.bankDetails?.accountNumber || '';
+      
+      let reason = '';
+      if (netSalary <= 0) {
+        reason = 'Zero net pay (clamped / no activity / skipped)';
+      } else if (!accountNo) {
+        reason = 'No bank account on file';
+      }
+
+      if (reason) {
+        excludedPayrolls.push({ payroll: p, reason, accountNo, netSalary });
+      } else {
+        validPayrolls.push({ payroll: p, accountNo, netSalary });
+      }
+    });
+
     const rows = [
       ['Employee Name', 'Employee ID', 'Account Number', 'IFSC', 'Net Salary'],
-      ...payrolls.map((payroll) => [
+      ...validPayrolls.map(({ payroll, accountNo, netSalary }) => [
         `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
         payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
-        payroll.employee?.bankDetails?.accountNumber || '',
-        payroll.employee?.bankDetails?.ifscCode || '',
-        Number(payroll.netSalary) || 0,
+        accountNo,
+        payroll.employee?.bankDetails?.ifscCode || payroll.employeeSnapshot?.bankDetails?.ifscCode || '',
+        netSalary,
       ]),
     ];
+
+    if (excludedPayrolls.length > 0) {
+      rows.push([]);
+      rows.push(['--- EXCLUDED FROM BANK TRANSFER FILE (MANUAL PAYMENT / REVIEW REQUIRED) ---']);
+      rows.push(['Employee Name', 'Employee ID', 'Account Number', 'Net Salary', 'Exclusion Reason']);
+      excludedPayrolls.forEach(({ payroll, accountNo, netSalary, reason }) => {
+        rows.push([
+          `${payroll.employee?.firstName || payroll.employeeSnapshot?.firstName || ''} ${payroll.employee?.lastName || payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Unknown Employee',
+          payroll.employee?.employeeId || payroll.employeeSnapshot?.employeeId || '',
+          accountNo || 'N/A',
+          netSalary,
+          reason,
+        ]);
+      });
+    }
 
     return sendReport(res, rows, 'Bank Transfer', `bank-transfer-${year}-${String(month).padStart(2, '0')}.xlsx`, format);
   } catch (error) {
@@ -684,6 +720,27 @@ exports.getBankPaymentBatch = async (req, res) => {
       .sort({ createdAt: 1 })
       .lean();
 
+    const validPayrolls = [];
+    const excludedPayrolls = [];
+
+    payrolls.forEach((p) => {
+      const netSalary = Number(p.netSalary) || 0;
+      const accountNo = p.employee?.bankDetails?.accountNumber || p.employeeSnapshot?.bankDetails?.accountNumber || '';
+      
+      let reason = '';
+      if (netSalary <= 0) {
+        reason = 'Zero net pay';
+      } else if (!accountNo) {
+        reason = 'No bank account on file';
+      }
+
+      if (reason) {
+        excludedPayrolls.push({ payroll: p, reason, accountNo, netSalary });
+      } else {
+        validPayrolls.push({ payroll: p, accountNo, netSalary });
+      }
+    });
+
     let csvContent = '';
     const sanitizeCSV = (str) => {
       if (!str) return '';
@@ -694,11 +751,9 @@ exports.getBankPaymentBatch = async (req, res) => {
       const headers = ['Transaction Type', 'Beneficiary Account Number', 'Net Amount', 'Beneficiary Name', 'Payment Detail', 'IFSC Code', 'Beneficiary Email'];
       const lines = [headers.join(',')];
       
-      payrolls.forEach(p => {
-        const accountNo = p.employee?.bankDetails?.accountNumber || '';
+      validPayrolls.forEach(({ payroll: p, accountNo, netSalary: amt }) => {
         const name = `${p.employee?.firstName || p.employeeSnapshot?.firstName || ''} ${p.employee?.lastName || p.employeeSnapshot?.lastName || ''}`.trim();
-        const amt = Number(p.netSalary) || 0;
-        const ifsc = p.employee?.bankDetails?.ifscCode || '';
+        const ifsc = p.employee?.bankDetails?.ifscCode || p.employeeSnapshot?.bankDetails?.ifscCode || '';
         const email = p.employee?.email || p.employeeSnapshot?.email || '';
         const isHdfc = (p.employee?.bankDetails?.bankName || '').toLowerCase().includes('hdfc');
         const txType = isHdfc ? 'FT' : 'N';
@@ -718,11 +773,9 @@ exports.getBankPaymentBatch = async (req, res) => {
       const headers = ['Serial Number', 'Beneficiary Account Number', 'Beneficiary Name', 'Amount', 'Transaction Type', 'IFSC Code', 'Remarks'];
       const lines = [headers.join(',')];
 
-      payrolls.forEach((p, idx) => {
-        const accountNo = p.employee?.bankDetails?.accountNumber || '';
+      validPayrolls.forEach(({ payroll: p, accountNo, netSalary: amt }, idx) => {
         const name = `${p.employee?.firstName || p.employeeSnapshot?.firstName || ''} ${p.employee?.lastName || p.employeeSnapshot?.lastName || ''}`.trim();
-        const amt = Number(p.netSalary) || 0;
-        const ifsc = p.employee?.bankDetails?.ifscCode || '';
+        const ifsc = p.employee?.bankDetails?.ifscCode || p.employeeSnapshot?.bankDetails?.ifscCode || '';
         const isIcici = (p.employee?.bankDetails?.bankName || '').toLowerCase().includes('icici');
         const txType = isIcici ? 'IFT' : 'NEFT';
 
@@ -741,13 +794,11 @@ exports.getBankPaymentBatch = async (req, res) => {
       const headers = ['Employee ID', 'Employee Name', 'Bank Name', 'Account Number', 'IFSC Code', 'Net Amount', 'Email'];
       const lines = [headers.join(',')];
 
-      payrolls.forEach(p => {
+      validPayrolls.forEach(({ payroll: p, accountNo, netSalary: amt }) => {
         const empId = p.employee?.employeeId || p.employeeSnapshot?.employeeId || '';
         const name = `${p.employee?.firstName || p.employeeSnapshot?.firstName || ''} ${p.employee?.lastName || p.employeeSnapshot?.lastName || ''}`.trim();
         const bankName = p.employee?.bankDetails?.bankName || '';
-        const accountNo = p.employee?.bankDetails?.accountNumber || '';
-        const ifsc = p.employee?.bankDetails?.ifscCode || '';
-        const amt = Number(p.netSalary) || 0;
+        const ifsc = p.employee?.bankDetails?.ifscCode || p.employeeSnapshot?.bankDetails?.ifscCode || '';
         const email = p.employee?.email || p.employeeSnapshot?.email || '';
 
         lines.push([
@@ -761,6 +812,26 @@ exports.getBankPaymentBatch = async (req, res) => {
         ].join(','));
       });
       csvContent = lines.join('\r\n');
+    }
+
+    if (excludedPayrolls.length > 0) {
+      const excludedLines = [
+        '',
+        '# EXCLUDED FROM BANK PAYMENT BATCH (MANUAL PAYMENT / REVIEW REQUIRED)',
+        'Employee ID,Employee Name,Account Number,Net Salary,Exclusion Reason',
+        ...excludedPayrolls.map(({ payroll: p, accountNo, netSalary, reason }) => {
+          const empId = p.employee?.employeeId || p.employeeSnapshot?.employeeId || '';
+          const name = `${p.employee?.firstName || p.employeeSnapshot?.firstName || ''} ${p.employee?.lastName || p.employeeSnapshot?.lastName || ''}`.trim();
+          return [
+            sanitizeCSV(empId),
+            sanitizeCSV(name),
+            sanitizeCSV(accountNo || 'N/A'),
+            netSalary.toFixed(2),
+            sanitizeCSV(reason)
+          ].join(',');
+        })
+      ];
+      csvContent += '\r\n' + excludedLines.join('\r\n');
     }
 
     res.setHeader('Content-Type', 'text/csv');
