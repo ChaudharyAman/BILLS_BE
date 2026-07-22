@@ -629,9 +629,22 @@ exports.processPayroll = async (req, res) => {
           unpaidLeaves: snapshot.unpaidLeaves,
           attendanceSource,
           lop: snapshot.lop,
-          hoursWorked: employee.payType === 'hourly' ? attendance.hoursWorked : 0,
+          hoursWorked: attendance.hoursWorked || adjustments.hoursWorked || 0,
           payType: employee.payType,
-          hourlyRate: employee.payType === 'hourly' ? employee.hourlyRate : 0,
+          hourlyRate: employee.hourlyRate || 0,
+          periodInput: {
+            daysWorked: adjustments.daysWorked,
+            unitsProduced: adjustments.unitsProduced,
+            hoursLogged: adjustments.hoursLogged,
+            projectFee: adjustments.projectFee,
+            projectRef: adjustments.projectRef,
+            milestoneAmount: adjustments.milestoneAmount,
+            milestoneRef: adjustments.milestoneRef,
+            ratePerUnit: adjustments.ratePerUnit,
+            hoursWorked: adjustments.hoursWorked || attendance.hoursWorked,
+            overtime: adjustments.overtime,
+            ...(payload.periodInput || {})
+          },
           earnings: snapshot.earnings,
           employerContributions: snapshot.employerContributions,
           variablePay: snapshot.variablePay,
@@ -1650,6 +1663,19 @@ exports.generatePayslip = async (req, res) => {
           monthName: monthName(payroll.month),
         },
         salarySplits: (payroll.salarySplits && payroll.salarySplits.length > 0) ? payroll.salarySplits : splits,
+        earningsLineItems: buildPayslipEarningsLineItems(payroll),
+        deductionsLineItems: buildPayslipDeductionsLineItems(payroll),
+        periodInput: payroll.periodInput || {},
+        isFullAndFinal: Boolean(payroll.isFullAndFinal || payroll.settlementType === 'full_and_final'),
+        settlementType: payroll.settlementType || (payroll.isFullAndFinal ? 'full_and_final' : 'monthly'),
+        fnfDetails: payroll.fnfDetails || null,
+        complianceNotes: (() => {
+          const notes = [];
+          if (payroll.netSalary === 0 && payroll.deductions?.totalDeductions > payroll.earnings?.totalEarnings) {
+            notes.push('Note: Net salary was clamped to ₹0 due to non-statutory deduction shortfall.');
+          }
+          return notes;
+        })(),
         earnings: payroll.earnings,
         employerContributions: payroll.employerContributions,
         variablePay: payroll.variablePay,
@@ -1738,28 +1764,16 @@ exports.emailPayslip = async (req, res) => {
     const fmt = (val) => `INR ${(Number(val) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
     let earningsRows = '';
-    const addRow = (label, val) => {
-      if (Number(val) > 0) {
-        earningsRows += `
-          <tr>
-            <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; color: #475569;">${label}</td>
-            <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; text-align: right; font-weight: 500; color: #1e293b;">${fmt(val)}</td>
-          </tr>`;
-      }
-    };
-
-    addRow('Basic Salary', payroll.earnings?.basic);
-    addRow('House Rent Allowance (HRA)', payroll.earnings?.hra);
-    addRow('Flexi Allowance', payroll.earnings?.flexiAmount);
-    addRow('Broadband', payroll.earnings?.broadband);
-    addRow('Petrol', payroll.earnings?.petrol);
-    addRow('LTA', payroll.earnings?.lta);
-    addRow('Conveyance', payroll.earnings?.conveyance);
-    addRow('Medical Allowance', payroll.earnings?.medicalAllowance);
-    addRow('Special Allowance', payroll.earnings?.specialAllowance);
-    addRow('Overtime', payroll.earnings?.overtime);
-    (payroll.earnings?.otherEarnings || []).forEach(item => {
-      addRow(item.name, item.amount);
+    const lineItems = buildPayslipEarningsLineItems(payroll);
+    lineItems.forEach((item) => {
+      earningsRows += `
+        <tr>
+          <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; color: #475569;">
+            <div style="font-weight: 500;">${item.name}</div>
+            ${item.details ? `<div style="font-size: 11px; color: #94a3b8;">${item.details}</div>` : ''}
+          </td>
+          <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; text-align: right; font-weight: 500; color: #1e293b;">${fmt(item.amount)}</td>
+        </tr>`;
     });
 
     let deductionsRows = '';
@@ -2567,12 +2581,55 @@ exports.processFullAndFinalSettlement = async (req, res) => {
 
     const snapshot = buildPayrollSnapshot(employee, config, { paidDays: exitDate.getUTCDate() }, adjustments, month, year);
 
+    // Create persistent F&F Payroll record
+    const payroll = await Payroll.create({
+      user: req.user._id,
+      employee: employee._id,
+      month,
+      year,
+      paymentDate: exitDate,
+      workingDays: exitDate.getUTCDate(),
+      paidDays: exitDate.getUTCDate(),
+      earnings: snapshot.earnings,
+      employerContributions: snapshot.employerContributions,
+      variablePay: snapshot.variablePay,
+      totalPayable: snapshot.totalPayable,
+      deductions: snapshot.deductions,
+      netSalary: snapshot.netSalary,
+      status: 'processed',
+      isFullAndFinal: true,
+      settlementType: 'full_and_final',
+      fnfDetails: {
+        lastWorkingDay: exitDate,
+        tenureYears: roundAmount(tenureYears),
+        leaveEncashmentDays: encashDays,
+        leaveEncashmentAmount,
+        gratuityPayout,
+        noticeShortfallDeduction,
+        loanRecoveryDeduction,
+        comments,
+      },
+      employeeSnapshot: {
+        employeeId: employee.employeeId,
+        firstName: employee.firstName,
+        lastName: employee.lastName,
+        email: employee.email,
+        designation: employee.designation,
+        joiningDate: employee.joiningDate,
+        dateOfLeaving: exitDate,
+        compensationType: employee.compensationType || (employee.payType === 'hourly' ? 'hourly' : 'monthly_salary'),
+        monthlyCTC: snapshot.master.monthlyCTC,
+      },
+      notes: `Full & Final Settlement for ${employee.firstName} ${employee.lastName}. LWD: ${exitDate.toLocaleDateString('en-IN')}`
+    });
+
     // 6. Update employee status to terminated
     employee.status = 'terminated';
     await employee.save();
 
     res.json({
       message: 'Full and Final Settlement processed successfully',
+      payroll,
       settlementSummary: {
         employeeId: employee.employeeId,
         employeeName: `${employee.firstName} ${employee.lastName}`,

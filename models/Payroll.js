@@ -111,6 +111,18 @@ const PayrollSchema = new mongoose.Schema({
     default: 'draft',
     index: true,
   },
+  isFullAndFinal: { type: Boolean, default: false },
+  settlementType: { type: String, enum: ['monthly', 'full_and_final'], default: 'monthly' },
+  fnfDetails: {
+    lastWorkingDay: Date,
+    tenureYears: Number,
+    leaveEncashmentDays: Number,
+    leaveEncashmentAmount: Number,
+    gratuityPayout: Number,
+    noticeShortfallDeduction: Number,
+    loanRecoveryDeduction: Number,
+    comments: String
+  },
   approvalWorkflow: [{
     status: { type: String, required: true },
     actor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
