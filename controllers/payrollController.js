@@ -80,6 +80,12 @@ const buildAdjustmentsPayload = (employee, payload = {}, month, year) => {
     ? { ...payload.adjustments }
     : {};
 
+  ['daysWorked', 'unitsProduced', 'hoursLogged', 'hoursWorked', 'projectFee', 'milestoneAmount', 'ratePerUnit'].forEach(field => {
+    if (adjustments[field] === undefined && payload[field] !== undefined) {
+      adjustments[field] = payload[field];
+    }
+  });
+
   if ((adjustments.joiningBonus === undefined || adjustments.joiningBonus === null) && shouldApplyJoiningBonus(employee, month, year)) {
     adjustments.joiningBonus = Number(employee.joiningBonus) || 0;
   }
@@ -397,6 +403,7 @@ exports.processPayroll = async (req, res) => {
 
     const success = [];
     const errors = [];
+    const skippedNoActivity = [];
 
     for (const payload of employeePayloads) {
       const employeeId = payload.employeeId || payload.employee;
@@ -498,6 +505,35 @@ exports.processPayroll = async (req, res) => {
           date: { $gte: startDate, $lt: endDate }
         });
         adjustments.variableTransactions = transactions;
+
+        const { resolveCompensationType } = require('../utils/payrollStrategies/index');
+        const compType = resolveCompensationType(employee);
+
+        if (['commission', 'commission_only', 'project_based', 'milestone_based'].includes(compType)) {
+          let hasActivity = false;
+          if (compType === 'commission' || compType === 'commission_only') {
+            hasActivity = (adjustments.variableTransactions || []).some(t => !t.paymentType || t.paymentType === 'COMMISSION' || t.paymentType === 'PERCENTAGE');
+          } else if (compType === 'project_based') {
+            const hasTx = (adjustments.variableTransactions || []).some(t => t.paymentType === 'PROJECT');
+            const hasFee = Number(adjustments.projectFee) > 0;
+            const hasRateCard = (employee.rateCard || []).some(r => r.paymentType === 'PROJECT' && Number(r.rate) > 0);
+            hasActivity = hasTx || hasFee || hasRateCard;
+          } else if (compType === 'milestone_based') {
+            const hasTx = (adjustments.variableTransactions || []).some(t => t.paymentType === 'MILESTONE');
+            const hasMilestone = Number(adjustments.milestoneAmount) > 0;
+            hasActivity = hasTx || hasMilestone;
+          }
+
+          if (!hasActivity) {
+            skippedNoActivity.push({
+              employeeId,
+              employeeName,
+              compensationType: compType,
+              message: 'No matching variable transactions or activity for this period'
+            });
+            continue;
+          }
+        }
 
         const claims = await ReimbursementClaim.find({
           employee: employee._id,
@@ -674,7 +710,7 @@ exports.processPayroll = async (req, res) => {
       }
     }
 
-    res.status(201).json({ success, errors });
+    res.status(201).json({ success, errors, skippedNoActivity });
   } catch (error) {
     console.error('Error processing payroll:', error);
     res.status(500).json({ message: 'Server error processing payroll' });
@@ -2404,6 +2440,125 @@ exports.previewPayroll = async (req, res) => {
   } catch (error) {
     console.error('Error generating payroll preview:', error);
     res.status(500).json({ message: 'Server error generating payroll preview' });
+  }
+};
+
+/**
+ * GET /api/payroll/compensation-types
+ *
+ * Returns list of all registered strategy metadata for frontend auto-generation.
+ */
+exports.getCompensationTypes = async (req, res) => {
+  try {
+    const { listCompensationTypes } = require('../utils/payrollStrategies/index');
+    const types = listCompensationTypes();
+    res.json(types);
+  } catch (error) {
+    console.error('Error fetching compensation types:', error);
+    res.status(500).json({ message: 'Server error fetching compensation types' });
+  }
+};
+
+/**
+ * POST /api/payroll/full-and-final
+ * Body: { employeeId, lastWorkingDay, noticePeriodServedDays, noticePeriodRequiredDays, leaveEncashmentDays, comments }
+ */
+exports.processFullAndFinalSettlement = async (req, res) => {
+  try {
+    const {
+      employeeId,
+      lastWorkingDay,
+      noticePeriodServedDays = 0,
+      noticePeriodRequiredDays = 0,
+      leaveEncashmentDays = 0,
+      comments = '',
+    } = req.body;
+
+    if (!employeeId || !lastWorkingDay) {
+      return res.status(400).json({ message: 'employeeId and lastWorkingDay are required' });
+    }
+
+    const employee = await Employee.findOne({ _id: employeeId, user: req.user._id });
+    if (!employee) return res.status(404).json({ message: 'Employee not found' });
+
+    const exitDate = new Date(lastWorkingDay);
+    const month = exitDate.getUTCMonth() + 1;
+    const year = exitDate.getUTCFullYear();
+
+    const config = await getOrCreateConfig(req.user._id);
+
+    // 1. Gratuity Payout if tenure >= 5 years & gratuity is enabled
+    const joiningDate = employee.joiningDate ? new Date(employee.joiningDate) : exitDate;
+    const tenureYears = Math.max(0, (exitDate.getTime() - joiningDate.getTime()) / (1000 * 60 * 60 * 24 * 365.25));
+    let gratuityPayout = 0;
+    if (employee.gratuityEnabled !== false && tenureYears >= 5) {
+      const basicSalary = Number(employee.salaryStructure?.basic) || (Number(employee.monthlyCTC) * 0.5) || 0;
+      gratuityPayout = roundAmount((15 / 26) * basicSalary * Math.floor(tenureYears));
+    }
+
+    // 2. Notice period shortfall recovery
+    let noticeShortfallDeduction = 0;
+    const reqNotice = Number(noticePeriodRequiredDays) || 0;
+    const srvNotice = Number(noticePeriodServedDays) || 0;
+    if (reqNotice > srvNotice) {
+      const dailyRate = (Number(employee.monthlyCTC) || 0) / 30;
+      noticeShortfallDeduction = roundAmount((reqNotice - srvNotice) * dailyRate);
+    }
+
+    // 3. Leave Encashment
+    let leaveEncashmentAmount = 0;
+    const encashDays = Number(leaveEncashmentDays) || 0;
+    if (encashDays > 0) {
+      const basicDailyRate = (Number(employee.salaryStructure?.basic) || (Number(employee.monthlyCTC) * 0.5) || 0) / 30;
+      leaveEncashmentAmount = roundAmount(encashDays * basicDailyRate);
+    }
+
+    // 4. Outstanding Loan Recovery
+    const Loan = mongoose.model('Loan');
+    const activeLoans = await Loan.find({ employee: employee._id, status: 'approved' });
+    let loanRecoveryDeduction = 0;
+    activeLoans.forEach(loan => {
+      loanRecoveryDeduction += (Number(loan.principalAmount) || 0) - (Number(loan.totalPaid) || 0);
+    });
+    loanRecoveryDeduction = roundAmount(Math.max(0, loanRecoveryDeduction));
+
+    // 5. Build payroll snapshot for final period
+    employee.dateOfLeaving = exitDate;
+    const adjustments = {
+      otherEarnings: leaveEncashmentAmount > 0 ? [{ name: 'Leave Encashment', amount: leaveEncashmentAmount }] : [],
+      otherDeductions: [
+        ...(noticeShortfallDeduction > 0 ? [{ name: 'Notice Period Shortfall Recovery', amount: noticeShortfallDeduction }] : []),
+        ...(loanRecoveryDeduction > 0 ? [{ name: 'Loan Balance Recovery', amount: loanRecoveryDeduction }] : []),
+      ],
+      variablePay: gratuityPayout > 0 ? { specialBonus: gratuityPayout } : {},
+    };
+
+    const snapshot = buildPayrollSnapshot(employee, config, { paidDays: exitDate.getUTCDate() }, adjustments, month, year);
+
+    // 6. Update employee status to terminated
+    employee.status = 'terminated';
+    await employee.save();
+
+    res.json({
+      message: 'Full and Final Settlement processed successfully',
+      settlementSummary: {
+        employeeId: employee.employeeId,
+        employeeName: `${employee.firstName} ${employee.lastName}`,
+        lastWorkingDay: exitDate,
+        tenureYears: roundAmount(tenureYears),
+        proratedGrossSalary: snapshot.grossSalary,
+        leaveEncashmentAmount,
+        gratuityPayout,
+        noticeShortfallDeduction,
+        loanRecoveryDeduction,
+        totalDeductions: snapshot.totalDeductions,
+        netFnFSettlementAmount: snapshot.netSalary,
+      },
+      snapshot,
+    });
+  } catch (error) {
+    console.error('Error processing Full & Final settlement:', error);
+    res.status(500).json({ message: 'Server error processing Full & Final settlement' });
   }
 };
 

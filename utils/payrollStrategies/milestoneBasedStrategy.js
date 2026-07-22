@@ -10,13 +10,22 @@
  */
 'use strict';
 
-const { roundAmount } = require('../payrollMath');
+const roundAmount = (val) => Math.round((Number(val) || 0) * 100) / 100;
 
 module.exports = {
+  usesSalaryComponents: false,
+  zeroesFixedAllowances: true,
   requiredPeriodInputFields: ['milestoneAmount'],
 
   computeGrossEarnings(_src, _config, periodInput) {
-    const gross = roundAmount(Number(periodInput.milestoneAmount || 0));
+    const txns = periodInput.variableTransactions || [];
+    const milestoneTxns = txns.filter(t => t.paymentType === 'MILESTONE');
+    let gross = roundAmount(milestoneTxns.reduce((sum, t) => sum + (Number(t.amount) || 0), 0));
+
+    if (gross === 0) {
+      gross = roundAmount(Number(periodInput.milestoneAmount || 0));
+    }
+
     return {
       gross,
       earningsMap: { basic: gross },

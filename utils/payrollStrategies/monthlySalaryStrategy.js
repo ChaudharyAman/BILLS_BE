@@ -10,6 +10,8 @@
 'use strict';
 
 module.exports = {
+  usesSalaryComponents: true,
+  zeroesFixedAllowances: false,
   requiredPeriodInputFields: ['paidDays'],
 
   /** Called by buildMasterSalaryStructure after it resolves compensationType. */

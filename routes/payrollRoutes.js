@@ -24,12 +24,18 @@ const {
   syncEmployees,
   syncAttendance,
   receiveHrmsWebhook,
+  getCompensationTypes,
+  processFullAndFinalSettlement,
 } = require('../controllers/payrollController');
 
 // Webhook endpoint (unprotected, authenticated via HMAC signature check)
 router.post('/integration/webhook', verifyMultiTenantWebhook, receiveHrmsWebhook);
 
 router.use(protect);
+
+// Strategy metadata route
+router.get('/compensation-types', getCompensationTypes);
+router.post('/full-and-final', processFullAndFinalSettlement);
 
 // Protected integration routes
 router.post('/integration/sync-employees', syncEmployees);

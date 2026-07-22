@@ -1,4 +1,7 @@
 const { getMonthlyPT } = require('./professionalTaxSlabs');
+const { checkMinimumWageCompliance } = require('./minimumWageSlabs');
+const { resolveCompensationType, resolveStrategy, getStrategyStatutoryDefaults } = require('./payrollStrategies/index');
+
 const DEFAULT_PAYROLL_CONFIG = {
   basicPercent: 0.5,
   hraPercent: 0.5,
@@ -266,6 +269,113 @@ const calculateTaxDetails = (employee, monthlyCTC, config, basicMaster, hraMaste
   };
 };
 
+const computeStatutoryAndTax = ({
+  gross,
+  basicMaster,
+  hraMaster = 0,
+  monthlyCTC,
+  flags,
+  config,
+  src
+}) => {
+  const {
+    pfEnabled,
+    esiEnabled,
+    ptEnabled,
+    lwfEnabled,
+    tdsEnabled,
+    gratuityEnabled,
+  } = flags;
+
+  // 1. PF Calculation
+  let pfEmployer = 0;
+  let pfEmployee = 0;
+  let pfBase = 0;
+  if (pfEnabled) {
+    if (config.pfCalculationType === 'fixed') {
+      pfEmployer = roundAmount(config.pfAmountEmployer);
+      pfEmployee = roundAmount(config.pfAmountEmployee);
+      pfBase = pfEmployee;
+    } else {
+      pfBase = roundAmount(Math.min(basicMaster, config.pfCap));
+      pfEmployer = roundAmount(pfBase * config.pfEmployerRate);
+      pfEmployee = roundAmount(pfBase * config.pfRate);
+    }
+  }
+
+  // 2. Gratuity Calculation
+  const gratuity = gratuityEnabled ? roundAmount(basicMaster * config.gratuityRate) : 0;
+
+  // 3. LWF Calculation — deducted semi-annually (June/Month 6 & Dec/Month 12) unless set to monthly
+  const isLwfCycleMonth = !src._month || src._month % 6 === 0 || config.lwfFrequency === 'monthly';
+  const lwfEmployer = (lwfEnabled && gross > 0 && isLwfCycleMonth) ? roundAmount(config.lwfEmployer) : 0;
+  const lwfEmployee = (lwfEnabled && gross > 0 && isLwfCycleMonth) ? roundAmount(config.lwfEmployee) : 0;
+
+  // 4. ESI Calculation — project full monthly-equivalent gross for partial periods
+  const periodRatio = (src._paidDays && src._workingDays && src._workingDays > 0)
+    ? (src._paidDays / src._workingDays)
+    : 1;
+  const projectedMonthlyGross = (periodRatio > 0 && periodRatio < 1)
+    ? roundAmount(gross / periodRatio)
+    : (monthlyCTC || gross);
+
+  const esiApplicable = esiEnabled && (projectedMonthlyGross <= config.esiBasicThreshold);
+  const esiEmployer = roundAmount(esiApplicable ? basicMaster * config.esiEmployerRate : 0);
+  const esiEmployee = roundAmount(esiApplicable ? basicMaster * config.esiEmployeeRate : 0);
+
+  // 5. Dynamic Tax Engine Calculations (TDS)
+  const taxRegime = src.taxRegime || 'new';
+  const declarations = src.declarations || {};
+
+  const taxDetails = calculateTaxDetails({
+    ...src,
+    ptEnabled,
+    taxRegime,
+    declarations
+  }, monthlyCTC || gross, config, basicMaster, hraMaster, gross);
+
+  const calculatedTdsMonthly = taxDetails[taxRegime === 'old' ? 'oldRegime' : 'newRegime'].monthlyTax;
+  const tds = tdsEnabled
+    ? (Number(src.deductions?.tds) > 0 ? Number(src.deductions?.tds) : roundAmount(calculatedTdsMonthly))
+    : 0;
+
+  // 6. Professional Tax
+  const manualPT = Number(src.deductions?.professionalTax) || 0;
+  const computedPT = (ptEnabled && src.ptState)
+    ? getMonthlyPT(src.ptState, gross, src._month)
+    : 0;
+  const professionalTax = ptEnabled
+    ? (manualPT > 0 ? manualPT : computedPT)
+    : 0;
+
+  const insurance = gross > 0 ? roundAmount(src.insuranceAmount ?? config.defaultInsurance) : 0;
+  const employerNPS = roundAmount(src.employerNPS);
+
+  const totalEmployerContributions = roundAmount(
+    pfEmployer + esiEmployer + gratuity + lwfEmployer + insurance + employerNPS
+  );
+
+  return {
+    pfBase,
+    pfEmployer,
+    pfEmployee,
+    gratuity,
+    lwfEmployer,
+    lwfEmployee,
+    esiApplicable,
+    esiEmployer,
+    esiEmployee,
+    taxRegime,
+    declarations,
+    taxDetails,
+    tds,
+    professionalTax,
+    insurance,
+    employerNPS,
+    totalEmployerContributions,
+  };
+};
+
 const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const config = normalizeConfig(configInput);
   
@@ -286,71 +396,106 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   let monthlyCTC = roundAmount(getMonthlyCTCValue(src));
 
   // ── Strategy dispatch ───────────────────────────────────────────────────────────────────────────
-  // Resolve compensationType from new canonical field or legacy payType/compensationModel.
-  // This replaces the scattered isHourly / isIntern ternary chains.
-  const { resolveCompensationType, resolveStrategy, getStrategyStatutoryDefaults } = require('./payrollStrategies/index');
   const effectiveCompType = resolveCompensationType(src);
   const strategy = resolveStrategy(effectiveCompType);
 
-  // For strategies that compute their own gross (non-null return), inject their result
-  // and return early — bypassing the salary component loop entirely.
-  const strategyResult = strategy.computeGrossEarnings(src, config, src._periodInput || {});
-  if (strategyResult !== null) {
-    // Non-null: piece_rate, daily_wage, timesheet_based, commission, etc.
-    // These strategies produce a flat gross; no PF/ESI/PT/LWF/gratuity by default.
-    const flags = getStrategyStatutoryDefaults(effectiveCompType, config.compensationTypeDefaults);
-    return {
-      basicMaster: strategyResult.basicMaster || strategyResult.gross || 0,
-      hraMaster: strategyResult.hraMaster || 0,
-      grossSalary: strategyResult.gross || 0,
-      grossTotalSalary: strategyResult.gross || 0,
-      earningsMap: strategyResult.earningsMap || { basic: strategyResult.gross || 0 },
-      deductionsMap: {},
-      flexi: 0, broadband: 0, petrol: 0, lta: 0,
-      conveyance: 0, medicalAllowance: 0, specialAllowance: 0,
-      pfEmployee: 0, pfEmployer: 0,
-      esiEmployee: 0, esiEmployer: 0,
-      professionalTax: 0,
-      gratuity: 0,
-      lwfEmployee: 0, lwfEmployer: 0,
-      insurance: 0,
-      employerNPS: 0,
-      tds: 0,
-      netSalary: strategyResult.gross || 0,
-      pfEnabled: flags.pfEligible && src.pfEnabled !== false,
-      esiEnabled: flags.esiEligible && src.esiEnabled !== false,
-      ptEnabled: flags.ptApplicable && src.ptEnabled !== false,
-      gratuityEnabled: flags.gratuityEligible && src.gratuityEnabled !== false,
-      lwfEnabled: flags.lwfApplicable && src.lwfEnabled !== false,
-      tdsEnabled: src.tdsEnabled !== false,
-      includePfInCTC: false,
-      includeGratuityInCTC: false,
-      useComponents: false,
-      monthlyCTC: strategyResult.gross || 0,
-    };
-  }
-
-  // null-returning strategies (monthly_salary, hourly, attendance_based,
-  // salary_plus_commission, weekly_salary, retainer*) fall through to the
-  // existing salary-component logic below — byte-identical results guaranteed.
-  // *retainer returns non-null above.
-
-  const isIntern = src.employmentType === 'intern';
-  // isHourly: preserve legacy check AND check effectiveCompType for safety
-  const isHourly = src.payType === 'hourly' || effectiveCompType === 'hourly';
-  const useComponents = src.useSalaryComponents !== false && !isIntern && !isHourly;
-
-  // Statutory flags: delegate to strategy, then apply per-employee overrides.
-  // This replaces the 7 !isIntern && !isHourly && ... inline guards.
   const stratFlags = getStrategyStatutoryDefaults(effectiveCompType, config.compensationTypeDefaults || {});
-  const pfEnabled     = stratFlags.pfEligible       && src.pfEnabled !== false;
-  const esiEnabled    = stratFlags.esiEligible      && src.esiEnabled !== false;
-  const ptEnabled     = stratFlags.ptApplicable     && src.ptEnabled !== false;
-  const lwfEnabled    = stratFlags.lwfApplicable    && src.lwfEnabled !== false;
-  const tdsEnabled    = src.tdsEnabled !== false;
+  const pfEnabled          = stratFlags.pfEligible       && src.pfEnabled !== false;
+  const esiEnabled         = stratFlags.esiEligible      && src.esiEnabled !== false;
+  const ptEnabled          = stratFlags.ptApplicable     && src.ptEnabled !== false;
+  const lwfEnabled         = stratFlags.lwfApplicable    && src.lwfEnabled !== false;
+  const tdsEnabled         = src.tdsEnabled !== false;
   const gratuityEnabled    = stratFlags.gratuityEligible && src.gratuityEnabled !== false;
   const includePfInCTC     = stratFlags.pfEligible       && src.includePfInCTC === true;
   const includeGratuityInCTC = stratFlags.gratuityEligible && src.includeGratuityInCTC !== false;
+
+  const flags = {
+    pfEnabled,
+    esiEnabled,
+    ptEnabled,
+    lwfEnabled,
+    tdsEnabled,
+    gratuityEnabled,
+    includePfInCTC,
+    includeGratuityInCTC,
+  };
+
+  const strategyResult = strategy.computeGrossEarnings(src, config, src._periodInput || {});
+  if (strategyResult !== null) {
+    const gross = strategyResult.gross || 0;
+    const basicMaster = strategyResult.basicMaster || gross || 0;
+    const hraMaster = strategyResult.hraMaster || 0;
+
+    const stat = computeStatutoryAndTax({
+      gross,
+      basicMaster,
+      hraMaster,
+      monthlyCTC: monthlyCTC || gross,
+      flags,
+      config,
+      src,
+    });
+
+    const otherDeductions = src.deductions?.otherDeductions || src.otherDeductions || [];
+    const otherDeductionsSum = roundAmount(otherDeductions.reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
+
+    const totalDeductions = roundAmount(
+      stat.pfEmployee +
+      stat.esiEmployee +
+      stat.professionalTax +
+      stat.tds +
+      stat.lwfEmployee +
+      otherDeductionsSum
+    );
+
+    return {
+      basicMaster,
+      hraMaster,
+      grossSalary: gross,
+      grossTotalSalary: roundAmount(gross + stat.totalEmployerContributions),
+      totalEarnings: gross,
+      earningsMap: strategyResult.earningsMap || { basic: gross },
+      deductionsMap: {},
+      flexi: 0, broadband: 0, petrol: 0, lta: 0,
+      conveyance: 0, medicalAllowance: 0, specialAllowance: 0,
+      pfBase: stat.pfBase,
+      pfEmployee: stat.pfEmployee,
+      pfEmployer: stat.pfEmployer,
+      esiApplicable: stat.esiApplicable,
+      esiEmployee: stat.esiEmployee,
+      esiEmployer: stat.esiEmployer,
+      professionalTax: stat.professionalTax,
+      gratuity: stat.gratuity,
+      lwfEmployee: stat.lwfEmployee,
+      lwfEmployer: stat.lwfEmployer,
+      insurance: stat.insurance,
+      employerNPS: stat.employerNPS,
+      tds: stat.tds,
+      taxRegime: stat.taxRegime,
+      declarations: stat.declarations,
+      taxDetails: stat.taxDetails,
+      totalDeductions,
+      netSalary: roundAmount(Math.max(0, gross - totalDeductions)),
+      netTakeHome: roundAmount(Math.max(0, gross - totalDeductions)),
+      pfEnabled,
+      esiEnabled,
+      ptEnabled,
+      gratuityEnabled,
+      lwfEnabled,
+      tdsEnabled,
+      includePfInCTC: false,
+      includeGratuityInCTC: false,
+      useComponents: false,
+      monthlyCTC: monthlyCTC || gross,
+    };
+  }
+
+  // null-returning strategies (monthly_salary, attendance_based, salary_plus_commission, weekly_salary)
+  // fall through to the salary-component logic below — byte-identical results guaranteed.
+
+  const isIntern = src.employmentType === 'intern';
+  const isHourly = src.payType === 'hourly' || effectiveCompType === 'hourly';
+  const useComponents = src.useSalaryComponents !== false && !isIntern && !isHourly;
 
   let basicPercent = !useComponents ? 1.0 : config.basicPercent;
   if (useComponents && src.basicPercent !== undefined && src.basicPercent !== null && Number(src.basicPercent) > 0) {
@@ -601,36 +746,16 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
       }, 0) + otherAllowancesSum)
     : roundAmount(basicMaster + hraMaster + conveyance + medicalAllowance + specialAllowance + otherAllowancesSum);
 
-  const totalEmployerContributions = roundAmount(
-    pfEmployer + esiEmployer + gratuity + lwfEmployer + insurance + employerNPS
-  );
+  const stat = computeStatutoryAndTax({
+    gross: totalEarnings,
+    basicMaster,
+    hraMaster,
+    monthlyCTC,
+    flags,
+    config,
+    src,
+  });
 
-
-  // Dynamic Tax Engine Calculations
-  const taxRegime = src.taxRegime || 'new';
-  const declarations = src.declarations || {};
-
-  const taxDetails = calculateTaxDetails({
-    ...src,
-    ptEnabled,
-    taxRegime,
-    declarations
-  }, monthlyCTC, config, basicMaster, hraMaster, totalEarnings);
-
-  const calculatedTdsMonthly = taxDetails[taxRegime === 'old' ? 'oldRegime' : 'newRegime'].monthlyTax;
-  const tds = tdsEnabled
-    ? (Number(src.deductions?.tds) > 0 ? Number(src.deductions?.tds) : roundAmount(calculatedTdsMonthly))
-    : 0;
-
-  // Professional Tax: prefer manual override when non-zero, otherwise
-  // auto-compute from state slab (getMonthlyPT returns 0 if no state set).
-  const manualPT = Number(src.deductions?.professionalTax) || 0;
-  const computedPT = (ptEnabled && src.ptState)
-    ? getMonthlyPT(src.ptState, totalEarnings, src._month)
-    : 0;
-  const professionalTax = ptEnabled
-    ? (manualPT > 0 ? manualPT : computedPT)
-    : 0;
   const otherDeductions = src.deductions?.otherDeductions || src.otherDeductions || [];
   const otherDeductionsSum = roundAmount(otherDeductions.reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
 
@@ -664,11 +789,11 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const dynamicDeductionsSum = roundAmount(Object.values(deductionsMap).reduce((sum, v) => sum + v, 0));
 
   const totalDeductions = roundAmount(
-    pfEmployee +
-    esiEmployee +
-    professionalTax +
-    tds +
-    lwfEmployee +
+    stat.pfEmployee +
+    stat.esiEmployee +
+    stat.professionalTax +
+    stat.tds +
+    stat.lwfEmployee +
     otherDeductionsSum +
     dynamicDeductionsSum
   );
@@ -679,37 +804,38 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     annualCTC: roundAmount(monthlyCTC * 12),
     basicMaster,
     hraMaster,
-    pfBase,
-    pfEmployer,
-    pfEmployee,
-    gratuity,
-    lwfEmployer,
-    lwfEmployee,
-    insurance,
+    pfBase: stat.pfBase,
+    pfEmployer: stat.pfEmployer,
+    pfEmployee: stat.pfEmployee,
+    gratuity: stat.gratuity,
+    lwfEmployer: stat.lwfEmployer,
+    lwfEmployee: stat.lwfEmployee,
+    insurance: stat.insurance,
     flexi,
     broadband,
     petrol,
     lta,
     ltaCap,
-    employerNPS,
+    employerNPS: stat.employerNPS,
     conveyance,
     medicalAllowance,
     specialAllowance,
-    esiApplicable,
-    esiEmployer,
-    esiEmployee,
+    esiApplicable: stat.esiApplicable,
+    esiEmployer: stat.esiEmployer,
+    esiEmployee: stat.esiEmployee,
     grossSalary,
     totalEarnings,
-    totalEmployerContributions,
-    grossTotalSalary: roundAmount(totalEarnings + totalEmployerContributions),
+    totalEmployerContributions: stat.totalEmployerContributions,
+    grossTotalSalary: roundAmount(totalEarnings + stat.totalEmployerContributions),
     totalDeductions,
     netTakeHome: roundAmount(Math.max(0, totalEarnings - totalDeductions)),
-    diff: roundAmount(monthlyCTC - (basicMaster + hraMaster + flexi + broadband + petrol + lta + pfEmployerInCTC + gratuityInCTC + lwfEmployer + insurance + esiEmployer + employerNPS + conveyance + medicalAllowance + specialAllowance)),
-    taxRegime,
-    declarations,
-    taxDetails,
-    tds,
-    professionalTax,
+    netSalary: roundAmount(Math.max(0, totalEarnings - totalDeductions)),
+    diff: roundAmount(monthlyCTC - (basicMaster + hraMaster + flexi + broadband + petrol + lta + (pfEnabled && includePfInCTC ? stat.pfEmployer : 0) + (gratuityEnabled && includeGratuityInCTC ? stat.gratuity : 0) + stat.lwfEmployer + stat.insurance + stat.esiEmployer + stat.employerNPS + conveyance + medicalAllowance + specialAllowance)),
+    taxRegime: stat.taxRegime,
+    declarations: stat.declarations,
+    taxDetails: stat.taxDetails,
+    tds: stat.tds,
+    professionalTax: stat.professionalTax,
     pfEnabled,
     esiEnabled,
     ptEnabled,
@@ -722,7 +848,71 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     earningsMap,
     deductionsMap,
   };
-};;
+};
+/**
+ * applyOvertimePolicy(overtimeInput, hourlyRateInput, basicMaster, configInput)
+ *
+ * Distinguishes weekday vs weekend vs holiday OT multipliers and flags (without truncating) hours exceeding caps.
+ */
+const applyOvertimePolicy = (overtimeInput, hourlyRateInput, basicMaster = 0, configInput = {}) => {
+  const config = normalizeConfig(configInput);
+  const otConfig = config.overtimePolicy || {};
+
+  const standardMonthlyHours = Number(config.standardMonthlyHours) || 160;
+  const derivedHourlyRate = Number(hourlyRateInput) > 0 
+    ? Number(hourlyRateInput) 
+    : (basicMaster > 0 ? (basicMaster / standardMonthlyHours) : 0);
+
+  let totalOtHours = 0;
+  let otAmount = 0;
+  let isCapped = false;
+  let maxOtHours = Number(otConfig.maxOvertimeHoursPerMonth) || 50;
+
+  if (typeof overtimeInput === 'number' || (!isNaN(Number(overtimeInput)) && overtimeInput !== '')) {
+    const rawVal = Number(overtimeInput) || 0;
+    if (rawVal > 0 && rawVal <= 120) {
+      totalOtHours = rawVal;
+      const multiplier = Number(otConfig.weekdayMultiplier) || 1.5;
+      otAmount = roundAmount(totalOtHours * derivedHourlyRate * multiplier);
+    } else {
+      otAmount = roundAmount(rawVal);
+    }
+  } else if (overtimeInput && typeof overtimeInput === 'object') {
+    const weekdayHours = Number(overtimeInput.weekdayHours) || 0;
+    const weekendHours = Number(overtimeInput.weekendHours) || 0;
+    const holidayHours = Number(overtimeInput.holidayHours) || 0;
+    const customAmount = Number(overtimeInput.customAmount) || 0;
+
+    totalOtHours = weekdayHours + weekendHours + holidayHours;
+
+    const weekdayMult = Number(otConfig.weekdayMultiplier) || 1.5;
+    const weekendMult = Number(otConfig.weekendMultiplier) || 2.0;
+    const holidayMult = Number(otConfig.holidayMultiplier) || 2.0;
+
+    const weekdayOtPay = weekdayHours * derivedHourlyRate * weekdayMult;
+    const weekendOtPay = weekendHours * derivedHourlyRate * weekendMult;
+    const holidayOtPay = holidayHours * derivedHourlyRate * holidayMult;
+
+    otAmount = roundAmount(weekdayOtPay + weekendOtPay + holidayOtPay + customAmount);
+  }
+
+  if (totalOtHours > maxOtHours) {
+    isCapped = true;
+  }
+
+  return {
+    overtimeAmount: otAmount,
+    totalOvertimeHours: totalOtHours,
+    maxOvertimeHours: maxOtHours,
+    overtimeCapWarning: isCapped ? {
+      flagged: true,
+      totalHours: totalOtHours,
+      maxCap: maxOtHours,
+      exceededBy: roundAmount(totalOtHours - maxOtHours),
+      warningMessage: `[Overtime Cap Warning] Total OT hours (${totalOtHours} hrs) exceeds statutory max cap (${maxOtHours} hrs/month)`,
+    } : null,
+  };
+};
 
 const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustments = {}, monthNum, yearNum) => {
   const employee = (employeeInput && typeof employeeInput.toObject === 'function')
@@ -801,6 +991,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
 
     return {
       monthlyCTC,
+      compensationType: getVal('compensationType', null),
       employmentType: getVal('employmentType', 'full-time'),
       compensationModel: getVal('compensationModel', 'SALARIED'),
       paymentBasis: getVal('paymentBasis', 'MONTHLY'),
@@ -848,12 +1039,24 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
   const isHourly = effectiveCompType === 'hourly' || employee.payType === 'hourly';
   const hoursWorked = isHourly ? (Number(attendance?.hoursWorked) || Number(adjustments?.hoursWorked) || Number(employee.hoursWorked) || 0) : 0;
 
+  const periodInput = {
+    daysWorked:      Number(adjustments.daysWorked ?? attendance?.paidDays ?? 0),
+    unitsProduced:   Number(adjustments.unitsProduced ?? 0),
+    hoursLogged:     Number(adjustments.hoursLogged ?? adjustments.timesheetHours ?? 0),
+    hoursWorked:     Number(attendance?.hoursWorked ?? adjustments.hoursWorked ?? employee.hoursWorked ?? 0),
+    projectFee:      adjustments.projectFee !== undefined ? Number(adjustments.projectFee) : undefined,
+    milestoneAmount: adjustments.milestoneAmount !== undefined ? Number(adjustments.milestoneAmount) : undefined,
+    ratePerUnit:     adjustments.ratePerUnit !== undefined ? Number(adjustments.ratePerUnit) : undefined,
+    variableTransactions: Array.isArray(adjustments.variableTransactions) ? adjustments.variableTransactions : [],
+  };
+
   for (let d = 1; d <= totalDaysInMonth; d++) {
     const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const activeParams = getEmployeeParamsForDate(currentStr);
     
     const daySource = {
       ...activeParams,
+      _periodInput: periodInput,
       hoursWorked: isHourly ? hoursWorked : undefined,
       pfEnabled: adjustments.pfEnabled !== undefined ? adjustments.pfEnabled : activeParams.pfEnabled,
       esiEnabled: adjustments.esiEnabled !== undefined ? adjustments.esiEnabled : activeParams.esiEnabled,
@@ -1059,7 +1262,17 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
 
   for (const tx of variableTransactions) {
     const txAmount = Number(tx.amount) || 0;
-    variableEarningsTotal += txAmount;
+    const isConsumedByStrategy = (
+      (effectiveCompType === 'commission' || effectiveCompType === 'commission_only') && (!tx.paymentType || tx.paymentType === 'COMMISSION' || tx.paymentType === 'PERCENTAGE')
+    ) || (
+      effectiveCompType === 'project_based' && tx.paymentType === 'PROJECT'
+    ) || (
+      effectiveCompType === 'milestone_based' && tx.paymentType === 'MILESTONE'
+    );
+
+    if (!isConsumedByStrategy) {
+      variableEarningsTotal += txAmount;
+    }
     variableEarningsDetails.push({
       paymentType: tx.paymentType,
       reference: tx.reference || '',
@@ -1071,13 +1284,16 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     });
   }
 
+  const otResult = applyOvertimePolicy(adjustments.overtime, master.hourlyRate || employee.hourlyRate, master.basicMaster, config);
   const hasDynamicComponents = config.salaryComponents && config.salaryComponents.length > 0;
   let earnings = {};
 
   if (hasDynamicComponents) {
     earnings = {
       otherEarnings: [...otherEarnings],
-      overtime: roundAmount(adjustments.overtime),
+      overtime: otResult.overtimeAmount,
+      overtimeHours: otResult.totalOvertimeHours,
+      overtimeCapWarning: otResult.overtimeCapWarning,
     };
     config.salaryComponents.forEach(c => {
       if (c.type === 'earning') {
@@ -1162,7 +1378,9 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       petrol: sumDailyComponent('petrol'),
       lta: sumDailyComponent('lta'),
       specialAllowance: sumDailyComponent('specialAllowance'),
-      overtime: roundAmount(adjustments.overtime),
+      overtime: otResult.overtimeAmount,
+      overtimeHours: otResult.totalOvertimeHours,
+      overtimeCapWarning: otResult.overtimeCapWarning,
       conveyance: sumDailyComponent('conveyance'),
       medicalAllowance: sumDailyComponent('medicalAllowance'),
       otherEarnings,
@@ -1313,6 +1531,64 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
   const reimbursements = Array.isArray(adjustments.reimbursements) ? adjustments.reimbursements : [];
   const totalReimbursementApproved = roundAmount(reimbursements.reduce((sum, r) => sum + (Number(r.approved) || 0), 0));
 
+  const totalAvailableForDeductions = roundAmount(earnings.totalEarnings + variablePay.totalVariablePay + totalReimbursementApproved);
+  let netSalary = roundAmount(totalAvailableForDeductions - deductions.totalDeductions);
+  let payrollShortfall = null;
+
+  // Explicit policy: If deductions exceed earnings, clamp netSalary at 0 and reduce non-statutory deductions
+  if (netSalary < 0) {
+    const rawShortfall = Math.abs(netSalary);
+    const nonStatutorySum = roundAmount(
+      deductions.loanDeduction +
+      deductions.advanceDeduction +
+      deductions.insuranceEmployee +
+      deductions.gratuityDeduction +
+      sumNamedAmounts(deductions.otherDeductions) +
+      dynamicDeductionsSum
+    );
+
+    let loanShortfall = 0;
+    let advanceShortfall = 0;
+
+    if (nonStatutorySum > 0) {
+      const ratio = Math.min(1, rawShortfall / nonStatutorySum);
+      if (deductions.loanDeduction > 0) {
+        loanShortfall = roundAmount(deductions.loanDeduction * ratio);
+        deductions.loanDeduction = roundAmount(deductions.loanDeduction - loanShortfall);
+      }
+      if (deductions.advanceDeduction > 0) {
+        advanceShortfall = roundAmount(deductions.advanceDeduction * ratio);
+        deductions.advanceDeduction = roundAmount(deductions.advanceDeduction - advanceShortfall);
+      }
+
+      // Re-sum totalDeductions after non-statutory reduction
+      deductions.totalDeductions = roundAmount(
+        Object.entries(deductions)
+          .filter(([key, value]) => key !== 'otherDeductions' && key !== 'deductionsMap' && typeof value === 'number')
+          .reduce((sum, [, value]) => sum + value, 0) +
+        sumNamedAmounts(deductions.otherDeductions) +
+        dynamicDeductionsSum
+      );
+    }
+
+    netSalary = roundAmount(Math.max(0, totalAvailableForDeductions - deductions.totalDeductions));
+    payrollShortfall = {
+      shortfallAmount: rawShortfall,
+      loanShortfall,
+      advanceShortfall,
+      notes: 'Non-statutory deductions adjusted to prevent negative net salary',
+    };
+  }
+
+  // Minimum wage compliance check (flags for admin review without altering gross)
+  const minimumWageCompliance = checkMinimumWageCompliance({
+    compensationType: effectiveCompType,
+    gross: earnings.totalEarnings,
+    paidDays,
+    hoursWorked,
+    state: employee.ptState || adjustments.ptState || 'DEFAULT',
+  });
+
   return {
     earnings,
     employerContributions,
@@ -1321,7 +1597,9 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     deductions,
     reimbursements,
     totalReimbursementApproved,
-    netSalary: roundAmount(Math.max(0, earnings.totalEarnings + variablePay.totalVariablePay + totalReimbursementApproved - deductions.totalDeductions)),
+    netSalary,
+    payrollShortfall,
+    minimumWageCompliance,
     lop,
     paidDays,
     workingDays,

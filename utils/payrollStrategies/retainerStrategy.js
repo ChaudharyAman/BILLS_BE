@@ -8,9 +8,11 @@
  */
 'use strict';
 
-const { roundAmount } = require('../payrollMath');
+const roundAmount = (val) => Math.round((Number(val) || 0) * 100) / 100;
 
 module.exports = {
+  usesSalaryComponents: false,
+  zeroesFixedAllowances: true,
   requiredPeriodInputFields: [], // attendanceMode: 'none' / 'fixed'
 
   computeGrossEarnings(src, _config, _periodInput) {

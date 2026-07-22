@@ -7,16 +7,24 @@
  */
 'use strict';
 
-const { roundAmount } = require('../payrollMath');
+const roundAmount = (val) => Math.round((Number(val) || 0) * 100) / 100;
 
 module.exports = {
+  usesSalaryComponents: false,
+  zeroesFixedAllowances: true,
   requiredPeriodInputFields: ['projectFee'],
 
   computeGrossEarnings(src, _config, periodInput) {
-    const rateCardEntry = (src.rateCard || []).find(r => r.paymentType === 'PROJECT');
-    const gross = roundAmount(
-      rateCardEntry ? Number(rateCardEntry.rate) : Number(periodInput.projectFee || src.monthlyCTC || 0)
-    );
+    const txns = periodInput.variableTransactions || [];
+    const projectTxns = txns.filter(t => t.paymentType === 'PROJECT');
+    let gross = roundAmount(projectTxns.reduce((sum, t) => sum + (Number(t.amount) || 0), 0));
+
+    if (gross === 0) {
+      const rateCardEntry = (src.rateCard || []).find(r => r.paymentType === 'PROJECT');
+      gross = roundAmount(
+        rateCardEntry ? Number(rateCardEntry.rate) : Number(periodInput.projectFee || src.monthlyCTC || 0)
+      );
+    }
 
     return {
       gross,

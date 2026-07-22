@@ -10,14 +10,17 @@
  */
 'use strict';
 
-const { roundAmount } = require('../payrollMath');
+const roundAmount = (val) => Math.round((Number(val) || 0) * 100) / 100;
 
 module.exports = {
+  usesSalaryComponents: false,
+  zeroesFixedAllowances: true,
   requiredPeriodInputFields: [],
 
   computeGrossEarnings(_src, _config, periodInput) {
     const txns = periodInput.variableTransactions || [];
-    const gross = roundAmount(txns.reduce((sum, t) => sum + (Number(t.amount) || 0), 0));
+    const commissionTxns = txns.filter(t => !t.paymentType || t.paymentType === 'COMMISSION' || t.paymentType === 'PERCENTAGE');
+    const gross = roundAmount(commissionTxns.reduce((sum, t) => sum + (Number(t.amount) || 0), 0));
 
     return {
       gross,

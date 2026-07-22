@@ -70,9 +70,73 @@ function getStrategyStatutoryDefaults(compensationType, configOverrides = {}) {
   return { ...base, ...override };
 }
 
+/**
+ * Returns a list of metadata objects for all registered compensation strategies.
+ */
+function listCompensationTypes() {
+  const LABELS = {
+    monthly_salary:        'Monthly Salary',
+    hourly:                'Hourly Rate',
+    daily_wage:            'Daily Wage',
+    weekly_salary:         'Weekly Salary',
+    piece_rate:            'Piece Rate',
+    project_based:         'Project Based',
+    milestone_based:       'Milestone Based',
+    attendance_based:      'Attendance Based',
+    timesheet_based:       'Timesheet Based',
+    commission_only:       'Commission Only',
+    salary_plus_commission:'Salary + Commission',
+    retainer:              'Retainer',
+  };
+
+  const INPUT_FIELDS_ONBOARDING = {
+    monthly_salary:        ['monthlyCTC', 'salaryComponentsEditor'],
+    hourly:                ['hourlyRate'],
+    daily_wage:            ['dailyRate'],
+    weekly_salary:         ['weeklyRate'],
+    piece_rate:            ['rateCardEditor'],
+    project_based:         ['projectFee', 'rateCardEditor'],
+    milestone_based:       ['milestoneAmount', 'rateCardEditor'],
+    attendance_based:      ['monthlyCTC', 'salaryComponentsEditor'],
+    timesheet_based:       ['hourlyRate', 'monthlyCTC'],
+    commission_only:       ['commissionNotes'],
+    salary_plus_commission:['monthlyCTC', 'salaryComponentsEditor', 'commissionNotes'],
+    retainer:              ['monthlyCTC'],
+  };
+
+  const DEFAULT_ATTENDANCE_MODES = {
+    monthly_salary:        'attendance',
+    attendance_based:      'attendance',
+    salary_plus_commission:'attendance',
+    hourly:                'timesheet',
+    timesheet_based:       'timesheet',
+    daily_wage:            'attendance',
+    weekly_salary:         'attendance',
+    piece_rate:            'unit_count',
+    project_based:         'none',
+    milestone_based:       'none',
+    commission_only:       'none',
+    retainer:              'none',
+  };
+
+  return Object.entries(strategies).map(([key, strategy]) => {
+    return {
+      key,
+      label: strategy.label || LABELS[key] || key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+      requiredPeriodInputFields: strategy.requiredPeriodInputFields || [],
+      usesSalaryComponents: strategy.usesSalaryComponents ?? true,
+      zeroesFixedAllowances: strategy.zeroesFixedAllowances ?? false,
+      defaultStatutoryFlags: strategy.defaultStatutoryFlags(),
+      defaultAttendanceMode: strategy.defaultAttendanceMode || DEFAULT_ATTENDANCE_MODES[key] || 'attendance',
+      inputFieldsAtOnboarding: strategy.inputFieldsAtOnboarding || INPUT_FIELDS_ONBOARDING[key] || ['monthlyCTC'],
+    };
+  });
+}
+
 module.exports = {
   resolveStrategy,
   resolveCompensationType,
   deriveCompensationTypeFromLegacy,
   getStrategyStatutoryDefaults,
+  listCompensationTypes,
 };

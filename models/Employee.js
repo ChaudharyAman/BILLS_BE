@@ -279,7 +279,7 @@ EmployeeSchema.pre('save', async function() {
   // Resolve the effective compensation type (new canonical field OR derived from legacy fields).
   // The strategy registry provides defaultStatutoryFlags() so the pre-save hook no longer
   // contains inline isHourly / isIntern logic.
-  const { deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
+  const { resolveStrategy, resolveCompensationType, deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
   const effectiveCompType = this.compensationType || deriveCompensationTypeFromLegacy({
     payType: this.payType,
     compensationModel: this.compensationModel,
@@ -290,17 +290,23 @@ EmployeeSchema.pre('save', async function() {
     this.compensationType = effectiveCompType;
   }
 
+  const strategyMeta = resolveStrategy(effectiveCompType);
   const statutoryDefaults = getStrategyStatutoryDefaults(effectiveCompType);
-  if (!statutoryDefaults.pfEligible) {
-    this.pfEnabled = false;
-    this.esiEnabled = false;
-    this.ptEnabled = false;
-    this.lwfEnabled = false;
-    this.gratuityEnabled = false;
+  const skipFixedComponents = !strategyMeta.usesSalaryComponents;
+
+  if (skipFixedComponents) {
+    this.useSalaryComponents = false;
     this.includePfInCTC = false;
     this.includeGratuityInCTC = false;
-    this.useSalaryComponents = false;
-    // Hourly: monthlyCTC is meaningless (income = rate × hours)
+    this.flexiAmount = 0;
+    this.broadband = 0;
+    this.petrol = 0;
+    this.lta = 0;
+    if (this.pfEnabled === undefined) this.pfEnabled = statutoryDefaults.pfEligible;
+    if (this.esiEnabled === undefined) this.esiEnabled = statutoryDefaults.esiEligible;
+    if (this.ptEnabled === undefined) this.ptEnabled = statutoryDefaults.ptApplicable;
+    if (this.lwfEnabled === undefined) this.lwfEnabled = statutoryDefaults.lwfApplicable;
+    if (this.gratuityEnabled === undefined) this.gratuityEnabled = statutoryDefaults.gratuityEligible;
     if (effectiveCompType === 'hourly') {
       this.monthlyCTC = 0;
     }
@@ -482,7 +488,7 @@ const applySalaryStructureUpdate = async function() {
   }
 
   // Resolve effective compensation type using strategy registry
-  const { deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
+  const { resolveStrategy, resolveCompensationType, deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
   const resolvedPayType = getField('payType', 'salaried');
   const resolvedEmploymentType = getField('employmentType', 'full-time');
   const resolvedCompensationModel = getField('compensationModel', 'SALARIED');
@@ -500,17 +506,26 @@ const applySalaryStructureUpdate = async function() {
     set.compensationType = effectiveCompType;
   }
 
+  const strategyMeta = resolveStrategy(effectiveCompType);
   const statutoryDefaults = getStrategyStatutoryDefaults(effectiveCompType);
-  if (!statutoryDefaults.pfEligible) {
-    const fieldsToForceFalse = [
-      'pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled', 'gratuityEnabled',
-      'includePfInCTC', 'includeGratuityInCTC', 'useSalaryComponents'
-    ];
+  const skipFixedComponents = !strategyMeta.usesSalaryComponents;
+
+  if (skipFixedComponents) {
     if (!update.$set) update.$set = {};
-    fieldsToForceFalse.forEach(field => {
-      update.$set[field] = false;
-      set[field] = false;
-    });
+    update.$set.useSalaryComponents = false;
+    update.$set.includePfInCTC = false;
+    update.$set.includeGratuityInCTC = false;
+    update.$set.flexiAmount = 0;
+    update.$set.broadband = 0;
+    update.$set.petrol = 0;
+    update.$set.lta = 0;
+    set.useSalaryComponents = false;
+    set.includePfInCTC = false;
+    set.includeGratuityInCTC = false;
+    set.flexiAmount = 0;
+    set.broadband = 0;
+    set.petrol = 0;
+    set.lta = 0;
     if (effectiveCompType === 'hourly') {
       update.$set.monthlyCTC = 0;
       set.monthlyCTC = 0;

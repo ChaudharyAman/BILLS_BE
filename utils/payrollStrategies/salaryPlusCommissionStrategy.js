@@ -11,6 +11,8 @@
 'use strict';
 
 module.exports = {
+  usesSalaryComponents: true,
+  zeroesFixedAllowances: false,
   requiredPeriodInputFields: ['paidDays'],
 
   computeGrossEarnings(_src, _config, _periodInput) {

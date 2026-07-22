@@ -1678,6 +1678,43 @@ exports.downloadImportTemplateExcel = async (req, res) => {
 };
 
 
+/**
+ * Validates payload values according to the requirements of the selected compensationType.
+ * Returns null if valid, or a string error message if invalid.
+ */
+function validateCompensationTypePayload(compensationType, payload) {
+  const compType = compensationType || 'monthly_salary';
+  const monthlyCTC = Number(payload.monthlyCTC ?? payload.newCTC) || 0;
+  const hourlyRate = Number(payload.hourlyRate ?? payload.newHourlyRate) || 0;
+  const dailyRate = Number(payload.dailyRate) || 0;
+  const rateCard = Array.isArray(payload.rateCard) ? payload.rateCard : [];
+
+  if (compType === 'hourly') {
+    if (hourlyRate <= 0) {
+      return 'Hourly employees require a positive hourly rate (hourlyRate > 0)';
+    }
+  } else if (compType === 'daily_wage') {
+    if (dailyRate <= 0 && monthlyCTC <= 0) {
+      return 'Daily wage employees require a positive daily rate or monthly CTC';
+    }
+  } else if (compType === 'piece_rate') {
+    const hasUnitRate = rateCard.some(r => (r.paymentType === 'UNIT' || r.unit === 'unit') && Number(r.rate) > 0);
+    if (!hasUnitRate) {
+      return 'Piece rate employees require at least one rate card item with paymentType UNIT and rate > 0';
+    }
+  } else if (['monthly_salary', 'attendance_based', 'salary_plus_commission', 'weekly_salary'].includes(compType)) {
+    if (monthlyCTC <= 0) {
+      return `Employees on ${compType.replace(/_/g, ' ')} require a positive monthly CTC (monthlyCTC > 0)`;
+    }
+  } else if (compType === 'retainer') {
+    const hasMonthlyRateCard = rateCard.some(r => (r.paymentType === 'MONTHLY' || r.unit === 'month') && Number(r.rate) > 0);
+    if (monthlyCTC <= 0 && !hasMonthlyRateCard) {
+      return 'Retainer employees require either a positive monthly CTC or a MONTHLY rate card entry';
+    }
+  }
+  return null;
+}
+
 exports.addSalaryRevision = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
@@ -1688,7 +1725,13 @@ exports.addSalaryRevision = async (req, res) => {
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const effectiveDate = parsePossibleDate(req.body.effectiveDate);
-    const isHourly = employee.payType === 'hourly';
+    const { resolveStrategy, resolveCompensationType } = require('../utils/payrollStrategies/index');
+    const effectiveCompType = resolveCompensationType(req.body.compensationType ? req.body : employee);
+    const strategyMeta = resolveStrategy(effectiveCompType);
+    const stratFlags = strategyMeta.defaultStatutoryFlags();
+    const isHourly = effectiveCompType === 'hourly';
+    const skipFixedComponents = !strategyMeta.usesSalaryComponents;
+
     let newCTC = Number(req.body.newCTC);
     let newHourlyRate = Number(req.body.newHourlyRate);
 
@@ -1698,9 +1741,19 @@ exports.addSalaryRevision = async (req, res) => {
       }
       newCTC = 0;
     } else {
-      if (!effectiveDate || !newCTC || newCTC < 0) {
+      if (!effectiveDate || (newCTC === undefined || newCTC === null || newCTC < 0)) {
         return res.status(400).json({ message: 'Effective date and new monthly CTC are required' });
       }
+    }
+
+    const valError = validateCompensationTypePayload(effectiveCompType, {
+      monthlyCTC: newCTC,
+      hourlyRate: newHourlyRate,
+      dailyRate: req.body.dailyRate,
+      rateCard: req.body.rateCard !== undefined ? req.body.rateCard : employee.rateCard,
+    });
+    if (valError) {
+      return res.status(400).json({ message: valError });
     }
 
     const config = await getOrCreateConfig(req.user._id);
@@ -1737,32 +1790,32 @@ exports.addSalaryRevision = async (req, res) => {
       role: revisedRole,
       monthlyCTC: isHourly ? 0 : newCTC,
       hourlyRate: isHourly ? newHourlyRate : 0,
-      useSalaryComponents: isHourly ? false : getVal('useSalaryComponents'),
+      useSalaryComponents: skipFixedComponents ? false : getVal('useSalaryComponents'),
       employmentType: isHourly ? 'contract' : getVal('employmentType'),
       compensationModel: req.body.compensationModel !== undefined ? req.body.compensationModel : employee.compensationModel,
       paymentBasis: req.body.paymentBasis !== undefined ? req.body.paymentBasis : employee.paymentBasis,
       rateCard: req.body.rateCard !== undefined ? req.body.rateCard : employee.rateCard,
-      pfEnabled: isHourly ? false : getVal('pfEnabled'),
+      pfEnabled: req.body.pfEnabled !== undefined ? req.body.pfEnabled : (skipFixedComponents ? stratFlags.pfEligible : getVal('pfEnabled')),
       tdsEnabled: getVal('tdsEnabled') !== false,
-      esiEnabled: isHourly ? false : getVal('esiEnabled'),
-      ptEnabled: isHourly ? false : getVal('ptEnabled'),
-      lwfEnabled: isHourly ? false : getVal('lwfEnabled'),
-      gratuityEnabled: isHourly ? false : getVal('gratuityEnabled'),
-      includePfInCTC: isHourly ? false : getVal('includePfInCTC'),
-      includeGratuityInCTC: isHourly ? false : getVal('includeGratuityInCTC'),
-      basicPercent: isHourly ? null : getVal('basicPercent'),
-      hraPercent: isHourly ? null : getVal('hraPercent'),
-      joiningBonus: isHourly ? 0 : (req.body.joiningBonus !== undefined ? Number(req.body.joiningBonus) : (Number(employee.joiningBonus) || 0)),
-      flexiAmount: isHourly ? 0 : (req.body.flexiAmount !== undefined ? Number(req.body.flexiAmount) : (Number(employee.flexiAmount) || 0)),
-      broadband: isHourly ? 0 : (req.body.broadband !== undefined ? Number(req.body.broadband) : (Number(employee.broadband) || 0)),
-      petrol: isHourly ? 0 : (req.body.petrol !== undefined ? Number(req.body.petrol) : (Number(employee.petrol) || 0)),
-      lta: isHourly ? 0 : (req.body.lta !== undefined ? Number(req.body.lta) : (Number(employee.lta) || 0)),
-      employerNPS: isHourly ? 0 : (req.body.employerNPS !== undefined ? Number(req.body.employerNPS) : (Number(employee.employerNPS) || 0)),
-      insuranceAmount: isHourly ? 0 : (req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : (Number(employee.insuranceAmount) || 0)),
+      esiEnabled: req.body.esiEnabled !== undefined ? req.body.esiEnabled : (skipFixedComponents ? stratFlags.esiEligible : getVal('esiEnabled')),
+      ptEnabled: req.body.ptEnabled !== undefined ? req.body.ptEnabled : (skipFixedComponents ? stratFlags.ptApplicable : getVal('ptEnabled')),
+      lwfEnabled: req.body.lwfEnabled !== undefined ? req.body.lwfEnabled : (skipFixedComponents ? stratFlags.lwfApplicable : getVal('lwfEnabled')),
+      gratuityEnabled: req.body.gratuityEnabled !== undefined ? req.body.gratuityEnabled : (skipFixedComponents ? stratFlags.gratuityEligible : getVal('gratuityEnabled')),
+      includePfInCTC: skipFixedComponents ? false : getVal('includePfInCTC'),
+      includeGratuityInCTC: skipFixedComponents ? false : getVal('includeGratuityInCTC'),
+      basicPercent: skipFixedComponents ? null : getVal('basicPercent'),
+      hraPercent: skipFixedComponents ? null : getVal('hraPercent'),
+      joiningBonus: skipFixedComponents ? 0 : (req.body.joiningBonus !== undefined ? Number(req.body.joiningBonus) : (Number(employee.joiningBonus) || 0)),
+      flexiAmount: skipFixedComponents ? 0 : (req.body.flexiAmount !== undefined ? Number(req.body.flexiAmount) : (Number(employee.flexiAmount) || 0)),
+      broadband: skipFixedComponents ? 0 : (req.body.broadband !== undefined ? Number(req.body.broadband) : (Number(employee.broadband) || 0)),
+      petrol: skipFixedComponents ? 0 : (req.body.petrol !== undefined ? Number(req.body.petrol) : (Number(employee.petrol) || 0)),
+      lta: skipFixedComponents ? 0 : (req.body.lta !== undefined ? Number(req.body.lta) : (Number(employee.lta) || 0)),
+      employerNPS: skipFixedComponents ? 0 : (req.body.employerNPS !== undefined ? Number(req.body.employerNPS) : (Number(employee.employerNPS) || 0)),
+      insuranceAmount: skipFixedComponents ? 0 : (req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : (Number(employee.insuranceAmount) || 0)),
       deductions: {
         ...(employee.deductions || {}),
         tds: req.body.tds !== undefined ? Number(req.body.tds) : (employee.deductions?.tds || 0),
-        professionalTax: isHourly ? 0 : (req.body.professionalTax !== undefined ? Number(req.body.professionalTax) : (employee.deductions?.professionalTax || 0)),
+        professionalTax: skipFixedComponents ? 0 : (req.body.professionalTax !== undefined ? Number(req.body.professionalTax) : (employee.deductions?.professionalTax || 0)),
         otherDeductions: isHourly ? [] : (req.body.otherDeductions !== undefined ? req.body.otherDeductions : (employee.deductions?.otherDeductions || [])),
       },
       salaryStructure: {
@@ -1961,6 +2014,52 @@ exports.addSalaryRevision = async (req, res) => {
 
     await employee.save();
 
+    // Retroactive Salary Revision Arrears Calculation Step
+    try {
+      const closedPayrolls = await Payroll.find({
+        employee: employee._id,
+        user: req.user._id,
+        status: 'paid'
+      }).sort({ year: 1, month: 1 });
+
+      const revDate = new Date(effectiveDate);
+      const affectedPayrolls = closedPayrolls.filter(p => {
+        const pDate = new Date(p.year, p.month - 1, 1);
+        const rDate = new Date(revDate.getFullYear(), revDate.getMonth(), 1);
+        return pDate >= rDate;
+      });
+
+      if (affectedPayrolls.length > 0) {
+        let totalArrears = 0;
+        for (const p of affectedPayrolls) {
+          const recalcSnapshot = buildPayrollSnapshot(nextPayload, config, { paidDays: p.paidDays }, {}, p.month, p.year);
+          const diff = roundAmount((recalcSnapshot.netSalary || 0) - (p.netSalary || 0));
+          if (diff > 0) {
+            totalArrears += diff;
+          }
+        }
+        if (totalArrears > 0) {
+          const PayrollVariableTransaction = mongoose.model('PayrollVariableTransaction');
+          const now = new Date();
+          const nextMonth = now.getUTCMonth() + 1;
+          const nextYear = now.getUTCFullYear();
+          await PayrollVariableTransaction.create({
+            user: req.user._id,
+            employee: employee._id,
+            month: nextMonth,
+            year: nextYear,
+            paymentType: 'ARREARS',
+            amount: roundAmount(totalArrears),
+            reference: `Arrears for salary revision effective ${revDate.toISOString().slice(0, 10)}`,
+            status: 'approved',
+            remarks: `Auto-computed arrears for ${affectedPayrolls.length} closed payroll cycle(s)`,
+          });
+        }
+      }
+    } catch (arrErr) {
+      console.error('Error calculating retroactive revision arrears:', arrErr);
+    }
+
     res.json(employee);
   } catch (error) {
     console.error('Error adding salary revision:', error);
@@ -2012,6 +2111,7 @@ exports.updateSalaryRevision = async (req, res) => {
     const strategy = resolveStrategy(effectiveCompType);
     const stratFlags = strategy.defaultStatutoryFlags();
     const isHourly = effectiveCompType === 'hourly';
+    const skipFixedComponents = !strategy.usesSalaryComponents;
     let newCTC = Number(req.body.newCTC);
     let newHourlyRate = Number(req.body.newHourlyRate);
 
@@ -2021,9 +2121,19 @@ exports.updateSalaryRevision = async (req, res) => {
       }
       newCTC = 0;
     } else {
-      if (!effectiveDate || !newCTC || newCTC < 0) {
+      if (!effectiveDate || (newCTC === undefined || newCTC === null || newCTC < 0)) {
         return res.status(400).json({ message: 'Effective date and new monthly CTC are required' });
       }
+    }
+
+    const valError = validateCompensationTypePayload(effectiveCompType, {
+      monthlyCTC: newCTC,
+      hourlyRate: newHourlyRate,
+      dailyRate: req.body.dailyRate,
+      rateCard: req.body.rateCard !== undefined ? req.body.rateCard : (revision.rateCard || employee.rateCard),
+    });
+    if (valError) {
+      return res.status(400).json({ message: valError });
     }
 
     const config = await getOrCreateConfig(req.user._id);
@@ -2058,38 +2168,38 @@ exports.updateSalaryRevision = async (req, res) => {
       role: revisedRole,
       monthlyCTC: isHourly ? 0 : newCTC,
       hourlyRate: isHourly ? newHourlyRate : 0,
-      useSalaryComponents: isHourly ? false : getVal('useSalaryComponents'),
+      useSalaryComponents: skipFixedComponents ? false : getVal('useSalaryComponents'),
       employmentType: isHourly ? 'contract' : getVal('employmentType'),
       compensationModel: getVal('compensationModel'),
       paymentBasis: getVal('paymentBasis'),
       rateCard: req.body.rateCard !== undefined ? req.body.rateCard : (revision.rateCard || employee.rateCard),
-      pfEnabled: isHourly ? false : getVal('pfEnabled'),
+      pfEnabled: req.body.pfEnabled !== undefined ? req.body.pfEnabled : (skipFixedComponents ? stratFlags.pfEligible : getVal('pfEnabled')),
       tdsEnabled: getVal('tdsEnabled') !== false,
-      esiEnabled: isHourly ? false : getVal('esiEnabled'),
-      ptEnabled: isHourly ? false : getVal('ptEnabled'),
-      lwfEnabled: isHourly ? false : getVal('lwfEnabled'),
-      gratuityEnabled: isHourly ? false : getVal('gratuityEnabled'),
-      includePfInCTC: isHourly ? false : getVal('includePfInCTC'),
-      includeGratuityInCTC: isHourly ? false : getVal('includeGratuityInCTC'),
-      basicPercent: isHourly ? null : getVal('basicPercent'),
-      hraPercent: isHourly ? null : getVal('hraPercent'),
-      joiningBonus: isHourly ? 0 : (req.body.joiningBonus !== undefined ? Number(req.body.joiningBonus) : (Number(revision.joiningBonus) || 0)),
-      flexiAmount: isHourly ? 0 : (req.body.flexiAmount !== undefined ? Number(req.body.flexiAmount) : (Number(revision.flexiAmount) || 0)),
-      broadband: isHourly ? 0 : (req.body.broadband !== undefined ? Number(req.body.broadband) : (Number(revision.broadband) || 0)),
-      petrol: isHourly ? 0 : (req.body.petrol !== undefined ? Number(req.body.petrol) : (Number(revision.petrol) || 0)),
-      lta: isHourly ? 0 : (req.body.lta !== undefined ? Number(req.body.lta) : (Number(revision.lta) || 0)),
-      employerNPS: isHourly ? 0 : (req.body.employerNPS !== undefined ? Number(req.body.employerNPS) : (Number(revision.employerNPS) || 0)),
-      insuranceAmount: isHourly ? 0 : (req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : (Number(revision.insuranceAmount) || 0)),
+      esiEnabled: req.body.esiEnabled !== undefined ? req.body.esiEnabled : (skipFixedComponents ? stratFlags.esiEligible : getVal('esiEnabled')),
+      ptEnabled: req.body.ptEnabled !== undefined ? req.body.ptEnabled : (skipFixedComponents ? stratFlags.ptApplicable : getVal('ptEnabled')),
+      lwfEnabled: req.body.lwfEnabled !== undefined ? req.body.lwfEnabled : (skipFixedComponents ? stratFlags.lwfApplicable : getVal('lwfEnabled')),
+      gratuityEnabled: req.body.gratuityEnabled !== undefined ? req.body.gratuityEnabled : (skipFixedComponents ? stratFlags.gratuityEligible : getVal('gratuityEnabled')),
+      includePfInCTC: skipFixedComponents ? false : getVal('includePfInCTC'),
+      includeGratuityInCTC: skipFixedComponents ? false : getVal('includeGratuityInCTC'),
+      basicPercent: skipFixedComponents ? null : getVal('basicPercent'),
+      hraPercent: skipFixedComponents ? null : getVal('hraPercent'),
+      joiningBonus: skipFixedComponents ? 0 : (req.body.joiningBonus !== undefined ? Number(req.body.joiningBonus) : (Number(revision.joiningBonus) || 0)),
+      flexiAmount: skipFixedComponents ? 0 : (req.body.flexiAmount !== undefined ? Number(req.body.flexiAmount) : (Number(revision.flexiAmount) || 0)),
+      broadband: skipFixedComponents ? 0 : (req.body.broadband !== undefined ? Number(req.body.broadband) : (Number(revision.broadband) || 0)),
+      petrol: skipFixedComponents ? 0 : (req.body.petrol !== undefined ? Number(req.body.petrol) : (Number(revision.petrol) || 0)),
+      lta: skipFixedComponents ? 0 : (req.body.lta !== undefined ? Number(req.body.lta) : (Number(revision.lta) || 0)),
+      employerNPS: skipFixedComponents ? 0 : (req.body.employerNPS !== undefined ? Number(req.body.employerNPS) : (Number(revision.employerNPS) || 0)),
+      insuranceAmount: skipFixedComponents ? 0 : (req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : (Number(revision.insuranceAmount) || 0)),
       deductions: {
         ...(revision.deductions || {}),
         tds: req.body.tds !== undefined ? Number(req.body.tds) : (revision.deductions?.tds || 0),
-        professionalTax: isHourly ? 0 : (req.body.professionalTax !== undefined ? Number(req.body.professionalTax) : (revision.deductions?.professionalTax || 0)),
+        professionalTax: skipFixedComponents ? 0 : (req.body.professionalTax !== undefined ? Number(req.body.professionalTax) : (revision.deductions?.professionalTax || 0)),
         otherDeductions: isHourly ? [] : (req.body.otherDeductions !== undefined ? req.body.otherDeductions : (revision.deductions?.otherDeductions || [])),
       },
       salaryStructure: {
-        conveyance: isHourly ? 0 : (req.body.conveyance !== undefined ? Number(req.body.conveyance) : (Number(revision.salaryStructure?.conveyance) || 0)),
-        medicalAllowance: isHourly ? 0 : (req.body.medicalAllowance !== undefined ? Number(req.body.medicalAllowance) : (Number(revision.salaryStructure?.medicalAllowance) || 0)),
-        otherAllowances: isHourly ? [] : (req.body.otherAllowances !== undefined ? req.body.otherAllowances : (revision.salaryStructure?.otherAllowances || [])),
+        conveyance: skipFixedComponents ? 0 : (req.body.conveyance !== undefined ? Number(req.body.conveyance) : (Number(revision.salaryStructure?.conveyance) || 0)),
+        medicalAllowance: skipFixedComponents ? 0 : (req.body.medicalAllowance !== undefined ? Number(req.body.medicalAllowance) : (Number(revision.salaryStructure?.medicalAllowance) || 0)),
+        otherAllowances: skipFixedComponents ? [] : (req.body.otherAllowances !== undefined ? req.body.otherAllowances : (revision.salaryStructure?.otherAllowances || [])),
         ...(req.body.basic !== undefined && { basic: Number(req.body.basic) }),
         ...(req.body.hra !== undefined && { hra: Number(req.body.hra) }),
       },
@@ -2295,4 +2405,6 @@ exports.deleteSalaryRevision = async (req, res) => {
     res.status(500).json({ message: 'Server error deleting salary revision' });
   }
 };
+
+exports.validateCompensationTypePayload = validateCompensationTypePayload;
 
