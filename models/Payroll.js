@@ -84,6 +84,12 @@ const PayrollSchema = new mongoose.Schema({
     gratuityDeduction: { type: Number, default: 0 },
     loanDeduction: { type: Number, default: 0 },
     advanceDeduction: { type: Number, default: 0 },
+    loanRepayments: [{
+      loanId: { type: mongoose.Schema.Types.ObjectId, ref: 'Loan' },
+      loanReference: { type: String, default: '' },
+      amountApplied: { type: Number, default: 0 },
+      remainingBalance: { type: Number, default: 0 }
+    }],
     otherDeductions: [NamedAmountSchema],
     deductionsMap: { type: mongoose.Schema.Types.Mixed, default: {} },
     totalDeductions: { type: Number, required: true },

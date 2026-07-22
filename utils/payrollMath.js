@@ -870,37 +870,54 @@ const applyOvertimePolicy = (overtimeInput, hourlyRateInput, basicMaster = 0, co
   let isCapped = false;
   let maxOtHours = Number(otConfig.maxOvertimeHoursPerMonth) || 50;
 
-  if (typeof overtimeInput === 'number' || (!isNaN(Number(overtimeInput)) && overtimeInput !== '')) {
-    const rawVal = Number(overtimeInput) || 0;
-    if (rawVal > 0 && rawVal <= 120) {
-      totalOtHours = rawVal;
-      const multiplier = Number(otConfig.weekdayMultiplier) || 1.5;
-      otAmount = roundAmount(totalOtHours * derivedHourlyRate * multiplier);
-    } else {
-      otAmount = roundAmount(rawVal);
-    }
-  } else if (overtimeInput && typeof overtimeInput === 'object') {
-    const weekdayHours = Number(overtimeInput.weekdayHours) || 0;
-    const weekendHours = Number(overtimeInput.weekendHours) || 0;
-    const holidayHours = Number(overtimeInput.holidayHours) || 0;
-    const customAmount = Number(overtimeInput.customAmount) || 0;
+  let weekdayHours = 0;
+  let weekendHours = 0;
+  let holidayHours = 0;
+  let customAmount = 0;
+
+  const weekdayMult = Number(otConfig.weekdayMultiplier) || 1.5;
+  const weekendMult = Number(otConfig.weekendMultiplier) || 2.0;
+  const holidayMult = Number(otConfig.holidayMultiplier) || 2.0;
+
+  if (overtimeInput && typeof overtimeInput === 'object') {
+    // Primary path: structured overtime policy input { weekdayHours, weekendHours, holidayHours, customAmount }
+    weekdayHours = Number(overtimeInput.weekdayHours) || 0;
+    weekendHours = Number(overtimeInput.weekendHours) || 0;
+    holidayHours = Number(overtimeInput.holidayHours) || 0;
+    customAmount = Number(overtimeInput.customAmount) || 0;
 
     totalOtHours = weekdayHours + weekendHours + holidayHours;
-
-    const weekdayMult = Number(otConfig.weekdayMultiplier) || 1.5;
-    const weekendMult = Number(otConfig.weekendMultiplier) || 2.0;
-    const holidayMult = Number(otConfig.holidayMultiplier) || 2.0;
 
     const weekdayOtPay = weekdayHours * derivedHourlyRate * weekdayMult;
     const weekendOtPay = weekendHours * derivedHourlyRate * weekendMult;
     const holidayOtPay = holidayHours * derivedHourlyRate * holidayMult;
 
     otAmount = roundAmount(weekdayOtPay + weekendOtPay + holidayOtPay + customAmount);
+  } else if (typeof overtimeInput === 'number' || (!isNaN(Number(overtimeInput)) && overtimeInput !== '')) {
+    // LEGACY FALLBACK ONLY: bare-number input path retained for backward compatibility.
+    // Do not rely on this branch for new features or main UI — the intended primary path is the structured object above.
+    const rawVal = Number(overtimeInput) || 0;
+    if (rawVal > 0 && rawVal <= 120) {
+      weekdayHours = rawVal;
+      totalOtHours = rawVal;
+      otAmount = roundAmount(totalOtHours * derivedHourlyRate * weekdayMult);
+    } else {
+      customAmount = rawVal;
+      otAmount = roundAmount(rawVal);
+    }
   }
 
   if (totalOtHours > maxOtHours) {
     isCapped = true;
   }
+
+  const breakdown = {
+    hourlyRate: derivedHourlyRate,
+    weekday: { hours: weekdayHours, multiplier: weekdayMult, rate: derivedHourlyRate, amount: roundAmount(weekdayHours * derivedHourlyRate * weekdayMult) },
+    weekend: { hours: weekendHours, multiplier: weekendMult, rate: derivedHourlyRate, amount: roundAmount(weekendHours * derivedHourlyRate * weekendMult) },
+    holiday: { hours: holidayHours, multiplier: holidayMult, rate: derivedHourlyRate, amount: roundAmount(holidayHours * derivedHourlyRate * holidayMult) },
+    customAmount: roundAmount(customAmount),
+  };
 
   return {
     overtimeAmount: otAmount,
@@ -913,6 +930,7 @@ const applyOvertimePolicy = (overtimeInput, hourlyRateInput, basicMaster = 0, co
       exceededBy: roundAmount(totalOtHours - maxOtHours),
       warningMessage: `[Overtime Cap Warning] Total OT hours (${totalOtHours} hrs) exceeds statutory max cap (${maxOtHours} hrs/month)`,
     } : null,
+    breakdown,
   };
 };
 
@@ -1296,6 +1314,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       overtime: otResult.overtimeAmount,
       overtimeHours: otResult.totalOvertimeHours,
       overtimeCapWarning: otResult.overtimeCapWarning,
+      overtimeBreakdown: otResult.breakdown,
     };
     config.salaryComponents.forEach(c => {
       if (c.type === 'earning') {
@@ -1383,6 +1402,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
       overtime: otResult.overtimeAmount,
       overtimeHours: otResult.totalOvertimeHours,
       overtimeCapWarning: otResult.overtimeCapWarning,
+      overtimeBreakdown: otResult.breakdown,
       conveyance: sumDailyComponent('conveyance'),
       medicalAllowance: sumDailyComponent('medicalAllowance'),
       otherEarnings,
@@ -1600,6 +1620,8 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     reimbursements,
     totalReimbursementApproved,
     netSalary,
+    netPayClamped: Boolean(payrollShortfall && payrollShortfall.shortfallAmount > 0),
+    belowMinimumWage: Boolean(minimumWageCompliance && minimumWageCompliance.flagged),
     payrollShortfall,
     minimumWageCompliance,
     lop,

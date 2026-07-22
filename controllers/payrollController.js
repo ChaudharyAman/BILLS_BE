@@ -568,18 +568,36 @@ exports.processPayroll = async (req, res) => {
           billUrl: c.billUrl || ''
         }));
 
-        // Calculate active loans' EMIs if not manually overridden
+        const activeLoans = await Loan.find({
+          employee: employee._id,
+          user: req.user._id,
+          status: 'active',
+          remainingBalance: { $gt: 0 }
+        }).sort({ createdAt: 1 });
+
         if (adjustments.loanDeduction === undefined || adjustments.loanDeduction === null) {
-          const activeLoans = await Loan.find({
-            employee: employee._id,
-            user: req.user._id,
-            status: 'active',
-            remainingBalance: { $gt: 0 }
-          }).sort({ createdAt: 1 });
           adjustments.loanDeduction = activeLoans.reduce((sum, loan) => sum + Math.min(loan.emiAmount, loan.remainingBalance), 0);
         }
 
+        let remLoanDeduction = Number(adjustments.loanDeduction) || 0;
+        const loanRepayments = [];
+        for (const loan of activeLoans) {
+          if (remLoanDeduction <= 0) break;
+          const applied = Math.min(loan.remainingBalance, loan.emiAmount, remLoanDeduction);
+          if (applied > 0) {
+            const remAfter = Math.max(0, roundAmount(loan.remainingBalance - applied));
+            loanRepayments.push({
+              loanId: loan._id,
+              loanReference: loan.loanNumber || loan.purpose || `Loan #${String(loan._id).slice(-4)}`,
+              amountApplied: roundAmount(applied),
+              remainingBalance: remAfter
+            });
+            remLoanDeduction = roundAmount(remLoanDeduction - applied);
+          }
+        }
+
         const snapshot = buildPayrollSnapshot(employee, config, attendance, adjustments, month, year);
+        snapshot.deductions.loanRepayments = loanRepayments;
         const statusVal = saveAsDraft ? 'draft' : 'processed';
 
         const notesList = [];
