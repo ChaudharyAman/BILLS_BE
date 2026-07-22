@@ -856,29 +856,26 @@ exports.calculateSalary = async (req, res) => {
     let monthlyCTC = Number(req.body.monthlyCTC) || (Number(req.body.annualCTC) ? Number(req.body.annualCTC) / 12 : 0);
     const payType = req.body.payType || 'salaried';
     const hourlyRate = Number(req.body.hourlyRate) || 0;
-    const hoursWorked = req.body.hoursWorked !== undefined ? Number(req.body.hoursWorked) : 160;
+    const hoursWorked = req.body.hoursWorked !== undefined ? Number(req.body.hoursWorked) : 160;    const { resolveStrategy, resolveCompensationType } = require('../utils/payrollStrategies');
+    const effectiveCompType = resolveCompensationType(req.body);
+    const strategyMeta = resolveStrategy(effectiveCompType);
+    const usesComponents = strategyMeta.usesSalaryComponents !== false;
 
-    const isHourly = payType === 'hourly';
-    const isConsultant = req.body.compensationModel && req.body.compensationModel !== 'SALARIED';
-    const disableStatutory = isHourly || isConsultant;
-
-    if (isHourly) {
+    if (effectiveCompType === 'hourly') {
       monthlyCTC = hourlyRate * hoursWorked;
     }
 
-    if (!isHourly && (!monthlyCTC || monthlyCTC < 0)) {
-      return res.status(400).json({ message: 'Monthly CTC or Annual CTC is required' });
-    }
-
     const previewSource = {
+      ...req.body,
       monthlyCTC,
       payType,
+      compensationType: effectiveCompType,
       hourlyRate,
       hoursWorked,
       employmentType: req.body.employmentType,
       compensationModel: req.body.compensationModel || 'SALARIED',
       paymentBasis: req.body.paymentBasis || 'MONTHLY',
-      useSalaryComponents: req.body.useSalaryComponents !== false && !disableStatutory,
+      useSalaryComponents: req.body.useSalaryComponents !== false && usesComponents,
       basicPercent: req.body.basicPercent !== undefined && req.body.basicPercent !== null ? Number(req.body.basicPercent) : null,
       hraPercent: req.body.hraPercent !== undefined && req.body.hraPercent !== null ? Number(req.body.hraPercent) : null,
       basic: req.body.basic !== undefined ? Number(req.body.basic) : undefined,
@@ -891,16 +888,16 @@ exports.calculateSalary = async (req, res) => {
       employerNPS: Number(req.body.employerNPS) || 0,
       insuranceAmount: req.body.insuranceAmount !== undefined ? Number(req.body.insuranceAmount) : config.defaultInsurance,
       taxRegime: req.body.taxRegime || 'new',
-      pfEnabled: disableStatutory ? false : req.body.pfEnabled !== false,
-      esiEnabled: disableStatutory ? false : req.body.esiEnabled !== false,
-      ptEnabled: disableStatutory ? false : req.body.ptEnabled !== false,
-      lwfEnabled: disableStatutory ? false : req.body.lwfEnabled !== false,
-      gratuityEnabled: disableStatutory ? false : req.body.gratuityEnabled !== false,
-      includePfInCTC: disableStatutory ? false : req.body.includePfInCTC === true,
-      includeGratuityInCTC: disableStatutory ? false : req.body.includeGratuityInCTC !== false,
+      pfEnabled: !usesComponents ? false : req.body.pfEnabled !== false,
+      esiEnabled: !usesComponents ? false : req.body.esiEnabled !== false,
+      ptEnabled: !usesComponents ? false : req.body.ptEnabled !== false,
+      lwfEnabled: !usesComponents ? false : req.body.lwfEnabled !== false,
+      gratuityEnabled: !usesComponents ? false : req.body.gratuityEnabled !== false,
+      includePfInCTC: !usesComponents ? false : req.body.includePfInCTC === true,
+      includeGratuityInCTC: !usesComponents ? false : req.body.includeGratuityInCTC !== false,
       declarations: req.body.declarations || {},
       deductions: {
-        professionalTax: payType === 'hourly' ? 0 : (Number(req.body.professionalTax) || 0),
+        professionalTax: !usesComponents ? 0 : (Number(req.body.professionalTax) || 0),
         tds: Number(req.body.tds) || 0,
         otherDeductions: Array.isArray(req.body.otherDeductions) ? req.body.otherDeductions : (Array.isArray(req.body.deductions?.otherDeductions) ? req.body.deductions.otherDeductions : []),
       },
