@@ -21,6 +21,7 @@ const DEFAULT_PAYROLL_CONFIG = {
   defaultInsurance: 0,
   ltaMaxPercent: 0.0833,
   standardMonthlyHours: 160,
+  tds194JRate: 0.10,
   compensationTypeDefaults: {},
 };
 
@@ -120,6 +121,7 @@ const normalizeConfig = (config = {}) => {
     defaultInsurance: getNum(cfg.defaultInsurance, DEFAULT_PAYROLL_CONFIG.defaultInsurance),
     ltaMaxPercent: getNum(cfg.ltaMaxPercent, DEFAULT_PAYROLL_CONFIG.ltaMaxPercent),
     standardMonthlyHours: getNum(cfg.standardMonthlyHours, DEFAULT_PAYROLL_CONFIG.standardMonthlyHours),
+    tds194JRate: getNum(cfg.tds194JRate, DEFAULT_PAYROLL_CONFIG.tds194JRate),
     compensationTypeDefaults: cfg.compensationTypeDefaults || DEFAULT_PAYROLL_CONFIG.compensationTypeDefaults,
     salaryComponents: cfg.salaryComponents || null,
   };
@@ -1506,7 +1508,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
         : (Number(employee.deductions?.tds) > 0
             ? employee.deductions.tds
             : (employee.compensationModel && employee.compensationModel !== 'SALARIED'
-                ? roundAmount(earnings.totalEarnings * 0.10)
+                ? roundAmount(earnings.totalEarnings * (config.tds194JRate ?? 0.10))
                 : master.tds))
     ),
     insuranceEmployee: roundAmount(adjustments.insuranceEmployee),

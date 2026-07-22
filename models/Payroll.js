@@ -243,7 +243,25 @@ PayrollSchema.pre('validate', function() {
 });
 
 PayrollSchema.index({ user: 1, employee: 1, month: 1, year: 1 }, { unique: true });
-PayrollSchema.index({ user: 1, year: -1, month: -1 });
+PayrollSchema.post('init', function () {
+  this._originalStatus = this.status;
+});
+
+PayrollSchema.pre('save', function (next) {
+  if (!this.isNew && this.isModified()) {
+    if (this._originalStatus === 'paid' && this.status === 'paid') {
+      const modifiedPaths = this.modifiedPaths();
+      const allowedKeys = ['auditLog', 'approvalWorkflow', 'expenseRef', 'paymentDate', 'paymentMethod', 'transactionId', 'updatedAt'];
+      const forbiddenPaths = modifiedPaths.filter(p => !allowedKeys.includes(p));
+      if (forbiddenPaths.length > 0) {
+        const err = new Error(`[Immutability Guard] Cannot mutate paid payroll record (forbidden fields: ${forbiddenPaths.join(', ')}). Use reopening or retroactive arrears workflow.`);
+        if (typeof next === 'function') return next(err);
+        throw err;
+      }
+    }
+  }
+  if (typeof next === 'function') next();
+});
 
 NamedAmountSchema.plugin(softDeletePlugin);
 

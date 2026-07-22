@@ -419,19 +419,27 @@ exports.getTDSSummary = async (req, res) => {
     });
 
     const rows = [
-      ['Employee Name', 'Employee ID', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Total TDS'],
+      ['Employee Name', 'Employee ID', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Total TDS', 'Projected Tax', 'True-Up Variance', 'Form 16 Flag'],
       ...Array.from(grouped.values()).map((entry) => {
         const monthValues = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'].map((key) => entry.values[key] || 0);
+        const totalTds = monthValues.reduce((sum, value) => sum + value, 0);
+        const projectedTax = entry.annualTax || totalTds;
+        const variance = Math.round((projectedTax - totalTds) * 100) / 100;
+        const form16Flag = Math.abs(variance) > 500 ? 'Reconciliation Needed' : 'Balanced';
+
         return [
           entry.name,
           entry.employeeId,
           ...monthValues,
-          monthValues.reduce((sum, value) => sum + value, 0),
+          totalTds,
+          projectedTax,
+          variance,
+          form16Flag,
         ];
       }),
     ];
 
-    return sendReport(res, rows, 'TDS Summary', `tds-summary-fy-${financialYearStart}-${financialYearEnd}.xlsx`, format);
+    return sendReport(res, rows, 'TDS Summary & Form 16 True-Up', `tds-summary-fy-${financialYearStart}-${financialYearEnd}.xlsx`, format);
   } catch (error) {
     console.error('Error generating TDS summary:', error);
     res.status(500).json({ message: 'Server error generating TDS summary' });

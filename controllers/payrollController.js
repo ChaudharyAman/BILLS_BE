@@ -565,7 +565,7 @@ exports.processPayroll = async (req, res) => {
             user: req.user._id,
             status: 'active',
             remainingBalance: { $gt: 0 }
-          });
+          }).sort({ createdAt: 1 });
           adjustments.loanDeduction = activeLoans.reduce((sum, loan) => sum + Math.min(loan.emiAmount, loan.remainingBalance), 0);
         }
 
@@ -1252,7 +1252,7 @@ exports.markPayrollAsPaid = async (req, res) => {
         user: req.user._id,
         status: 'active',
         remainingBalance: { $gt: 0 }
-      });
+      }).sort({ createdAt: 1 });
 
       let remainingDeduction = payroll.deductions.loanDeduction;
       for (const loan of activeLoans) {
@@ -1333,7 +1333,7 @@ exports.markPayrollAsPaid = async (req, res) => {
                 user: req.user._id,
                 status: 'active',
                 remainingBalance: { $gt: 0 }
-              });
+              }).sort({ createdAt: 1 });
 
               let remainingDeduction = payroll.deductions.loanDeduction;
               for (const loan of activeLoans) {
