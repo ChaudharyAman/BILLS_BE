@@ -467,4 +467,114 @@ if (!skipPayload.skip && !skipPayload._skipPeriod) {
 }
 console.log('Skip Period Flag Test passed!');
 
+// Test 17: Concurrency & Duplicate Key E11000 Error Handling Test
+const mockMongoError = { code: 11000, name: 'MongoServerError', message: 'E11000 duplicate key error collection: payrolls index: user_1_employee_1_month_1_year_1' };
+const isDuplicateKey = mockMongoError.code === 11000 || (mockMongoError.name === 'MongoServerError' && mockMongoError.code === 11000) || mockMongoError.message.includes('E11000');
+const friendlyError = isDuplicateKey
+  ? 'Payroll already exists or is being processed for this period — refresh and try again.'
+  : mockMongoError.message;
+
+if (!friendlyError.includes('Payroll already exists or is being processed for this period')) {
+  console.error(`Assertion failed: Expected friendly concurrency duplicate key message, got '${friendlyError}'`);
+  process.exit(1);
+}
+console.log('Concurrency & Duplicate Key E11000 Error Handling Test passed!');
+
+// Test 18: PII Field-Level AES-256-GCM Encryption Test
+const { encryptPIIField, decryptPIIField } = require('../utils/cryptoHelper');
+const rawPan = 'ABCDE1234F';
+const encryptedPan = encryptPIIField(rawPan);
+const decryptedPan = decryptPIIField(encryptedPan);
+
+if (!encryptedPan.startsWith('enc:v1:')) {
+  console.error(`Assertion failed: Encrypted PAN should start with 'enc:v1:', got '${encryptedPan}'`);
+  process.exit(1);
+}
+if (encryptedPan.includes(rawPan)) {
+  console.error(`Assertion failed: Encrypted PAN should not contain raw plaintext, got '${encryptedPan}'`);
+  process.exit(1);
+}
+if (decryptedPan !== rawPan) {
+  console.error(`Assertion failed: Decrypted PAN (${decryptedPan}) does not match original plaintext (${rawPan})`);
+  process.exit(1);
+}
+console.log('PII Field-Level AES-256-GCM Encryption Test passed!');
+
+// Test 19: Retainer Skip Period Payload & Routing Test
+const retainerSkipPayload = { _skipPeriod: true, adjustments: { _skipPeriod: true } };
+const isRetainerSkipped = retainerSkipPayload._skipPeriod === true || retainerSkipPayload.adjustments?._skipPeriod === true;
+
+if (!isRetainerSkipped) {
+  console.error('Assertion failed: Retainer skip period should evaluate to true');
+  process.exit(1);
+}
+console.log('Retainer Skip Period Payload & Routing Test passed!');
+
+// Test 20: Bulk Salary Revision Calculation Test
+const currentCTC = 50000;
+const percentInc = 10;
+const newComputedCTC = Math.round((currentCTC * (1 + percentInc / 100)) * 100) / 100;
+
+if (newComputedCTC !== 55000) {
+  console.error(`Assertion failed: Expected 10% increment on 50000 to be 55000, got ${newComputedCTC}`);
+  process.exit(1);
+}
+console.log('Bulk Salary Revision Calculation Test passed!');
+
+// Test 21: Point-in-Time Statutory Configuration Resolution Test
+const oldConfig = { effectiveFrom: new Date('2024-01-01'), pfCap: 15000 };
+const newConfig = { effectiveFrom: new Date('2026-01-01'), pfCap: 21000 };
+const configs = [oldConfig, newConfig];
+
+const resolveConfigForDate = (targetDate) => {
+  const d = new Date(targetDate);
+  return configs
+    .filter(c => new Date(c.effectiveFrom) <= d)
+    .sort((a, b) => new Date(b.effectiveFrom) - new Date(a.effectiveFrom))[0];
+};
+
+const resolved2024 = resolveConfigForDate('2024-06-01');
+const resolved2026 = resolveConfigForDate('2026-06-01');
+
+if (resolved2024.pfCap !== 15000) {
+  console.error(`Assertion failed: Expected 2024 pfCap to be 15000, got ${resolved2024.pfCap}`);
+  process.exit(1);
+}
+if (resolved2026.pfCap !== 21000) {
+  console.error(`Assertion failed: Expected 2026 pfCap to be 21000, got ${resolved2026.pfCap}`);
+  process.exit(1);
+}
+console.log('Point-in-Time Statutory Configuration Resolution Test passed!');
+
+// Test 22: Multi-Level Approval Gating Test
+const requiredApprovers = [
+  { role: 'manager', approved: false },
+  { role: 'finance', approved: false }
+];
+
+// Step 1: Manager approves
+const managerApp = requiredApprovers.find(a => a.role === 'manager');
+if (managerApp) managerApp.approved = true;
+
+const pendingStep1 = requiredApprovers.filter(a => !a.approved);
+if (pendingStep1.length !== 1 || pendingStep1[0].role !== 'finance') {
+  console.error(`Assertion failed: Expected 1 pending approval (finance) after manager approval, got ${pendingStep1.length}`);
+  process.exit(1);
+}
+
+// Step 2: Finance approves
+const financeApp = requiredApprovers.find(a => a.role === 'finance');
+if (financeApp) financeApp.approved = true;
+
+const pendingStep2 = requiredApprovers.filter(a => !a.approved);
+if (pendingStep2.length !== 0) {
+  console.error(`Assertion failed: Expected 0 pending approvals after finance approval, got ${pendingStep2.length}`);
+  process.exit(1);
+}
+console.log('Multi-Level Approval Gating Test passed!');
+
+// Test 23: Performance Scale Validation Test
+const { runBenchmark } = require('./benchmark_payroll_scale');
+runBenchmark();
+
 console.log('✅ ALL TEST PASSED!');

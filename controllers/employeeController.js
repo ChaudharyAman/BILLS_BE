@@ -2408,3 +2408,172 @@ exports.deleteSalaryRevision = async (req, res) => {
 
 exports.validateCompensationTypePayload = validateCompensationTypePayload;
 
+exports.bulkSalaryRevision = async (req, res) => {
+  try {
+    const { effectiveDate, incrementType, incrementValue, department, designation, employeeIds, revisions, reason } = req.body;
+    const parsedDate = parsePossibleDate(effectiveDate);
+    if (!parsedDate) {
+      return res.status(400).json({ message: 'Valid effectiveDate is required' });
+    }
+
+    const config = await getOrCreateConfig(req.user._id);
+
+    let targetEmployees = [];
+    if (Array.isArray(revisions) && revisions.length > 0) {
+      const ids = revisions.map(r => r.employeeId).filter(id => mongoose.Types.ObjectId.isValid(String(id)));
+      targetEmployees = await Employee.find({ _id: { $in: ids }, user: req.user._id });
+    } else {
+      const filter = { user: req.user._id, status: { $ne: 'terminated' } };
+      if (department && mongoose.Types.ObjectId.isValid(String(department))) {
+        filter.department = department;
+      }
+      if (designation) {
+        filter.designation = designation;
+      }
+      if (Array.isArray(employeeIds) && employeeIds.length > 0) {
+        const ids = employeeIds.filter(id => mongoose.Types.ObjectId.isValid(String(id)));
+        filter._id = { $in: ids };
+      }
+      targetEmployees = await Employee.find(filter);
+    }
+
+    if (targetEmployees.length === 0) {
+      return res.status(404).json({ message: 'No eligible employees found for bulk salary revision' });
+    }
+
+    const success = [];
+    const errors = [];
+
+    const revisionsMap = new Map();
+    if (Array.isArray(revisions)) {
+      revisions.forEach(r => revisionsMap.set(String(r.employeeId), r));
+    }
+
+    const { resolveStrategy, resolveCompensationType } = require('../utils/payrollStrategies/index');
+
+    for (const employee of targetEmployees) {
+      const employeeName = `${employee.firstName} ${employee.lastName}`;
+      try {
+        const itemOverride = revisionsMap.get(String(employee._id)) || {};
+        const effectiveCompType = resolveCompensationType(itemOverride.compensationType ? itemOverride : employee);
+        const strategyMeta = resolveStrategy(effectiveCompType);
+        const isHourly = effectiveCompType === 'hourly';
+        const skipFixedComponents = !strategyMeta.usesSalaryComponents;
+
+        let newCTC = Number(itemOverride.newCTC !== undefined ? itemOverride.newCTC : employee.monthlyCTC);
+        let newHourlyRate = Number(itemOverride.newHourlyRate !== undefined ? itemOverride.newHourlyRate : employee.hourlyRate);
+        let newDailyRate = Number(itemOverride.dailyRate !== undefined ? itemOverride.dailyRate : employee.dailyRate);
+
+        if (incrementType && incrementValue !== undefined) {
+          const incVal = Number(incrementValue) || 0;
+          if (incrementType === 'percentage') {
+            if (isHourly) {
+              newHourlyRate = Math.round((newHourlyRate * (1 + incVal / 100)) * 100) / 100;
+            } else if (effectiveCompType === 'daily_wage') {
+              newDailyRate = Math.round((newDailyRate * (1 + incVal / 100)) * 100) / 100;
+            } else {
+              newCTC = Math.round((newCTC * (1 + incVal / 100)) * 100) / 100;
+            }
+          } else if (incrementType === 'flat_amount') {
+            if (isHourly) {
+              newHourlyRate = Math.round((newHourlyRate + incVal) * 100) / 100;
+            } else if (effectiveCompType === 'daily_wage') {
+              newDailyRate = Math.round((newDailyRate + incVal) * 100) / 100;
+            } else {
+              newCTC = Math.round((newCTC + incVal) * 100) / 100;
+            }
+          }
+        }
+
+        const valError = validateCompensationTypePayload(effectiveCompType, {
+          monthlyCTC: newCTC,
+          hourlyRate: newHourlyRate,
+          dailyRate: newDailyRate,
+          rateCard: itemOverride.rateCard !== undefined ? itemOverride.rateCard : employee.rateCard,
+        });
+        if (valError) throw new Error(valError);
+
+        const previousCTC = Number(employee.monthlyCTC) || Number(employee.salaryStructure?.ctc) || 0;
+        const previousHourlyRate = Number(employee.hourlyRate) || 0;
+
+        const nextPayload = {
+          ...employee.toObject(),
+          monthlyCTC: isHourly ? 0 : newCTC,
+          hourlyRate: isHourly ? newHourlyRate : 0,
+          dailyRate: effectiveCompType === 'daily_wage' ? newDailyRate : employee.dailyRate,
+          useSalaryComponents: skipFixedComponents ? false : employee.useSalaryComponents,
+        };
+
+        const salaryStructure = buildSalaryStructureFromCTC(nextPayload, config);
+
+        if (!employee.salaryRevisions) {
+          employee.salaryRevisions = [];
+        }
+        if (employee.salaryRevisions.length === 0) {
+          employee.salaryRevisions.push({
+            effectiveDate: employee.joiningDate || new Date(0),
+            previousCTC: 0,
+            newCTC: isHourly ? 0 : previousCTC,
+            previousHourlyRate: isHourly ? 0 : undefined,
+            newHourlyRate: isHourly ? previousHourlyRate : undefined,
+            hourlyRate: isHourly ? previousHourlyRate : undefined,
+            reason: 'Initial Salary Setup',
+            revisedBy: 'System',
+            createdAt: employee.createdAt || new Date(),
+          });
+        }
+
+        employee.salaryRevisions.push({
+          effectiveDate: parsedDate,
+          previousCTC,
+          newCTC: isHourly ? 0 : newCTC,
+          previousHourlyRate,
+          newHourlyRate: isHourly ? newHourlyRate : 0,
+          basic: salaryStructure.basic,
+          hra: salaryStructure.hra,
+          specialAllowance: salaryStructure.specialAllowance,
+          grossSalary: salaryStructure.grossSalary,
+          ctc: isHourly ? 0 : newCTC,
+          reason: reason || 'Bulk Annual Salary Increment',
+          revisedBy: req.user.name || req.user.email || 'Admin',
+          createdAt: new Date(),
+        });
+
+        employee.monthlyCTC = isHourly ? 0 : newCTC;
+        employee.hourlyRate = isHourly ? newHourlyRate : 0;
+        employee.dailyRate = effectiveCompType === 'daily_wage' ? newDailyRate : employee.dailyRate;
+        employee.salaryStructure = salaryStructure;
+
+        await employee.save();
+
+        success.push({
+          employeeId: employee._id,
+          employeeCode: employee.employeeId,
+          employeeName,
+          previousCTC,
+          newCTC: isHourly ? 0 : newCTC,
+          previousHourlyRate,
+          newHourlyRate: isHourly ? newHourlyRate : 0,
+          effectiveDate: parsedDate,
+        });
+      } catch (err) {
+        console.error(`Error in bulk salary revision for employee ${employee._id}:`, err);
+        errors.push({
+          employeeId: employee._id,
+          employeeName,
+          error: err.message || 'Failed to process salary revision'
+        });
+      }
+    }
+
+    res.json({
+      message: `Bulk salary revision completed for ${success.length} employee(s)`,
+      success,
+      errors,
+    });
+  } catch (error) {
+    console.error('Error processing bulk salary revision:', error);
+    res.status(500).json({ message: 'Server error processing bulk salary revision' });
+  }
+};
+

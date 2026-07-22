@@ -701,6 +701,52 @@ const removeEmployeePII = (doc, ret) => {
 EmployeeSchema.set('toJSON', { transform: removeEmployeePII });
 EmployeeSchema.set('toObject', { transform: removeEmployeePII });
 
+const { encryptPIIField, decryptPIIField } = require('../utils/cryptoHelper');
+
+EmployeeSchema.pre('save', function (next) {
+  if (this.isModified('panNumber') && this.panNumber) {
+    this.panNumber = encryptPIIField(this.panNumber);
+  }
+  if (this.isModified('uanNumber') && this.uanNumber) {
+    this.uanNumber = encryptPIIField(this.uanNumber);
+  }
+  if (this.isModified('aadharNumber') && this.aadharNumber) {
+    this.aadharNumber = encryptPIIField(this.aadharNumber);
+  }
+  if (this.isModified('esiNumber') && this.esiNumber) {
+    this.esiNumber = encryptPIIField(this.esiNumber);
+  }
+  if (this.bankDetails && this.isModified('bankDetails.accountNumber') && this.bankDetails.accountNumber) {
+    this.bankDetails.accountNumber = encryptPIIField(this.bankDetails.accountNumber);
+  }
+  next();
+});
+
+const decryptEmployeePII = (doc) => {
+  if (!doc) return;
+  if (doc.panNumber) doc.panNumber = decryptPIIField(doc.panNumber);
+  if (doc.uanNumber) doc.uanNumber = decryptPIIField(doc.uanNumber);
+  if (doc.aadharNumber) doc.aadharNumber = decryptPIIField(doc.aadharNumber);
+  if (doc.esiNumber) doc.esiNumber = decryptPIIField(doc.esiNumber);
+  if (doc.bankDetails && doc.bankDetails.accountNumber) {
+    doc.bankDetails.accountNumber = decryptPIIField(doc.bankDetails.accountNumber);
+  }
+};
+
+EmployeeSchema.post('find', function (docs) {
+  if (Array.isArray(docs)) {
+    docs.forEach(doc => decryptEmployeePII(doc));
+  }
+});
+
+EmployeeSchema.post('findOne', function (doc) {
+  if (doc) decryptEmployeePII(doc);
+});
+
+EmployeeSchema.post('findOneAndUpdate', function (doc) {
+  if (doc) decryptEmployeePII(doc);
+});
+
 AllowanceSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Employee', EmployeeSchema);

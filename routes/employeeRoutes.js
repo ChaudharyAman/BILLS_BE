@@ -13,6 +13,7 @@ const {
   exportEmployeesExcel,
   downloadImportTemplateExcel,
   addSalaryRevision,
+  bulkSalaryRevision,
   updateSalaryRevision,
   deleteSalaryRevision,
   updateEmployeeDeclarations,
@@ -33,6 +34,7 @@ router.post('/import', upload.single('file'), importEmployees);
 router.get('/export', exportEmployeesExcel);
 
 router.post('/bulk-delete', bulkDeleteEmployees);
+router.post('/bulk-salary-revision', bulkSalaryRevision);
 
 router.route('/:id')
   .get(getEmployeeById)

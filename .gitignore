@@ -77,3 +77,7 @@ SYSTEM_TEST_REPORT.md
 .cache/
 .sass-cache/
 /.history
+
+# Scripts & Local Tools
+scripts/
+scripts

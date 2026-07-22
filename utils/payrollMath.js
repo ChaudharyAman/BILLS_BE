@@ -344,7 +344,7 @@ const computeStatutoryAndTax = ({
   // 6. Professional Tax
   const manualPT = Number(src.deductions?.professionalTax) || 0;
   const computedPT = (ptEnabled && src.ptState)
-    ? getMonthlyPT(src.ptState, gross, src._month)
+    ? getMonthlyPT(src.ptState, gross, src._month, src._year)
     : 0;
   const professionalTax = ptEnabled
     ? (manualPT > 0 ? manualPT : computedPT)
@@ -2219,7 +2219,26 @@ function buildPayslipDeductionsLineItems(payroll = {}) {
   }
 
   return lineItems;
-}
+};
+
+const getConfigForDate = async (userId, targetDate = new Date()) => {
+  const PayrollConfig = require('../models/PayrollConfig');
+  const dateObj = new Date(targetDate);
+  let config = await PayrollConfig.findOne({
+    user: userId,
+    effectiveFrom: { $lte: dateObj }
+  }).sort({ effectiveFrom: -1, createdAt: -1 });
+
+  if (!config) {
+    config = await PayrollConfig.findOne({ user: userId }).sort({ effectiveFrom: 1 });
+    if (!config) {
+      config = await PayrollConfig.create({ user: userId, effectiveFrom: new Date('2020-01-01') });
+    }
+  }
+  return config;
+};
+
+const getOrCreateConfig = getConfigForDate;
 
 module.exports = {
   DEFAULT_PAYROLL_CONFIG,
@@ -2236,4 +2255,6 @@ module.exports = {
   calculateGratuityEntitlement,
   buildPayslipEarningsLineItems,
   buildPayslipDeductionsLineItems,
+  getConfigForDate,
+  getOrCreateConfig,
 };

@@ -29,9 +29,19 @@ const isValidMonth = (month) => Number.isInteger(month) && month >= 1 && month <
 const isValidYear = (year) => Number.isInteger(year) && year >= 1970 && year <= 3000;
 const sumNamedAmounts = (items = []) => items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
 
-const getOrCreateConfig = async (userId) => {
-  let config = await PayrollConfig.findOne({ user: userId });
-  if (!config) config = await PayrollConfig.create({ user: userId });
+const getOrCreateConfig = async (userId, targetDate = new Date()) => {
+  const dateObj = new Date(targetDate);
+  let config = await PayrollConfig.findOne({
+    user: userId,
+    effectiveFrom: { $lte: dateObj }
+  }).sort({ effectiveFrom: -1, createdAt: -1 });
+
+  if (!config) {
+    config = await PayrollConfig.findOne({ user: userId }).sort({ effectiveFrom: 1 });
+    if (!config) {
+      config = await PayrollConfig.create({ user: userId, effectiveFrom: new Date('2020-01-01') });
+    }
+  }
   return config;
 };
 
@@ -399,7 +409,7 @@ exports.processPayroll = async (req, res) => {
       return res.status(400).json({ message: 'Select at least one employee to process payroll' });
     }
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(req.user._id, new Date(year, month - 1, 1));
     const settings = await Settings.findOne({ user: req.user._id });
     
     let hrmsAttendanceRecords = null;
@@ -682,6 +692,9 @@ exports.processPayroll = async (req, res) => {
             actor: req.user._id,
             remarks: notesList.join('. ')
           }],
+          requiredApprovers: config.requireDualApproval && Array.isArray(config.approverRoles)
+            ? config.approverRoles.map(r => ({ role: r, approved: false }))
+            : [],
           employeeSnapshot: {
             employeeId: employee.employeeId,
             firstName: employee.firstName,
@@ -766,7 +779,11 @@ exports.processPayroll = async (req, res) => {
         });
       } catch (error) {
         console.error(`Error processing payroll for employee ${employeeId}:`, error);
-        errors.push({ employeeId, employeeName, error: error.message });
+        const isDuplicateKey = error.code === 11000 || error.name === 'MongoServerError' && error.code === 11000 || (error.message && error.message.includes('E11000'));
+        const friendlyError = isDuplicateKey 
+          ? 'Payroll already exists or is being processed for this period — refresh and try again.' 
+          : error.message;
+        errors.push({ employeeId, employeeName, error: friendlyError });
       }
     }
 
@@ -898,11 +915,31 @@ exports.updatePayrollConfig = async (req, res) => {
       if (req.body[key] !== undefined) update[key] = req.body[key];
     });
 
-    const config = await PayrollConfig.findOneAndUpdate(
-      { user: req.user._id },
-      { $set: update },
-      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
-    );
+    const effectiveFromDate = req.body.effectiveFrom ? new Date(req.body.effectiveFrom) : new Date();
+    const existingConfig = await getOrCreateConfig(req.user._id, effectiveFromDate);
+
+    const isSameDate = existingConfig && existingConfig.effectiveFrom && 
+      new Date(existingConfig.effectiveFrom).toISOString().slice(0, 10) === effectiveFromDate.toISOString().slice(0, 10);
+
+    let config;
+    if (isSameDate) {
+      config = await PayrollConfig.findOneAndUpdate(
+        { _id: existingConfig._id },
+        { $set: update },
+        { new: true }
+      );
+    } else {
+      const mergedData = {
+        ...existingConfig.toObject(),
+        ...update,
+        _id: undefined,
+        createdAt: undefined,
+        updatedAt: undefined,
+        user: req.user._id,
+        effectiveFrom: effectiveFromDate,
+      };
+      config = await PayrollConfig.create(mergedData);
+    }
     res.json(config);
   } catch (error) {
     console.error('Error updating payroll config:', error);
@@ -1247,6 +1284,36 @@ exports.markPayrollAsPaid = async (req, res) => {
     const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id }).populate('employee');
     if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
     if (payroll.status === 'paid') return res.status(400).json({ message: 'Payroll is already paid' });
+
+    const config = await getOrCreateConfig(req.user._id, new Date(payroll.year, payroll.month - 1, 1));
+    const reqApprovers = payroll.requiredApprovers && payroll.requiredApprovers.length > 0
+      ? payroll.requiredApprovers
+      : (config.requireDualApproval && Array.isArray(config.approverRoles) ? config.approverRoles.map(r => ({ role: r, approved: false })) : []);
+
+    if (reqApprovers.length > 0) {
+      const userRole = req.body.approverRole || (req.user.role?.name ? String(req.user.role.name) : 'finance');
+      const targetApp = reqApprovers.find(a => !a.approved && (a.role.toLowerCase() === userRole.toLowerCase() || userRole.toLowerCase() === 'admin'));
+      if (targetApp) {
+        targetApp.approved = true;
+        targetApp.approvedAt = new Date();
+        targetApp.userId = req.user._id;
+      }
+      payroll.requiredApprovers = reqApprovers;
+      const pending = reqApprovers.filter(a => !a.approved);
+      if (pending.length > 0) {
+        payroll.approvalWorkflow.push({
+          status: 'pending_approval',
+          actor: req.user._id,
+          remarks: `Sign-off recorded for role '${targetApp ? targetApp.role : userRole}'. Pending remaining sign-off from: ${pending.map(p => p.role).join(', ')}`
+        });
+        await payroll.save();
+        return res.json({
+          message: `Approval recorded. Pending remaining sign-off from: ${pending.map(p => p.role).join(', ')}`,
+          payroll,
+          pendingApprovals: pending.map(p => p.role)
+        });
+      }
+    }
 
     const payrollCategory = await getPayrollCategory(req.user._id);
     const paymentDate = req.body.paymentDate || new Date();

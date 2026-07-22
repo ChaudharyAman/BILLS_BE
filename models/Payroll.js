@@ -129,6 +129,12 @@ const PayrollSchema = new mongoose.Schema({
     remarks: { type: String, default: '' },
     timestamp: { type: Date, default: Date.now },
   }],
+  requiredApprovers: [{
+    role: { type: String, required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approved: { type: Boolean, default: false },
+    approvedAt: { type: Date }
+  }],
   employeeSnapshot: {
     employeeId: String,
     firstName: String,

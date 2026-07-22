@@ -122,3 +122,38 @@ exports.verifyMultiTenantWebhook = async (req, res, next) => {
     res.status(500).json({ message: 'Internal validation failure during webhook verification.' });
   }
 };
+
+const getPIIEncryptionSecret = () => {
+  const secret = process.env.PII_ENCRYPTION_KEY || process.env.ENCRYPTION_SECRET_KEY;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('[FATAL SECURITY ERROR] PII_ENCRYPTION_KEY or ENCRYPTION_SECRET_KEY environment variable is required in production mode! Server startup/operation halted.');
+    }
+    return 'dev-pii-encryption-key-32-bytes-long!!';
+  }
+  return secret;
+};
+
+exports.encryptPIIField = (plaintext) => {
+  if (!plaintext || typeof plaintext !== 'string') return plaintext;
+  if (plaintext.startsWith('enc:v1:')) return plaintext;
+  const secret = getPIIEncryptionSecret();
+  const pkg = exports.encryptPayload(plaintext, secret);
+  return `enc:v1:${pkg.salt}:${pkg.iv}:${pkg.authTag}:${pkg.data}`;
+};
+
+exports.decryptPIIField = (ciphertext) => {
+  if (!ciphertext || typeof ciphertext !== 'string' || !ciphertext.startsWith('enc:v1:')) {
+    return ciphertext;
+  }
+  const parts = ciphertext.split(':');
+  if (parts.length !== 6) return ciphertext;
+  const [, , salt, iv, authTag, data] = parts;
+  const secret = getPIIEncryptionSecret();
+  try {
+    return exports.decryptPayload({ salt, iv, authTag, data }, secret);
+  } catch (err) {
+    console.error('Failed to decrypt PII field:', err.message);
+    return ciphertext;
+  }
+};
