@@ -212,6 +212,8 @@ const EmployeeSchema = new mongoose.Schema({
     reason: { type: String },
     revisedBy: { type: String },
     createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date },
+    updatedBy: { type: String },
     role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null, set: v => v === '' ? null : v },
     useSalaryComponents: { type: Boolean },
     employmentType: { type: String },

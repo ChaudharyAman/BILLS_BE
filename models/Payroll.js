@@ -279,7 +279,10 @@ PayrollSchema.pre('validate', function() {
   this.deductions = deductions;
 });
 
-PayrollSchema.index({ user: 1, employee: 1, month: 1, year: 1, isDeleted: 1 });
+PayrollSchema.index(
+  { user: 1, employee: 1, month: 1, year: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } }
+);
 PayrollSchema.post('init', function () {
   this._originalStatus = this.status;
 });

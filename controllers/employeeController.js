@@ -809,6 +809,9 @@ exports.getActiveEmployees = async (req, res) => {
 exports.createEmployee = async (req, res) => {
   try {
     const employeeData = { ...req.body, user: req.user._id };
+    delete employeeData._id;
+    delete employeeData.isDeleted;
+    delete employeeData.deletedAt;
     employeeData.department = await validateDepartment(employeeData.department, req.user._id);
 
     const employee = await Employee.create(employeeData);
@@ -846,9 +849,145 @@ exports.updateEmployee = async (req, res) => {
       return res.status(404).json({ message: 'Employee not found' });
     }
 
+    const existingEmployee = await Employee.findOne({ _id: req.params.id, user: req.user._id });
+    if (!existingEmployee) return res.status(404).json({ message: 'Employee not found' });
+
     const updateData = { ...req.body };
+
+    // Mass-assignment protection: strip security-sensitive and internal fields
+    const FORBIDDEN_UPDATE_FIELDS = [
+      'user',
+      '_id',
+      'isDeleted',
+      'deletedAt',
+      'salaryRevisions',
+      'createdAt',
+      'updatedAt',
+      '__v',
+    ];
+    FORBIDDEN_UPDATE_FIELDS.forEach((field) => delete updateData[field]);
+
     if (Object.prototype.hasOwnProperty.call(updateData, 'department')) {
       updateData.department = await validateDepartment(updateData.department, req.user._id);
+    }
+
+    const effectiveCompType = updateData.compensationType || existingEmployee.compensationType || 'monthly_salary';
+
+    // Validate compensation payload when pay-affecting fields are provided
+    if (
+      updateData.monthlyCTC !== undefined ||
+      updateData.hourlyRate !== undefined ||
+      updateData.dailyRate !== undefined ||
+      updateData.rateCard !== undefined
+    ) {
+      const valError = validateCompensationTypePayload(effectiveCompType, {
+        monthlyCTC: updateData.monthlyCTC !== undefined ? updateData.monthlyCTC : existingEmployee.monthlyCTC,
+        hourlyRate: updateData.hourlyRate !== undefined ? updateData.hourlyRate : existingEmployee.hourlyRate,
+        dailyRate: updateData.dailyRate !== undefined ? updateData.dailyRate : existingEmployee.dailyRate,
+        rateCard: updateData.rateCard !== undefined ? updateData.rateCard : existingEmployee.rateCard,
+      });
+      if (valError) {
+        return res.status(400).json({ message: valError });
+      }
+    }
+
+    // Check for salary/rate changes and write to salaryRevisions & AuditLog
+    const oldCTC = Number(existingEmployee.monthlyCTC) || 0;
+    const newCTC = updateData.monthlyCTC !== undefined ? Number(updateData.monthlyCTC) : oldCTC;
+    const oldHourly = Number(existingEmployee.hourlyRate) || 0;
+    const newHourly = updateData.hourlyRate !== undefined ? Number(updateData.hourlyRate) : oldHourly;
+    const oldDaily = Number(existingEmployee.dailyRate) || 0;
+    const newDaily = updateData.dailyRate !== undefined ? Number(updateData.dailyRate) : oldDaily;
+
+    const oldRateCardStr = JSON.stringify(existingEmployee.rateCard || []);
+    const newRateCardStr = updateData.rateCard !== undefined ? JSON.stringify(updateData.rateCard || []) : oldRateCardStr;
+
+    const isSalariedChange = updateData.monthlyCTC !== undefined && newCTC !== oldCTC;
+    const isHourlyChange = updateData.hourlyRate !== undefined && newHourly !== oldHourly;
+    const isDailyChange = updateData.dailyRate !== undefined && newDaily !== oldDaily;
+    const isRateCardChange = updateData.rateCard !== undefined && oldRateCardStr !== newRateCardStr;
+
+    const isSalaryChange = isSalariedChange || isHourlyChange || isDailyChange || isRateCardChange;
+
+    if (isSalaryChange) {
+      const isHourlyComp = effectiveCompType === 'hourly';
+      const revisionObj = {
+        effectiveDate: parsePossibleDate(req.body.effectiveDate) || new Date(),
+        previousCTC: oldCTC,
+        newCTC: isHourlyComp ? 0 : newCTC,
+        previousHourlyRate: oldHourly,
+        newHourlyRate: isHourlyComp ? newHourly : 0,
+        dailyRate: newDaily,
+        previousDailyRate: oldDaily,
+        newDailyRate: newDaily,
+        rateCard: updateData.rateCard !== undefined ? updateData.rateCard : (existingEmployee.rateCard || []),
+        reason: req.body.reason || 'Profile update compensation adjustment',
+        revisedBy: req.user?.name || req.user?.email || 'System Admin',
+        role: updateData.role !== undefined ? updateData.role : existingEmployee.role,
+        useSalaryComponents: updateData.useSalaryComponents !== undefined ? updateData.useSalaryComponents : existingEmployee.useSalaryComponents,
+        employmentType: updateData.employmentType || existingEmployee.employmentType || 'full-time',
+        compensationModel: updateData.compensationModel || existingEmployee.compensationModel || 'SALARIED',
+        paymentBasis: updateData.paymentBasis || existingEmployee.paymentBasis || 'MONTHLY',
+        compensationType: effectiveCompType,
+        payFrequency: updateData.payFrequency || existingEmployee.payFrequency || 'monthly',
+        attendanceMode: updateData.attendanceMode || existingEmployee.attendanceMode || 'attendance',
+
+        monthlyCTC: isHourlyComp ? 0 : newCTC,
+        hourlyRate: isHourlyComp ? newHourly : 0,
+        pfEnabled: updateData.pfEnabled !== undefined ? updateData.pfEnabled : existingEmployee.pfEnabled,
+        tdsEnabled: updateData.tdsEnabled !== undefined ? updateData.tdsEnabled : existingEmployee.tdsEnabled,
+        esiEnabled: updateData.esiEnabled !== undefined ? updateData.esiEnabled : existingEmployee.esiEnabled,
+        ptEnabled: updateData.ptEnabled !== undefined ? updateData.ptEnabled : existingEmployee.ptEnabled,
+        ptState: updateData.ptState !== undefined ? updateData.ptState : existingEmployee.ptState,
+        lwfEnabled: updateData.lwfEnabled !== undefined ? updateData.lwfEnabled : existingEmployee.lwfEnabled,
+        gratuityEnabled: updateData.gratuityEnabled !== undefined ? updateData.gratuityEnabled : existingEmployee.gratuityEnabled,
+        includePfInCTC: updateData.includePfInCTC !== undefined ? updateData.includePfInCTC : existingEmployee.includePfInCTC,
+        includeGratuityInCTC: updateData.includeGratuityInCTC !== undefined ? updateData.includeGratuityInCTC : existingEmployee.includeGratuityInCTC,
+        basicPercent: updateData.basicPercent !== undefined ? updateData.basicPercent : existingEmployee.basicPercent,
+        hraPercent: updateData.hraPercent !== undefined ? updateData.hraPercent : existingEmployee.hraPercent,
+        joiningBonus: updateData.joiningBonus !== undefined ? updateData.joiningBonus : existingEmployee.joiningBonus,
+        flexiAmount: updateData.flexiAmount !== undefined ? updateData.flexiAmount : existingEmployee.flexiAmount,
+        broadband: updateData.broadband !== undefined ? updateData.broadband : existingEmployee.broadband,
+        petrol: updateData.petrol !== undefined ? updateData.petrol : existingEmployee.petrol,
+        lta: updateData.lta !== undefined ? updateData.lta : existingEmployee.lta,
+        employerNPS: updateData.employerNPS !== undefined ? updateData.employerNPS : existingEmployee.employerNPS,
+        insuranceAmount: updateData.insuranceAmount !== undefined ? updateData.insuranceAmount : existingEmployee.insuranceAmount,
+        deductions: updateData.deductions || existingEmployee.deductions || {},
+        salaryStructure: updateData.salaryStructure || existingEmployee.salaryStructure || {},
+      };
+
+      const currentRevisions = Array.isArray(existingEmployee.salaryRevisions)
+        ? [...existingEmployee.salaryRevisions]
+        : [];
+      currentRevisions.push(revisionObj);
+      updateData.salaryRevisions = currentRevisions;
+
+      try {
+        const AuditLog = require('../models/AuditLog');
+        await AuditLog.create({
+          user: req.user._id,
+          actor: req.user._id,
+          action: 'SALARY_EDIT',
+          targetEmployee: existingEmployee._id,
+          changes: {
+            from: { monthlyCTC: oldCTC, hourlyRate: oldHourly, dailyRate: oldDaily, rateCard: existingEmployee.rateCard },
+            to: { monthlyCTC: newCTC, hourlyRate: newHourly, dailyRate: newDaily, rateCard: updateData.rateCard || existingEmployee.rateCard },
+            reason: req.body.reason || 'Profile update compensation adjustment',
+          },
+        });
+      } catch (auditErr) {
+        console.error('AuditLog creation warning on updateEmployee:', auditErr);
+      }
+
+      // Calculate retroactive arrears if effective date is backdated
+      const config = await getOrCreateConfig(req.user._id);
+      await processRetroactiveArrears({
+        userId: req.user._id,
+        employee: existingEmployee,
+        effectiveDate: revisionObj.effectiveDate,
+        payload: { ...existingEmployee.toObject(), ...updateData },
+        config,
+      });
     }
 
     const employee = await Employee.findOneAndUpdate(
@@ -1715,6 +1854,71 @@ function validateCompensationTypePayload(compensationType, payload) {
   return null;
 }
 
+const processRetroactiveArrears = async ({ userId, employee, effectiveDate, payload, config }) => {
+  try {
+    const closedPayrolls = await Payroll.find({
+      employee: employee._id,
+      user: userId,
+      status: 'paid'
+    }).sort({ year: 1, month: 1 });
+
+    const revDate = new Date(effectiveDate);
+    const affectedPayrolls = closedPayrolls.filter(p => {
+      const pDate = new Date(p.year, p.month - 1, 1);
+      const rDate = new Date(revDate.getFullYear(), revDate.getMonth(), 1);
+      return pDate >= rDate;
+    });
+
+    if (affectedPayrolls.length > 0) {
+      const effectiveDateStr = revDate.toISOString().slice(0, 10);
+      const referenceStr = `Arrears for salary revision effective ${effectiveDateStr}`;
+      const PayrollVariableTransaction = mongoose.model('PayrollVariableTransaction');
+
+      // Idempotency Guard: Avoid duplicate arrears transactions for the same effective date & employee
+      const existingArrears = await PayrollVariableTransaction.findOne({
+        user: userId,
+        employee: employee._id,
+        paymentType: 'ARREARS',
+        reference: referenceStr,
+        status: { $ne: 'rejected' }
+      });
+
+      if (existingArrears) {
+        return existingArrears;
+      }
+
+      let totalArrears = 0;
+      for (const p of affectedPayrolls) {
+        const recalcSnapshot = buildPayrollSnapshot(payload, config, { paidDays: p.paidDays }, {}, p.month, p.year);
+        const diff = roundAmount((recalcSnapshot.netSalary || 0) - (p.netSalary || 0));
+        if (diff > 0) {
+          totalArrears += diff;
+        }
+      }
+
+      if (totalArrears > 0) {
+        const now = new Date();
+        const currentMonth = now.getMonth() + 1; // 1-12 local server time
+        const currentYear = now.getFullYear();  // YYYY local server time
+
+        return await PayrollVariableTransaction.create({
+          user: userId,
+          employee: employee._id,
+          month: currentMonth,
+          year: currentYear,
+          paymentType: 'ARREARS',
+          amount: roundAmount(totalArrears),
+          reference: referenceStr,
+          status: 'approved',
+          remarks: `Auto-computed arrears for ${affectedPayrolls.length} closed payroll cycle(s)`,
+        });
+      }
+    }
+  } catch (arrErr) {
+    console.error('Error calculating retroactive revision arrears:', arrErr);
+  }
+};
+
 exports.addSalaryRevision = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
@@ -2014,51 +2218,34 @@ exports.addSalaryRevision = async (req, res) => {
 
     await employee.save();
 
-    // Retroactive Salary Revision Arrears Calculation Step
     try {
-      const closedPayrolls = await Payroll.find({
-        employee: employee._id,
+      const AuditLog = require('../models/AuditLog');
+      await AuditLog.create({
         user: req.user._id,
-        status: 'paid'
-      }).sort({ year: 1, month: 1 });
-
-      const revDate = new Date(effectiveDate);
-      const affectedPayrolls = closedPayrolls.filter(p => {
-        const pDate = new Date(p.year, p.month - 1, 1);
-        const rDate = new Date(revDate.getFullYear(), revDate.getMonth(), 1);
-        return pDate >= rDate;
+        actor: req.user._id,
+        action: 'SALARY_REVISION_ADDED',
+        targetEmployee: employee._id,
+        changes: {
+          effectiveDate,
+          previousCTC,
+          newCTC: isHourly ? 0 : newCTC,
+          previousHourlyRate,
+          newHourlyRate: isHourly ? newHourlyRate : 0,
+          reason: req.body.reason || '',
+        },
       });
-
-      if (affectedPayrolls.length > 0) {
-        let totalArrears = 0;
-        for (const p of affectedPayrolls) {
-          const recalcSnapshot = buildPayrollSnapshot(nextPayload, config, { paidDays: p.paidDays }, {}, p.month, p.year);
-          const diff = roundAmount((recalcSnapshot.netSalary || 0) - (p.netSalary || 0));
-          if (diff > 0) {
-            totalArrears += diff;
-          }
-        }
-        if (totalArrears > 0) {
-          const PayrollVariableTransaction = mongoose.model('PayrollVariableTransaction');
-          const now = new Date();
-          const nextMonth = now.getUTCMonth() + 1;
-          const nextYear = now.getUTCFullYear();
-          await PayrollVariableTransaction.create({
-            user: req.user._id,
-            employee: employee._id,
-            month: nextMonth,
-            year: nextYear,
-            paymentType: 'ARREARS',
-            amount: roundAmount(totalArrears),
-            reference: `Arrears for salary revision effective ${revDate.toISOString().slice(0, 10)}`,
-            status: 'approved',
-            remarks: `Auto-computed arrears for ${affectedPayrolls.length} closed payroll cycle(s)`,
-          });
-        }
-      }
-    } catch (arrErr) {
-      console.error('Error calculating retroactive revision arrears:', arrErr);
+    } catch (auditErr) {
+      console.error('AuditLog creation warning in addSalaryRevision:', auditErr);
     }
+
+    // Retroactive Salary Revision Arrears Calculation Step (idempotent, server-time aligned)
+    await processRetroactiveArrears({
+      userId: req.user._id,
+      employee,
+      effectiveDate,
+      payload: nextPayload,
+      config,
+    });
 
     res.json(employee);
   } catch (error) {
@@ -2103,6 +2290,28 @@ exports.updateSalaryRevision = async (req, res) => {
 
     const revision = employee.salaryRevisions.id(revisionId);
     if (!revision) return res.status(404).json({ message: 'Salary revision not found' });
+
+    // Immutability Guard: Cannot update a salary revision that has already been applied to closed/paid payroll cycles
+    const revDate = new Date(revision.effectiveDate);
+    const paidPayrolls = await Payroll.find({
+      employee: employee._id,
+      user: req.user._id,
+      status: 'paid'
+    });
+
+    const isAppliedToPaidPayroll = paidPayrolls.some(p => {
+      const pDate = new Date(p.year, p.month - 1, 1);
+      const rDate = new Date(revDate.getFullYear(), revDate.getMonth(), 1);
+      return pDate >= rDate;
+    });
+
+    if (isAppliedToPaidPayroll) {
+      return res.status(400).json({
+        message: 'Cannot edit a historical salary revision that has already been applied to closed/paid payroll cycles.'
+      });
+    }
+
+    const previousSnapshot = revision.toObject ? revision.toObject() : { ...revision };
 
     const effectiveDate = parsePossibleDate(req.body.effectiveDate);
     const { resolveCompensationType, resolveStrategy } = require('../utils/payrollStrategies/index');
@@ -2256,6 +2465,9 @@ exports.updateSalaryRevision = async (req, res) => {
       otherAllowances: nextPayload.salaryStructure?.otherAllowances || [],
     };
 
+    revision.updatedAt = new Date();
+    revision.updatedBy = req.user?.email || req.user?.name || String(req.user._id);
+
     // Copy any custom percentage overrides from nextPayload to revision
     Object.keys(nextPayload).forEach(key => {
       if (key.endsWith('Percent') && !['basicPercent', 'hraPercent'].includes(key)) {
@@ -2311,6 +2523,24 @@ exports.updateSalaryRevision = async (req, res) => {
     }
 
     await employee.save();
+
+    try {
+      const AuditLog = require('../models/AuditLog');
+      await AuditLog.create({
+        user: req.user._id,
+        actor: req.user._id,
+        action: 'SALARY_REVISION_UPDATED',
+        targetEmployee: employee._id,
+        changes: {
+          revisionId,
+          from: previousSnapshot,
+          to: revision.toObject ? revision.toObject() : { ...revision },
+          reason: req.body.reason || '',
+        },
+      });
+    } catch (auditErr) {
+      console.error('AuditLog creation warning in updateSalaryRevision:', auditErr);
+    }
     res.json(employee);
   } catch (error) {
     console.error('Error updating salary revision:', error);
@@ -2330,6 +2560,28 @@ exports.deleteSalaryRevision = async (req, res) => {
 
     const revision = employee.salaryRevisions.id(revisionId);
     if (!revision) return res.status(404).json({ message: 'Salary revision not found' });
+
+    // Immutability Guard: Cannot delete a salary revision that has already been applied to closed/paid payroll cycles
+    const revDate = new Date(revision.effectiveDate);
+    const paidPayrolls = await Payroll.find({
+      employee: employee._id,
+      user: req.user._id,
+      status: 'paid'
+    });
+
+    const isAppliedToPaidPayroll = paidPayrolls.some(p => {
+      const pDate = new Date(p.year, p.month - 1, 1);
+      const rDate = new Date(revDate.getFullYear(), revDate.getMonth(), 1);
+      return pDate >= rDate;
+    });
+
+    if (isAppliedToPaidPayroll) {
+      return res.status(400).json({
+        message: 'Cannot delete a salary revision that has already been applied to closed/paid payroll cycles.'
+      });
+    }
+
+    const revisionSnapshot = revision.toObject ? revision.toObject() : { ...revision };
 
     // Determine if we are deleting the latest revision
     const sortedBefore = [...employee.salaryRevisions].sort((a, b) => new Date(a.effectiveDate) - new Date(b.effectiveDate));
@@ -2399,6 +2651,22 @@ exports.deleteSalaryRevision = async (req, res) => {
     }
 
     await employee.save();
+
+    try {
+      const AuditLog = require('../models/AuditLog');
+      await AuditLog.create({
+        user: req.user._id,
+        actor: req.user._id,
+        action: 'SALARY_REVISION_DELETED',
+        targetEmployee: employee._id,
+        changes: {
+          revisionId,
+          deletedRevision: revisionSnapshot,
+        },
+      });
+    } catch (auditErr) {
+      console.error('AuditLog creation warning in deleteSalaryRevision:', auditErr);
+    }
     res.json(employee);
   } catch (error) {
     console.error('Error deleting salary revision:', error);
@@ -2410,11 +2678,6 @@ exports.validateCompensationTypePayload = validateCompensationTypePayload;
 
 exports.bulkSalaryRevision = async (req, res) => {
   try {
-    const ALLOWED_ROLES = ['admin', 'owner', 'superadmin', 'hr_admin', 'payroll_admin'];
-    if (req.user?.role && !ALLOWED_ROLES.includes(String(req.user.role).toLowerCase())) {
-      return res.status(403).json({ message: 'Access denied: Admin or HR Owner privilege required for bulk salary revisions' });
-    }
-
     const { effectiveDate, incrementType, incrementValue, department, designation, employeeIds, revisions, reason, preview, previewOnly } = req.body;
     const isPreview = Boolean(preview || previewOnly);
     const parsedDate = parsePossibleDate(effectiveDate);
@@ -2580,6 +2843,38 @@ exports.bulkSalaryRevision = async (req, res) => {
         employee.salaryStructure = salaryStructure;
 
         await employee.save();
+
+        try {
+          const AuditLog = require('../models/AuditLog');
+          await AuditLog.create({
+            user: req.user._id,
+            actor: req.user._id,
+            action: 'SALARY_REVISION_ADDED',
+            targetEmployee: employee._id,
+            changes: {
+              bulk: true,
+              effectiveDate: parsedDate,
+              previousCTC,
+              newCTC: isHourly ? 0 : newCTC,
+              previousHourlyRate,
+              newHourlyRate: isHourly ? newHourlyRate : 0,
+              previousDailyRate,
+              newDailyRate: effectiveCompType === 'daily_wage' ? newDailyRate : employee.dailyRate,
+              reason: reason || 'Bulk Annual Salary Increment',
+            },
+          });
+        } catch (auditErr) {
+          console.error('AuditLog creation warning in bulkSalaryRevision:', auditErr);
+        }
+
+        // Retroactive Salary Revision Arrears Calculation Step for Bulk Revisions
+        await processRetroactiveArrears({
+          userId: req.user._id,
+          employee,
+          effectiveDate: parsedDate,
+          payload: nextPayload,
+          config,
+        });
 
         success.push({
           employeeId: employee._id,
