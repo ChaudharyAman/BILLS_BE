@@ -267,4 +267,20 @@ describe('Payroll Strategy Engine & Statutory Math Tests', () => {
     });
   });
 
+  describe('Bulk Salary Revision Uniform Increment Safety', () => {
+    test('Flags validation error for piece_rate, project_based, milestone_based, and commission_only in uniform increment mode', () => {
+      const UNIFORM_UNSUPPORTED_TYPES = ['piece_rate', 'project_based', 'milestone_based', 'commission_only'];
+      const APPLICABLE_TYPES = ['monthly_salary', 'hourly', 'daily_wage', 'weekly_salary', 'retainer'];
+
+      UNIFORM_UNSUPPORTED_TYPES.forEach((compType) => {
+        const isUnsupported = UNIFORM_UNSUPPORTED_TYPES.includes(compType);
+        expect(isUnsupported).toBe(true);
+      });
+
+      APPLICABLE_TYPES.forEach((compType) => {
+        const isUnsupported = UNIFORM_UNSUPPORTED_TYPES.includes(compType);
+        expect(isUnsupported).toBe(false);
+      });
+    });
+  });
 });

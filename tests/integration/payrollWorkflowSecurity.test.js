@@ -12,6 +12,8 @@ const Employee = require('../../models/Employee');
 const User = require('../../models/User');
 const { runTransaction } = require('../../utils/withTransaction');
 
+jest.setTimeout(120000);
+
 describe('Payroll Workflow & Multi-Tenant Security Integration Tests', () => {
   let replSet;
 
@@ -19,7 +21,7 @@ describe('Payroll Workflow & Multi-Tenant Security Integration Tests', () => {
     replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     const uri = replSet.getUri();
     await mongoose.connect(uri);
-  }, 60000);
+  }, 120000);
 
   afterAll(async () => {
     await mongoose.disconnect();

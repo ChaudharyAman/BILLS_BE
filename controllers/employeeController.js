@@ -2474,33 +2474,42 @@ exports.bulkSalaryRevision = async (req, res) => {
         let newHourlyRate = Number(itemOverride.newHourlyRate !== undefined ? itemOverride.newHourlyRate : previousHourlyRate);
         let newDailyRate = Number(itemOverride.dailyRate !== undefined ? itemOverride.dailyRate : previousDailyRate);
 
+        let uniformError = null;
+        const UNIFORM_UNSUPPORTED_TYPES = ['piece_rate', 'project_based', 'milestone_based', 'commission_only'];
+
         if (incrementType && incrementValue !== undefined) {
-          const incVal = Number(incrementValue) || 0;
-          if (incrementType === 'percentage') {
-            if (isHourly) {
-              newHourlyRate = Math.round((newHourlyRate * (1 + incVal / 100)) * 100) / 100;
-            } else if (effectiveCompType === 'daily_wage') {
-              newDailyRate = Math.round((newDailyRate * (1 + incVal / 100)) * 100) / 100;
-            } else {
-              newCTC = Math.round((newCTC * (1 + incVal / 100)) * 100) / 100;
-            }
-          } else if (incrementType === 'flat_amount') {
-            if (isHourly) {
-              newHourlyRate = Math.round((newHourlyRate + incVal) * 100) / 100;
-            } else if (effectiveCompType === 'daily_wage') {
-              newDailyRate = Math.round((newDailyRate + incVal) * 100) / 100;
-            } else {
-              newCTC = Math.round((newCTC + incVal) * 100) / 100;
+          if (UNIFORM_UNSUPPORTED_TYPES.includes(effectiveCompType)) {
+            uniformError = `Uniform increment is not applicable to ${effectiveCompType.replace(/_/g, '-')} pay structure — use 'Individual amounts per employee' mode to update rate cards or contract amounts.`;
+          } else {
+            const incVal = Number(incrementValue) || 0;
+            if (incrementType === 'percentage') {
+              if (isHourly) {
+                newHourlyRate = Math.round((newHourlyRate * (1 + incVal / 100)) * 100) / 100;
+              } else if (effectiveCompType === 'daily_wage') {
+                newDailyRate = Math.round((newDailyRate * (1 + incVal / 100)) * 100) / 100;
+              } else {
+                newCTC = Math.round((newCTC * (1 + incVal / 100)) * 100) / 100;
+              }
+            } else if (incrementType === 'flat_amount') {
+              if (isHourly) {
+                newHourlyRate = Math.round((newHourlyRate + incVal) * 100) / 100;
+              } else if (effectiveCompType === 'daily_wage') {
+                newDailyRate = Math.round((newDailyRate + incVal) * 100) / 100;
+              } else {
+                newCTC = Math.round((newCTC + incVal) * 100) / 100;
+              }
             }
           }
         }
 
-        const valError = validateCompensationTypePayload(effectiveCompType, {
+        const baseValError = validateCompensationTypePayload(effectiveCompType, {
           monthlyCTC: newCTC,
           hourlyRate: newHourlyRate,
           dailyRate: newDailyRate,
           rateCard: itemOverride.rateCard !== undefined ? itemOverride.rateCard : employee.rateCard,
         });
+
+        const valError = uniformError || baseValError;
 
         if (isPreview) {
           success.push({
