@@ -38,7 +38,32 @@ const softDeletePlugin = (schema) => {
   schema.pre('find', filterNonDeleted);
   schema.pre('findOne', filterNonDeleted);
   schema.pre('findOneAndUpdate', filterNonDeleted);
+  schema.pre('updateMany', filterNonDeleted);
   schema.pre('countDocuments', filterNonDeleted);
+
+  // Hook for updateMany: handle bulk soft delete name-suffixing for unique fields
+  schema.pre('updateMany', async function() {
+    const update = this.getUpdate();
+    const modelName = this.model.modelName;
+
+    if (update && update.$set && update.$set.isDeleted === true) {
+      const uniqueFields = UNIQUE_FIELDS_MAP[modelName] || [];
+      if (uniqueFields.length > 0) {
+        const docs = await this.model.find(this.getQuery()).setOptions({ withDeleted: true });
+        for (const doc of docs) {
+          const $set = {};
+          uniqueFields.forEach(field => {
+            if (doc[field] && typeof doc[field] === 'string' && !doc[field].includes('_del_')) {
+              $set[field] = `${doc[field]}_del_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+            }
+          });
+          if (Object.keys($set).length > 0) {
+            await this.model.updateOne({ _id: doc._id }, { $set });
+          }
+        }
+      }
+    }
+  });
 
   // Hook for findOneAndUpdate: handle soft delete name-suffixing and restore collision checks
   schema.pre('findOneAndUpdate', async function() {

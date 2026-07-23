@@ -94,6 +94,6 @@ const ProformaSchema = new mongoose.Schema({
 
 ProformaSchema.index({ user: 1, proformaNo: 1 }, { unique: true });
 
-ProformaItemSchema.plugin(softDeletePlugin);
+ProformaSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Proforma', ProformaSchema);

@@ -86,6 +86,6 @@ const PurchaseOrderSchema = new mongoose.Schema({
 
 PurchaseOrderSchema.index({ user: 1, poNumber: 1 }, { unique: true });
 
-PurchaseOrderItemSchema.plugin(softDeletePlugin);
+PurchaseOrderSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('PurchaseOrder', PurchaseOrderSchema);

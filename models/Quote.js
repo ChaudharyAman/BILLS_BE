@@ -95,6 +95,6 @@ const QuoteSchema = new mongoose.Schema({
 
 QuoteSchema.index({ user: 1, quoteNo: 1 }, { unique: true });
 
-QuoteItemSchema.plugin(softDeletePlugin);
+QuoteSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Quote', QuoteSchema);

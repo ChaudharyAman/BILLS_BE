@@ -24,6 +24,6 @@ const LoanSchema = new mongoose.Schema({
   repaymentLedger: [RepaymentSchema]
 }, { timestamps: true });
 
-RepaymentSchema.plugin(softDeletePlugin);
+LoanSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Loan', LoanSchema);

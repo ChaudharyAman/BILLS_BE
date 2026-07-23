@@ -747,6 +747,6 @@ EmployeeSchema.post('findOneAndUpdate', function (doc) {
   if (doc) decryptEmployeePII(doc);
 });
 
-AllowanceSchema.plugin(softDeletePlugin);
+EmployeeSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Employee', EmployeeSchema);

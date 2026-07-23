@@ -141,6 +141,6 @@ ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true });
 ExpenseSchema.index({ user: 1, date: 1 });
 ExpenseSchema.index({ user: 1, 'items.taxRate': 1 });
 
-ExpenseItemSchema.plugin(softDeletePlugin);
+ExpenseSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

@@ -948,10 +948,10 @@ exports.bulkDeleteEmployees = async (req, res) => {
 
     // 6. Delete the employee profiles
     const result = await Employee.updateMany({ _id: { $in: employeeIds }, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
-
+    const count = result.modifiedCount ?? result.matchedCount ?? employeeIds.length;
     res.json({ 
-      message: `${result.deletedCount} employees and all associated payrolls, expenses, loans, and claims deleted successfully`,
-      deletedCount: result.deletedCount
+      message: `${count} employee(s) and all associated payrolls, expenses, loans, and claims deleted successfully`,
+      deletedCount: count
     });
   } catch (error) {
     console.error('Error bulk deleting employees:', error);

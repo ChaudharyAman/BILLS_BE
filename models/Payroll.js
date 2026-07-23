@@ -279,7 +279,7 @@ PayrollSchema.pre('validate', function() {
   this.deductions = deductions;
 });
 
-PayrollSchema.index({ user: 1, employee: 1, month: 1, year: 1 }, { unique: true });
+PayrollSchema.index({ user: 1, employee: 1, month: 1, year: 1, isDeleted: 1 });
 PayrollSchema.post('init', function () {
   this._originalStatus = this.status;
 });
@@ -300,6 +300,6 @@ PayrollSchema.pre('save', function (next) {
   if (typeof next === 'function') next();
 });
 
-NamedAmountSchema.plugin(softDeletePlugin);
+PayrollSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Payroll', PayrollSchema);
