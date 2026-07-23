@@ -4,10 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest",
+    "test:unit": "jest tests/unit",
+    "test:integration": "jest tests/integration --runInBand",
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test:system": "node scripts/run-complete-system-tests.js",
+    "test:load": "node scripts/load-test-payroll-processing.js",
     "promote:admin": "node scripts/promote-admin.js",
     "cleanup:incomes": "node scripts/cleanup-unpaid-incomes.js"
   },
@@ -16,7 +19,10 @@
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
-    "nodemon": "^3.1.11"
+    "jest": "^30.4.2",
+    "mongodb-memory-server": "^11.2.0",
+    "nodemon": "^3.1.11",
+    "supertest": "^7.2.2"
   },
   "dependencies": {
     "axios": "^1.13.5",
@@ -24,6 +30,7 @@
     "cloudinary": "^2.9.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
+    "decimal.js": "^10.6.0",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",

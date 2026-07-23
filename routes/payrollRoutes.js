@@ -26,6 +26,7 @@ const {
   receiveHrmsWebhook,
   getCompensationTypes,
   processFullAndFinalSettlement,
+  getBatchJobStatus,
 } = require('../controllers/payrollController');
 
 // Webhook endpoint (unprotected, authenticated via HMAC signature check)
@@ -36,6 +37,7 @@ router.use(protect);
 // Strategy metadata route
 router.get('/compensation-types', getCompensationTypes);
 router.post('/full-and-final', processFullAndFinalSettlement);
+router.get('/process/:jobId/status', getBatchJobStatus);
 
 // Protected integration routes
 router.post('/integration/sync-employees', syncEmployees);

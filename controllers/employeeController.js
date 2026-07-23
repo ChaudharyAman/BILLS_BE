@@ -2410,7 +2410,13 @@ exports.validateCompensationTypePayload = validateCompensationTypePayload;
 
 exports.bulkSalaryRevision = async (req, res) => {
   try {
-    const { effectiveDate, incrementType, incrementValue, department, designation, employeeIds, revisions, reason } = req.body;
+    const ALLOWED_ROLES = ['admin', 'owner', 'superadmin', 'hr_admin', 'payroll_admin'];
+    if (req.user?.role && !ALLOWED_ROLES.includes(String(req.user.role).toLowerCase())) {
+      return res.status(403).json({ message: 'Access denied: Admin or HR Owner privilege required for bulk salary revisions' });
+    }
+
+    const { effectiveDate, incrementType, incrementValue, department, designation, employeeIds, revisions, reason, preview, previewOnly } = req.body;
+    const isPreview = Boolean(preview || previewOnly);
     const parsedDate = parsePossibleDate(effectiveDate);
     if (!parsedDate) {
       return res.status(400).json({ message: 'Valid effectiveDate is required' });
@@ -2460,9 +2466,13 @@ exports.bulkSalaryRevision = async (req, res) => {
         const isHourly = effectiveCompType === 'hourly';
         const skipFixedComponents = !strategyMeta.usesSalaryComponents;
 
-        let newCTC = Number(itemOverride.newCTC !== undefined ? itemOverride.newCTC : employee.monthlyCTC);
-        let newHourlyRate = Number(itemOverride.newHourlyRate !== undefined ? itemOverride.newHourlyRate : employee.hourlyRate);
-        let newDailyRate = Number(itemOverride.dailyRate !== undefined ? itemOverride.dailyRate : employee.dailyRate);
+        const previousCTC = Number(employee.monthlyCTC) || Number(employee.salaryStructure?.ctc) || 0;
+        const previousHourlyRate = Number(employee.hourlyRate) || 0;
+        const previousDailyRate = Number(employee.dailyRate) || 0;
+
+        let newCTC = Number(itemOverride.newCTC !== undefined ? itemOverride.newCTC : previousCTC);
+        let newHourlyRate = Number(itemOverride.newHourlyRate !== undefined ? itemOverride.newHourlyRate : previousHourlyRate);
+        let newDailyRate = Number(itemOverride.dailyRate !== undefined ? itemOverride.dailyRate : previousDailyRate);
 
         if (incrementType && incrementValue !== undefined) {
           const incVal = Number(incrementValue) || 0;
@@ -2491,10 +2501,26 @@ exports.bulkSalaryRevision = async (req, res) => {
           dailyRate: newDailyRate,
           rateCard: itemOverride.rateCard !== undefined ? itemOverride.rateCard : employee.rateCard,
         });
-        if (valError) throw new Error(valError);
 
-        const previousCTC = Number(employee.monthlyCTC) || Number(employee.salaryStructure?.ctc) || 0;
-        const previousHourlyRate = Number(employee.hourlyRate) || 0;
+        if (isPreview) {
+          success.push({
+            employeeId: employee._id,
+            employeeCode: employee.employeeId,
+            employeeName,
+            compensationType: effectiveCompType,
+            previousCTC,
+            newCTC: isHourly ? 0 : newCTC,
+            previousHourlyRate,
+            newHourlyRate: isHourly ? newHourlyRate : 0,
+            previousDailyRate,
+            newDailyRate: effectiveCompType === 'daily_wage' ? newDailyRate : previousDailyRate,
+            validationError: valError || null,
+            effectiveDate: parsedDate,
+          });
+          continue;
+        }
+
+        if (valError) throw new Error(valError);
 
         const nextPayload = {
           ...employee.toObject(),
@@ -2550,10 +2576,13 @@ exports.bulkSalaryRevision = async (req, res) => {
           employeeId: employee._id,
           employeeCode: employee.employeeId,
           employeeName,
+          compensationType: effectiveCompType,
           previousCTC,
           newCTC: isHourly ? 0 : newCTC,
           previousHourlyRate,
           newHourlyRate: isHourly ? newHourlyRate : 0,
+          previousDailyRate,
+          newDailyRate: effectiveCompType === 'daily_wage' ? newDailyRate : employee.dailyRate,
           effectiveDate: parsedDate,
         });
       } catch (err) {
@@ -2564,6 +2593,10 @@ exports.bulkSalaryRevision = async (req, res) => {
           error: err.message || 'Failed to process salary revision'
         });
       }
+    }
+
+    if (isPreview) {
+      return res.json({ preview: success, errors });
     }
 
     res.json({

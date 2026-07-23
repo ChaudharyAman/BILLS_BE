@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const roundAmount = (val) => Math.round((Number(val) || 0) * 100) / 100;
+const { roundToPaise } = require('../money');
 
 module.exports = {
   usesSalaryComponents: false,
@@ -17,8 +17,8 @@ module.exports = {
 
   computeGrossEarnings(src, _config, _periodInput) {
     const rateCardEntry = (src.rateCard || []).find(r => r.paymentType === 'MONTHLY');
-    const gross = roundAmount(
-      rateCardEntry ? Number(rateCardEntry.rate) : Number(src.monthlyCTC || 0)
+    const gross = roundToPaise(
+      rateCardEntry ? rateCardEntry.rate : (src.monthlyCTC || 0)
     );
 
     return {

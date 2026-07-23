@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const roundAmount = (val) => Math.round((Number(val) || 0) * 100) / 100;
+const { divide, multiply, roundToPaise } = require('../money');
 
 module.exports = {
   usesSalaryComponents: false,
@@ -17,8 +17,8 @@ module.exports = {
   computeGrossEarnings(src, config, periodInput) {
     const stdHours = Number(config.standardMonthlyHours) || 160;
     const hoursLogged = Number(periodInput.hoursLogged || periodInput.hoursWorked || 0);
-    const hourlyBlendedRate = roundAmount((Number(src.monthlyCTC) || 0) / stdHours);
-    const gross = roundAmount(hourlyBlendedRate * hoursLogged);
+    const hourlyBlendedRate = divide(src.monthlyCTC || 0, stdHours);
+    const gross = roundToPaise(multiply(hourlyBlendedRate, hoursLogged));
 
     return {
       gross,

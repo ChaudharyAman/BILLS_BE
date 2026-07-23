@@ -719,7 +719,7 @@ EmployeeSchema.pre('save', function (next) {
   if (this.bankDetails && this.isModified('bankDetails.accountNumber') && this.bankDetails.accountNumber) {
     this.bankDetails.accountNumber = encryptPIIField(this.bankDetails.accountNumber);
   }
-  next();
+  if (typeof next === 'function') next();
 });
 
 const decryptEmployeePII = (doc) => {

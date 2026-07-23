@@ -111,12 +111,19 @@ app.get('/', (req, res) => {
 });
 
 const { cleanupStaleIncomes } = require('./services/invoiceIncomeSync');
+const { checkWebhookSecretStartup, verifyProductionSecretAudit } = require('./utils/cryptoHelper');
 
 async function startServer(port = process.env.PORT || 5000) {
+  // Execute mandatory production security audit
+  verifyProductionSecretAudit();
+
   await connectDB();
 
   await bootstrapAdmin();
   startScheduler();
+
+  // Startup security checks
+  checkWebhookSecretStartup().catch(() => {});
 
   // Auto-cleanup stale UNPAID income records synced from invoices (non-blocking)
   cleanupStaleIncomes().catch((err) => console.error('Startup income cleanup failed:', err.message));

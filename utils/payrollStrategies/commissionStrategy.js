@@ -10,7 +10,7 @@
  */
 'use strict';
 
-const roundAmount = (val) => Math.round((Number(val) || 0) * 100) / 100;
+const { roundToPaise, sumField } = require('../money');
 
 module.exports = {
   usesSalaryComponents: false,
@@ -20,7 +20,7 @@ module.exports = {
   computeGrossEarnings(_src, _config, periodInput) {
     const txns = periodInput.variableTransactions || [];
     const commissionTxns = txns.filter(t => !t.paymentType || t.paymentType === 'COMMISSION' || t.paymentType === 'PERCENTAGE');
-    const gross = roundAmount(commissionTxns.reduce((sum, t) => sum + (Number(t.amount) || 0), 0));
+    const gross = roundToPaise(sumField(commissionTxns, 'amount'));
 
     return {
       gross,

@@ -47,6 +47,22 @@ const reconcileDatabaseIndexes = async () => {
   }
 };
 
+const validateReplicaSetSupport = async (connection) => {
+  if (process.env.NODE_ENV === 'production') {
+    try {
+      const adminDb = connection.db.admin();
+      const status = await adminDb.command({ isMaster: 1 });
+      if (!status.setName && !status.hosts) {
+        console.error('[FATAL SECURITY ERROR] MongoDB is running as a standalone instance in PRODUCTION mode!');
+        console.error('MongoDB multi-document transactions require a replica set or MongoDB Atlas.');
+        process.exit(1);
+      }
+    } catch (err) {
+      console.warn('Could not verify MongoDB replica set status:', err.message);
+    }
+  }
+};
+
 const connectDB = async () => {
   try {
     if (mongoose.connection.readyState === 1) {
@@ -62,6 +78,7 @@ const connectDB = async () => {
 
     const conn = await mongoose.connect(process.env.MONGO_URI, {});
     console.log(`MongoDB Connected: ${conn.connection.host}`);
+    await validateReplicaSetSupport(conn.connection);
     await reconcileDatabaseIndexes();
     return conn.connection;
   } catch (error) {

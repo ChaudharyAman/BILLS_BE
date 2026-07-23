@@ -10,7 +10,7 @@
  */
 'use strict';
 
-const roundAmount = (val) => Math.round((Number(val) || 0) * 100) / 100;
+const { roundToPaise, sumField } = require('../money');
 
 module.exports = {
   usesSalaryComponents: false,
@@ -20,10 +20,10 @@ module.exports = {
   computeGrossEarnings(_src, _config, periodInput) {
     const txns = periodInput.variableTransactions || [];
     const milestoneTxns = txns.filter(t => t.paymentType === 'MILESTONE');
-    let gross = roundAmount(milestoneTxns.reduce((sum, t) => sum + (Number(t.amount) || 0), 0));
+    let gross = roundToPaise(sumField(milestoneTxns, 'amount'));
 
     if (gross === 0) {
-      gross = roundAmount(Number(periodInput.milestoneAmount || 0));
+      gross = roundToPaise(periodInput.milestoneAmount || 0);
     }
 
     return {

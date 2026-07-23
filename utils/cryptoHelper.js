@@ -8,8 +8,14 @@ const KEY_LENGTH = 32;
 
 // Utility function to derive a key from a raw secret string and salt
 const deriveKey = (secret, salt) => {
-  const cleanSecret = String(secret || process.env.ENCRYPTION_SECRET_KEY || 'default-secret-key-32-chars-long-!!');
-  return crypto.pbkdf2Sync(cleanSecret, salt, 100000, KEY_LENGTH, 'sha256');
+  const cleanSecret = secret || process.env.ENCRYPTION_SECRET_KEY;
+  if (!cleanSecret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('[FATAL SECURITY ERROR] No encryption secret provided and ENCRYPTION_SECRET_KEY is not set. Server startup/operation halted.');
+    }
+    return crypto.pbkdf2Sync('dev-only-insecure-default-key', salt, 100000, KEY_LENGTH, 'sha256');
+  }
+  return crypto.pbkdf2Sync(String(cleanSecret), salt, 100000, KEY_LENGTH, 'sha256');
 };
 
 /**
@@ -95,7 +101,11 @@ exports.verifyMultiTenantWebhook = async (req, res, next) => {
       return res.status(401).json({ message: `Access denied: Integration is disabled or not configured for tenant ${externalTenantId}.` });
     }
 
-    const webhookSecret = settings.integration.webhookSecret || process.env.SHARED_WEBHOOK_SECRET || 'default-webhook-secret';
+    const webhookSecret = settings.integration?.webhookSecret || process.env.SHARED_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      console.error(`[SECURITY] No webhook secret configured for tenant ${externalTenantId} and no SHARED_WEBHOOK_SECRET fallback set.`);
+      return res.status(401).json({ message: 'Webhook integration is not properly configured for this tenant — no secret available for signature verification.' });
+    }
     
     // Use rawBody buffer if available to avoid stringify mismatches, fallback to req.body stringify
     const rawBody = req.rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
@@ -122,6 +132,65 @@ exports.verifyMultiTenantWebhook = async (req, res, next) => {
     res.status(500).json({ message: 'Internal validation failure during webhook verification.' });
   }
 };
+
+const checkWebhookSecretStartup = async () => {
+  try {
+    if (!process.env.SHARED_WEBHOOK_SECRET) {
+      const enabledTenantWithoutSecret = await Settings.findOne({
+        'integration.enabled': true,
+        $or: [
+          { 'integration.webhookSecret': { $exists: false } },
+          { 'integration.webhookSecret': '' },
+          { 'integration.webhookSecret': null }
+        ]
+      });
+      if (enabledTenantWithoutSecret) {
+        console.warn('[SECURITY WARNING] SHARED_WEBHOOK_SECRET environment variable is unset while tenant integration is enabled with no tenant-specific secret!');
+      }
+    }
+  } catch (error) {
+    // Non-blocking warning check during early startup
+  }
+};
+
+exports.checkWebhookSecretStartup = checkWebhookSecretStartup;
+
+const KNOWN_BAD_SECRETS = [
+  'default-secret-key-32-chars-long-!!',
+  'dev-only-insecure-default-key',
+  'default-webhook-secret',
+  'dev-pii-encryption-key-32-bytes-long!!',
+  'default-secret-key',
+  'secret',
+  '12345678',
+  'password'
+];
+
+/**
+ * Startup security audit running at server boot.
+ * In production mode, halts server startup if essential encryption/webhook secrets
+ * are missing or set to known-bad insecure default strings.
+ */
+const verifyProductionSecretAudit = () => {
+  if (process.env.NODE_ENV !== 'production') {
+    return;
+  }
+
+  const encryptionSecret = process.env.PII_ENCRYPTION_KEY || process.env.ENCRYPTION_SECRET_KEY;
+  if (!encryptionSecret) {
+    throw new Error('[FATAL SECURITY ERROR] ENCRYPTION_SECRET_KEY or PII_ENCRYPTION_KEY is not set in production environment. Server startup halted.');
+  }
+  if (KNOWN_BAD_SECRETS.includes(encryptionSecret)) {
+    throw new Error(`[FATAL SECURITY ERROR] ENCRYPTION_SECRET_KEY / PII_ENCRYPTION_KEY is set to an insecure default string ("${encryptionSecret}"). Server startup halted.`);
+  }
+
+  const webhookSecret = process.env.SHARED_WEBHOOK_SECRET;
+  if (webhookSecret && KNOWN_BAD_SECRETS.includes(webhookSecret)) {
+    throw new Error(`[FATAL SECURITY ERROR] SHARED_WEBHOOK_SECRET is set to an insecure default string ("${webhookSecret}"). Server startup halted.`);
+  }
+};
+
+exports.verifyProductionSecretAudit = verifyProductionSecretAudit;
 
 const getPIIEncryptionSecret = () => {
   const secret = process.env.PII_ENCRYPTION_KEY || process.env.ENCRYPTION_SECRET_KEY;
