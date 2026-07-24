@@ -910,58 +910,6 @@ exports.updateEmployee = async (req, res) => {
     const isSalaryChange = isSalariedChange || isHourlyChange || isDailyChange || isRateCardChange;
 
     if (isSalaryChange) {
-      const isHourlyComp = effectiveCompType === 'hourly';
-      const revisionObj = {
-        effectiveDate: parsePossibleDate(req.body.effectiveDate) || new Date(),
-        previousCTC: oldCTC,
-        newCTC: isHourlyComp ? 0 : newCTC,
-        previousHourlyRate: oldHourly,
-        newHourlyRate: isHourlyComp ? newHourly : 0,
-        dailyRate: newDaily,
-        previousDailyRate: oldDaily,
-        newDailyRate: newDaily,
-        rateCard: updateData.rateCard !== undefined ? updateData.rateCard : (existingEmployee.rateCard || []),
-        reason: req.body.reason || 'Profile update compensation adjustment',
-        revisedBy: req.user?.name || req.user?.email || 'System Admin',
-        role: updateData.role !== undefined ? updateData.role : existingEmployee.role,
-        useSalaryComponents: updateData.useSalaryComponents !== undefined ? updateData.useSalaryComponents : existingEmployee.useSalaryComponents,
-        employmentType: updateData.employmentType || existingEmployee.employmentType || 'full-time',
-        compensationModel: updateData.compensationModel || existingEmployee.compensationModel || 'SALARIED',
-        paymentBasis: updateData.paymentBasis || existingEmployee.paymentBasis || 'MONTHLY',
-        compensationType: effectiveCompType,
-        payFrequency: updateData.payFrequency || existingEmployee.payFrequency || 'monthly',
-        attendanceMode: updateData.attendanceMode || existingEmployee.attendanceMode || 'attendance',
-
-        monthlyCTC: isHourlyComp ? 0 : newCTC,
-        hourlyRate: isHourlyComp ? newHourly : 0,
-        pfEnabled: updateData.pfEnabled !== undefined ? updateData.pfEnabled : existingEmployee.pfEnabled,
-        tdsEnabled: updateData.tdsEnabled !== undefined ? updateData.tdsEnabled : existingEmployee.tdsEnabled,
-        esiEnabled: updateData.esiEnabled !== undefined ? updateData.esiEnabled : existingEmployee.esiEnabled,
-        ptEnabled: updateData.ptEnabled !== undefined ? updateData.ptEnabled : existingEmployee.ptEnabled,
-        ptState: updateData.ptState !== undefined ? updateData.ptState : existingEmployee.ptState,
-        lwfEnabled: updateData.lwfEnabled !== undefined ? updateData.lwfEnabled : existingEmployee.lwfEnabled,
-        gratuityEnabled: updateData.gratuityEnabled !== undefined ? updateData.gratuityEnabled : existingEmployee.gratuityEnabled,
-        includePfInCTC: updateData.includePfInCTC !== undefined ? updateData.includePfInCTC : existingEmployee.includePfInCTC,
-        includeGratuityInCTC: updateData.includeGratuityInCTC !== undefined ? updateData.includeGratuityInCTC : existingEmployee.includeGratuityInCTC,
-        basicPercent: updateData.basicPercent !== undefined ? updateData.basicPercent : existingEmployee.basicPercent,
-        hraPercent: updateData.hraPercent !== undefined ? updateData.hraPercent : existingEmployee.hraPercent,
-        joiningBonus: updateData.joiningBonus !== undefined ? updateData.joiningBonus : existingEmployee.joiningBonus,
-        flexiAmount: updateData.flexiAmount !== undefined ? updateData.flexiAmount : existingEmployee.flexiAmount,
-        broadband: updateData.broadband !== undefined ? updateData.broadband : existingEmployee.broadband,
-        petrol: updateData.petrol !== undefined ? updateData.petrol : existingEmployee.petrol,
-        lta: updateData.lta !== undefined ? updateData.lta : existingEmployee.lta,
-        employerNPS: updateData.employerNPS !== undefined ? updateData.employerNPS : existingEmployee.employerNPS,
-        insuranceAmount: updateData.insuranceAmount !== undefined ? updateData.insuranceAmount : existingEmployee.insuranceAmount,
-        deductions: updateData.deductions || existingEmployee.deductions || {},
-        salaryStructure: updateData.salaryStructure || existingEmployee.salaryStructure || {},
-      };
-
-      const currentRevisions = Array.isArray(existingEmployee.salaryRevisions)
-        ? [...existingEmployee.salaryRevisions]
-        : [];
-      currentRevisions.push(revisionObj);
-      updateData.salaryRevisions = currentRevisions;
-
       try {
         const AuditLog = require('../models/AuditLog');
         await AuditLog.create({
@@ -978,16 +926,6 @@ exports.updateEmployee = async (req, res) => {
       } catch (auditErr) {
         console.error('AuditLog creation warning on updateEmployee:', auditErr);
       }
-
-      // Calculate retroactive arrears if effective date is backdated
-      const config = await getOrCreateConfig(req.user._id);
-      await processRetroactiveArrears({
-        userId: req.user._id,
-        employee: existingEmployee,
-        effectiveDate: revisionObj.effectiveDate,
-        payload: { ...existingEmployee.toObject(), ...updateData },
-        config,
-      });
     }
 
     const employee = await Employee.findOneAndUpdate(
@@ -1837,9 +1775,9 @@ function validateCompensationTypePayload(compensationType, payload) {
       return 'Daily wage employees require a positive daily rate or monthly CTC';
     }
   } else if (compType === 'piece_rate') {
-    const hasUnitRate = rateCard.some(r => (r.paymentType === 'UNIT' || r.unit === 'unit') && Number(r.rate) > 0);
-    if (!hasUnitRate) {
-      return 'Piece rate employees require at least one rate card item with paymentType UNIT and rate > 0';
+    const hasRate = rateCard.some(r => Number(r.rate) > 0);
+    if (!hasRate) {
+      return 'Piece rate employees require at least one rate card item with rate > 0';
     }
   } else if (['monthly_salary', 'attendance_based', 'salary_plus_commission', 'weekly_salary'].includes(compType)) {
     if (monthlyCTC <= 0) {
