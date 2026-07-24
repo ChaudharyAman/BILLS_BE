@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const softDeletePlugin = require('../middleware/softDeletePlugin');
+const { RATE_CARD_TYPE_VALUES } = require('../utils/rateCardTypes');
 
 const AllowanceSchema = new mongoose.Schema({
   name: { type: String, trim: true },
@@ -7,7 +8,7 @@ const AllowanceSchema = new mongoose.Schema({
 }, { _id: false });
 
 const RateCardItemSchema = new mongoose.Schema({
-  paymentType: { type: String, required: true },
+  paymentType: { type: String, required: true, enum: RATE_CARD_TYPE_VALUES },
   rate: { type: Number, required: true, default: 0 },
   unit: { type: String, default: '' },
 }, { _id: false });

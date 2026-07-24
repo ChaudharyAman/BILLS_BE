@@ -210,14 +210,14 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
   const hoursWorked = isHourly ? (Number(attendance?.hoursWorked) || Number(adjustments?.hoursWorked) || Number(employee.hoursWorked) || 0) : 0;
 
   const periodInput = {
-    daysWorked:      Number(adjustments.daysWorked ?? attendance?.paidDays ?? 0),
-    unitsProduced:   Number(adjustments.unitsProduced ?? 0),
-    hoursLogged:     Number(adjustments.hoursLogged ?? adjustments.timesheetHours ?? 0),
-    hoursWorked:     Number(attendance?.hoursWorked ?? adjustments.hoursWorked ?? employee.hoursWorked ?? 0),
-    projectFee:      adjustments.projectFee !== undefined ? Number(adjustments.projectFee) : undefined,
-    milestoneAmount: adjustments.milestoneAmount !== undefined ? Number(adjustments.milestoneAmount) : undefined,
-    ratePerUnit:     adjustments.ratePerUnit !== undefined ? Number(adjustments.ratePerUnit) : undefined,
-    variableTransactions: Array.isArray(adjustments.variableTransactions) ? adjustments.variableTransactions : [],
+    daysWorked:      Number(adjustments.daysWorked ?? adjustments.periodInput?.daysWorked ?? attendance?.paidDays ?? 0),
+    unitsProduced:   Number(adjustments.unitsProduced ?? adjustments.periodInput?.unitsProduced ?? 0),
+    hoursLogged:     Number(adjustments.hoursLogged ?? adjustments.periodInput?.hoursLogged ?? adjustments.timesheetHours ?? 0),
+    hoursWorked:     Number(attendance?.hoursWorked ?? adjustments.hoursWorked ?? adjustments.periodInput?.hoursWorked ?? employee.hoursWorked ?? 0),
+    projectFee:      adjustments.projectFee !== undefined ? Number(adjustments.projectFee) : (adjustments.periodInput?.projectFee !== undefined ? Number(adjustments.periodInput.projectFee) : undefined),
+    milestoneAmount: adjustments.milestoneAmount !== undefined ? Number(adjustments.milestoneAmount) : (adjustments.periodInput?.milestoneAmount !== undefined ? Number(adjustments.periodInput.milestoneAmount) : undefined),
+    ratePerUnit:     adjustments.ratePerUnit !== undefined ? Number(adjustments.ratePerUnit) : (adjustments.periodInput?.ratePerUnit !== undefined ? Number(adjustments.periodInput.ratePerUnit) : undefined),
+    variableTransactions: Array.isArray(adjustments.variableTransactions) ? adjustments.variableTransactions : (Array.isArray(adjustments.periodInput?.variableTransactions) ? adjustments.periodInput.variableTransactions : []),
   };
 
   for (let d = 1; d <= totalDaysInMonth; d++) {

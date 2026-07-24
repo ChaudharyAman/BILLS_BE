@@ -15,7 +15,7 @@ module.exports = {
   requiredPeriodInputFields: ['unitsProduced'],
 
   computeGrossEarnings(src, _config, periodInput) {
-    const units = Number(periodInput.unitsProduced || 0);
+    const units = periodInput.unitsProduced !== undefined ? Number(periodInput.unitsProduced) : 1;
     const rateCardEntry = (src.rateCard || []).find(r => r.paymentType === 'UNIT') || (src.rateCard || [])[0];
     const ratePerUnit = rateCardEntry
       ? Number(rateCardEntry.rate)

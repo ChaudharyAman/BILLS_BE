@@ -73,6 +73,26 @@ const getMonthlyCTCValue = (source = {}) => {
   const salaryCTC = Number(source.salaryStructure?.ctc);
   if (Number.isFinite(salaryCTC) && salaryCTC > 0) return salaryCTC;
 
+  const hourlyRate = Number(source.hourlyRate);
+  if (Number.isFinite(hourlyRate) && hourlyRate > 0) return hourlyRate * 160;
+
+  const dailyRate = Number(source.dailyRate);
+  if (Number.isFinite(dailyRate) && dailyRate > 0) return dailyRate * 26;
+
+  const weeklyRate = Number(source.weeklyRate);
+  if (Number.isFinite(weeklyRate) && weeklyRate > 0) return (weeklyRate * 52) / 12;
+
+  const projectFee = Number(source.projectFee);
+  if (Number.isFinite(projectFee) && projectFee > 0) return projectFee;
+
+  const milestoneAmount = Number(source.milestoneAmount);
+  if (Number.isFinite(milestoneAmount) && milestoneAmount > 0) return milestoneAmount;
+
+  if (Array.isArray(source.rateCard) && source.rateCard.length > 0) {
+    const rateCardRate = Number(source.rateCard[0]?.rate);
+    if (Number.isFinite(rateCardRate) && rateCardRate > 0) return rateCardRate;
+  }
+
   return 0;
 };
 
