@@ -130,6 +130,7 @@ const EmployeeSchema = new mongoose.Schema({
   basicPercent: { type: Number, default: null },
   hraPercent: { type: Number, default: null },
   useSalaryComponents: { type: Boolean, default: true },
+  componentFrequencies: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   pfEnabled: { type: Boolean, default: true },
   tdsEnabled: { type: Boolean, default: true },
@@ -238,6 +239,7 @@ const EmployeeSchema = new mongoose.Schema({
     includeGratuityInCTC: { type: Boolean },
     basicPercent: { type: Number },
     hraPercent: { type: Number },
+    componentFrequencies: { type: mongoose.Schema.Types.Mixed },
     joiningBonus: { type: Number },
     flexiAmount: { type: Number },
     broadband: { type: Number },

@@ -161,6 +161,7 @@ const PayrollSchema = new mongoose.Schema({
     payFrequency: String,
     attendanceMode: String,
     overtimePolicy: mongoose.Schema.Types.Mixed,
+    componentFrequencies: mongoose.Schema.Types.Mixed,
   },
   reimbursements: [{
     _id: { type: mongoose.Schema.Types.ObjectId, ref: 'ReimbursementClaim' },

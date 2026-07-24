@@ -469,7 +469,8 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
           sumEarningVal += (dailyVal / totalDaysInMonth) * dayProrate[d];
         }
         let proratedVal = roundAmount(sumEarningVal);
-        if (!isMatchingFrequency(c.frequency, month)) {
+        const effectiveFreq = employee?.componentFrequencies?.[c.id] || master?.componentFrequencies?.[c.id] || c.frequency || 'monthly';
+        if (!isMatchingFrequency(effectiveFreq, month)) {
           proratedVal = 0;
         }
         earnings[c.id] = proratedVal;
