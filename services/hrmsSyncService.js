@@ -664,7 +664,12 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
       }
 
       if (record) {
-        const hrmsWorkingDays = record.workingDays !== undefined ? Number(record.workingDays) : 23;
+        // Prefer workingDaysTillDate (actual working days elapsed, e.g. 22 for July 1-25)
+        // over workingDays (total calendar days = 31, a legacy alias). Using the calendar
+        // total as the paidDays cap would over-count proration on mid-month runs.
+        const hrmsWorkingDays = record.workingDaysTillDate !== undefined
+          ? Number(record.workingDaysTillDate)
+          : (record.workingDays !== undefined ? Number(record.workingDays) : 23);
         const presentDays = record.presentDays !== undefined
           ? Number(record.presentDays)
           : (record.workingDays !== undefined ? Number(record.workingDays) : 0);
