@@ -633,7 +633,7 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
     const mapped = [];
     localEmployees.forEach(emp => {
       const record = attendanceRecords.find(r => {
-        const rId = String(r.employeeId || r.emp_id || r.employeeCode || '').trim().toLowerCase();
+        const rId = String(r.employeeId || r.employeeNumber || r.emp_id || r.employeeCode || '').trim().toLowerCase();
         const eId = String(emp.employeeId || '').trim().toLowerCase();
         return (rId && eId && rId === eId) || (rId && emp._id && rId === String(emp._id).toLowerCase());
       });
