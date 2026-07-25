@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 const softDeletePlugin = require('../middleware/softDeletePlugin');
 const { RATE_CARD_TYPE_VALUES } = require('../utils/rateCardTypes');
+const { resolveStrategy, deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
+const { buildMasterSalaryStructure } = require('../utils/payrollMath');
 
 const AllowanceSchema = new mongoose.Schema({
   name: { type: String, trim: true },
@@ -284,7 +286,6 @@ EmployeeSchema.pre('save', async function() {
   // Resolve the effective compensation type (new canonical field OR derived from legacy fields).
   // The strategy registry provides defaultStatutoryFlags() so the pre-save hook no longer
   // contains inline isHourly / isIntern logic.
-  const { resolveStrategy, resolveCompensationType, deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
   const effectiveCompType = this.compensationType || deriveCompensationTypeFromLegacy({
     payType: this.payType,
     compensationModel: this.compensationModel,
@@ -370,7 +371,6 @@ EmployeeSchema.pre('save', async function() {
   if (this.user) {
     config = await PayrollConfig.findOne({ user: this.user }).lean() || {};
   }
-  const { buildMasterSalaryStructure } = require('../utils/payrollMath');
   const master = buildMasterSalaryStructure(this, config);
 
   this.flexiAmount = master.flexi;
@@ -493,7 +493,6 @@ const applySalaryStructureUpdate = async function() {
   }
 
   // Resolve effective compensation type using strategy registry
-  const { resolveStrategy, resolveCompensationType, deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
   const resolvedPayType = getField('payType', 'salaried');
   const resolvedEmploymentType = getField('employmentType', 'full-time');
   const resolvedCompensationModel = getField('compensationModel', 'SALARIED');
@@ -596,7 +595,6 @@ const applySalaryStructureUpdate = async function() {
     config = await PayrollConfig.findOne({ user: userId }).lean() || {};
   }
 
-  const { buildMasterSalaryStructure } = require('../utils/payrollMath');
   const master = buildMasterSalaryStructure(mergedEmployee, config);
 
   if (set.salaryStructure && typeof set.salaryStructure === 'object') {
@@ -738,18 +736,23 @@ const decryptEmployeePII = (doc) => {
   }
 };
 
+// Decrypt PII only on full Mongoose Document instances.
+// Plain objects returned by .lean() queries keep the encrypted value (or are absent via
+// select:false), preventing accidental PII exposure in logs or serialised responses.
 EmployeeSchema.post('find', function (docs) {
   if (Array.isArray(docs)) {
-    docs.forEach(doc => decryptEmployeePII(doc));
+    docs.forEach((doc) => {
+      if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
+    });
   }
 });
 
 EmployeeSchema.post('findOne', function (doc) {
-  if (doc) decryptEmployeePII(doc);
+  if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
 });
 
 EmployeeSchema.post('findOneAndUpdate', function (doc) {
-  if (doc) decryptEmployeePII(doc);
+  if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
 });
 
 EmployeeSchema.plugin(softDeletePlugin);

@@ -189,7 +189,7 @@ const exportPayrollExcel = async (req, res) => {
     const payrolls = await Payroll.find({ user: req.user._id, month, year })
       .populate({
         path: 'employee',
-        select: '+bankDetails.accountNumber +panNumber +aadharNumber firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode payType hourlyRate compensationType payFrequency attendanceMode useSalaryComponents',
+        select: 'firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode payType hourlyRate compensationType payFrequency attendanceMode useSalaryComponents',
       })
       .sort({ createdAt: 1 })
       .lean();

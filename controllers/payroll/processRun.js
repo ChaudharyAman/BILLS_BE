@@ -124,46 +124,56 @@ const bulkApprovePayroll = async (req, res) => {
       return res.status(400).json({ message: 'Provide payroll IDs or month and year to approve payroll' });
     }
 
-    const payrolls = await Payroll.find(filter);
-    let approvedCount = 0;
-
-    for (const payroll of payrolls) {
-      const oldStatus = payroll.status;
-      payroll.status = 'approved';
-      payroll.approvalWorkflow.push({
-        status: 'approved',
-        actor: req.user._id,
-        remarks: req.body.remarks || 'Bulk approved',
-      });
-      await payroll.save();
-
-      await Payroll.updateOne(
-        { _id: payroll._id },
-        { $push: { auditLog: {
-          status: 'approved',
-          changedBy: req.user.name,
-          changedById: req.user._id,
-          changedAt: new Date(),
-          netSalary: payroll.netSalary,
-          notes: req.body.remarks || 'Bulk approved'
-        }}}
-      );
-
-      await AuditLog.create({
-        user: req.user._id,
-        actor: req.user._id,
-        action: 'PAYROLL_APPROVED',
-        targetEmployee: payroll.employee,
-        targetPayroll: payroll._id,
-        changes: { from: oldStatus, to: 'approved' },
-      });
-
-      approvedCount += 1;
+    // Select only the fields needed to build the bulk ops — avoids loading full documents.
+    const payrolls = await Payroll.find(filter).select('_id employee netSalary').lean();
+    if (!payrolls.length) {
+      return res.json({ matched: 0, modified: 0, message: 'No processed payrolls found to approve' });
     }
+
+    const now = new Date();
+    const remarks = req.body.remarks || 'Bulk approved';
+
+    // Build all updates as a single bulkWrite — eliminates the partial-approval window
+    // that existed when the process crashed mid save() loop.
+    const bulkOps = payrolls.map((payroll) => ({
+      updateOne: {
+        filter: { _id: payroll._id },
+        update: {
+          $set: { status: 'approved' },
+          $push: {
+            approvalWorkflow: {
+              status: 'approved',
+              actor: req.user._id,
+              remarks,
+            },
+            auditLog: {
+              status: 'approved',
+              changedBy: req.user.name,
+              changedById: req.user._id,
+              changedAt: now,
+              netSalary: payroll.netSalary,
+              notes: remarks,
+            },
+          },
+        },
+      },
+    }));
+
+    const auditDocs = payrolls.map((payroll) => ({
+      user: req.user._id,
+      actor: req.user._id,
+      action: 'PAYROLL_APPROVED',
+      targetEmployee: payroll.employee,
+      targetPayroll: payroll._id,
+      changes: { from: 'processed', to: 'approved' },
+    }));
+
+    const bulkResult = await Payroll.bulkWrite(bulkOps, { ordered: false });
+    await AuditLog.insertMany(auditDocs, { ordered: false });
 
     res.json({
       matched: payrolls.length,
-      modified: approvedCount,
+      modified: bulkResult.modifiedCount,
       message: 'Payroll approved successfully',
     });
   } catch (error) {
