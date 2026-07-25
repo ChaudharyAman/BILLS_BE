@@ -633,9 +633,16 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
     const mapped = [];
     localEmployees.forEach(emp => {
       const record = attendanceRecords.find(r => {
-        const rId = String(r.employeeId || r.employeeNumber || r.emp_id || r.employeeCode || '').trim().toLowerCase();
-        const eId = String(emp.employeeId || '').trim().toLowerCase();
-        return (rId && eId && rId === eId) || (rId && emp._id && rId === String(emp._id).toLowerCase());
+        // Prefer matching on employeeNumber (= employeeCode from TalentCIO) against the
+        // local emp.employeeId (also the employeeCode). Fall back to r.employeeId only as
+        // a secondary signal against both the local code and the local MongoDB _id.
+        const byCode    = String(r.employeeNumber || r.employeeCode || '').trim().toLowerCase();
+        const byId      = String(r.employeeId     || r.emp_id       || '').trim().toLowerCase();
+        const localCode = String(emp.employeeId   || '').trim().toLowerCase();
+        const localOid  = String(emp._id          || '').toLowerCase();
+        return (byCode && localCode && byCode === localCode)
+            || (byId   && localCode && byId   === localCode)
+            || (byId   && localOid  && byId   === localOid);
       });
 
       const startOfMonth = new Date(year, month - 1, 1);
@@ -685,15 +692,22 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
           paidLeaves,
         });
       } else {
+        // No attendance record found in HRMS for this employee.
+        // Do NOT assume the employee was absent for the entire period — the HRMS
+        // may simply not have processed them yet (e.g. no employeeCode set, or
+        // a new joiner not yet enrolled in the attendance system).
+        // Emit zeros with a `noHrmsRecord` flag so callers can decide whether
+        // to skip, warn, or treat as absent.
         mapped.push({
           employeeId:     emp._id,
           employeeNumber: emp.employeeId,
           workingDays:    calendarDays,
           presentDays:    0,
-          absentDays:     activeCalendarDays,
+          absentDays:     0,
           paidDays:       0,
           unpaidLeaves:   0,
           paidLeaves:     0,
+          noHrmsRecord:   true,
         });
       }
     });
