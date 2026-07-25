@@ -668,7 +668,6 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
 
         const lop = absentDays + unpaidLeaves;
         let paidDays = Math.min(Math.max(activeCalendarDays - lop, 0), calendarDays);
-        if (presentDays === 0 && paidLeaves === 0) paidDays = 0;
 
         mapped.push({
           employeeId:     emp._id,
