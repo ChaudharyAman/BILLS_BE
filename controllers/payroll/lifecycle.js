@@ -11,7 +11,7 @@ const Expense = require('../../models/Expense');
 const Loan = require('../../models/Loan');
 const AuditLog = require('../../models/AuditLog');
 const { runTransaction } = require('../../utils/withTransaction');
-const { roundAmount, getSalarySplits, buildPayrollSnapshot } = require('../../utils/payrollMath');
+const { roundAmount, getSalarySplits, buildPayrollSnapshot, calculateGratuityEntitlement } = require('../../utils/payrollMath');
 const { monthName, buildEmployeeName, isValidMonth, isValidYear, getOrCreateConfig, getPayrollCategory } = require('./common');
 
 const getPayrolls = async (req, res) => {
@@ -568,12 +568,10 @@ const processFullAndFinalSettlement = async (req, res) => {
     const config = await getOrCreateConfig(req.user._id);
 
     const joiningDate = employee.joiningDate ? new Date(employee.joiningDate) : exitDate;
-    const tenureYears = Math.max(0, (exitDate.getTime() - joiningDate.getTime()) / (1000 * 60 * 60 * 24 * 365.25));
-    let gratuityPayout = 0;
-    if (employee.gratuityEnabled !== false && tenureYears >= 5) {
-      const basicSalary = Number(employee.salaryStructure?.basic) || (Number(employee.monthlyCTC) * 0.5) || 0;
-      gratuityPayout = roundAmount((15 / 26) * basicSalary * Math.floor(tenureYears));
-    }
+    const basicSalary = Number(employee.salaryStructure?.basic) || (Number(employee.monthlyCTC) * 0.5) || 0;
+    const gratuityResult = calculateGratuityEntitlement(joiningDate, exitDate, basicSalary);
+    const tenureYears = gratuityResult.completedYears + ((gratuityResult.completedMonths % 12) / 12);
+    const gratuityPayout = (employee.gratuityEnabled !== false && gratuityResult.eligible) ? gratuityResult.cappedEntitlement : 0;
 
     let noticeShortfallDeduction = 0;
     const reqNotice = Number(noticePeriodRequiredDays) || 0;
@@ -590,10 +588,10 @@ const processFullAndFinalSettlement = async (req, res) => {
       leaveEncashmentAmount = roundAmount(encashDays * basicDailyRate);
     }
 
-    const activeLoans = await Loan.find({ employee: employee._id, status: 'approved' });
+    const activeLoans = await Loan.find({ employee: employee._id, user: req.user._id, status: 'active', remainingBalance: { $gt: 0 } });
     let loanRecoveryDeduction = 0;
     activeLoans.forEach(loan => {
-      loanRecoveryDeduction += (Number(loan.principalAmount) || 0) - (Number(loan.totalPaid) || 0);
+      loanRecoveryDeduction += Number(loan.remainingBalance) || 0;
     });
     loanRecoveryDeduction = roundAmount(Math.max(0, loanRecoveryDeduction));
 
@@ -661,7 +659,7 @@ const processFullAndFinalSettlement = async (req, res) => {
         employeeName: `${employee.firstName} ${employee.lastName}`,
         lastWorkingDay: exitDate,
         tenureYears: roundAmount(tenureYears),
-        proratedGrossSalary: snapshot.grossSalary,
+        proratedGrossSalary: snapshot.earnings?.totalEarnings || 0,
         leaveEncashmentAmount,
         gratuityPayout,
         noticeShortfallDeduction,

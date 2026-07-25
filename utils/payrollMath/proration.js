@@ -74,8 +74,116 @@ const getDayProrateArray = (totalDays, workingDays, paidDays, strategy = 'propor
   return dayProrate;
 };
 
+const getYYYYMMDD = (dateVal) => {
+  const dateObj = new Date(dateVal);
+  if (isNaN(dateObj.getTime())) return '';
+  const y = dateObj.getUTCFullYear();
+  const m = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getEmployeeParamsForDate = (employee, dateStr) => {
+  const revisions = [...(employee.salaryRevisions || [])].sort((a, b) => new Date(a.effectiveDate) - new Date(b.effectiveDate));
+  if (revisions.length === 0) {
+    return employee;
+  }
+  const latestRevision = revisions[revisions.length - 1];
+  const latestRevDateStr = getYYYYMMDD(latestRevision.effectiveDate);
+  if (dateStr >= latestRevDateStr) {
+    return employee;
+  }
+  let activeRevision = null;
+  for (let i = revisions.length - 1; i >= 0; i--) {
+    const revDateStr = getYYYYMMDD(revisions[i].effectiveDate);
+    if (revDateStr && revDateStr <= dateStr) {
+      activeRevision = revisions[i];
+      break;
+    }
+  }
+  if (!activeRevision) {
+    activeRevision = revisions[0];
+  }
+
+  const getVal = (field, def) => {
+    if (activeRevision && activeRevision[field] !== undefined && activeRevision[field] !== null) {
+      return activeRevision[field];
+    }
+    if (employee[field] !== undefined && employee[field] !== null) {
+      return employee[field];
+    }
+    return def;
+  };
+
+  const getDeductionVal = (field, def) => {
+    if (activeRevision && activeRevision.deductions && activeRevision.deductions[field] !== undefined && activeRevision.deductions[field] !== null) {
+      return activeRevision.deductions[field];
+    }
+    if (employee.deductions && employee.deductions[field] !== undefined && employee.deductions[field] !== null) {
+      return employee.deductions[field];
+    }
+    return def;
+  };
+
+  const getStructureVal = (field, def) => {
+    if (activeRevision && activeRevision.salaryStructure && activeRevision.salaryStructure[field] !== undefined && activeRevision.salaryStructure[field] !== null) {
+      return activeRevision.salaryStructure[field];
+    }
+    if (employee.salaryStructure && employee.salaryStructure[field] !== undefined && employee.salaryStructure[field] !== null) {
+      return employee.salaryStructure[field];
+    }
+    return def;
+  };
+
+  let monthlyCTC = Number(activeRevision.newCTC) || Number(activeRevision.monthlyCTC) || 0;
+  if (!monthlyCTC && activeRevision === revisions[0]) {
+    monthlyCTC = Number(revisions[0].previousCTC) || Number(employee.monthlyCTC) || 0;
+  }
+
+  return {
+    monthlyCTC,
+    compensationType: getVal('compensationType', null),
+    employmentType: getVal('employmentType', 'full-time'),
+    compensationModel: getVal('compensationModel', 'SALARIED'),
+    paymentBasis: getVal('paymentBasis', 'MONTHLY'),
+    payType: getVal('payType', 'salaried'),
+    hourlyRate: getVal('hourlyRate', 0),
+    pfEnabled: getVal('pfEnabled', true),
+    esiEnabled: getVal('esiEnabled', true),
+    ptEnabled: getVal('ptEnabled', true),
+    ptState: getVal('ptState', ''),
+    lwfEnabled: getVal('lwfEnabled', true),
+    tdsEnabled: getVal('tdsEnabled', true),
+    gratuityEnabled: getVal('gratuityEnabled', true),
+    includePfInCTC: getVal('includePfInCTC', false),
+    includeGratuityInCTC: getVal('includeGratuityInCTC', true),
+    basicPercent: getVal('basicPercent', null),
+    hraPercent: getVal('hraPercent', null),
+    useSalaryComponents: getVal('useSalaryComponents', true),
+    joiningBonus: getVal('joiningBonus', 0),
+    flexiAmount: getVal('flexiAmount', 0),
+    broadband: getVal('broadband', 0),
+    petrol: getVal('petrol', 0),
+    lta: getVal('lta', 0),
+    employerNPS: getVal('employerNPS', 0),
+    insuranceAmount: getVal('insuranceAmount', 0),
+    deductions: {
+      tds: getDeductionVal('tds', 0),
+      professionalTax: getDeductionVal('professionalTax', 0),
+      otherDeductions: getDeductionVal('otherDeductions', []),
+    },
+    salaryStructure: {
+      conveyance: getStructureVal('conveyance', 0),
+      medicalAllowance: getStructureVal('medicalAllowance', 0),
+      otherAllowances: getStructureVal('otherAllowances', []),
+    },
+  };
+};
+
 module.exports = {
   clamp,
   getSegmentLops,
   getDayProrateArray,
+  getYYYYMMDD,
+  getEmployeeParamsForDate,
 };

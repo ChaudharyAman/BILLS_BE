@@ -6,7 +6,7 @@
 
 const { checkMinimumWageCompliance } = require('../minimumWageSlabs');
 const { resolveCompensationType } = require('../payrollStrategies/index');
-const { clamp, getSegmentLops, getDayProrateArray } = require('./proration');
+const { clamp, getSegmentLops, getDayProrateArray, getEmployeeParamsForDate } = require('./proration');
 const { normalizeConfig, buildMasterSalaryStructure } = require('./salaryStructure');
 const { roundAmount, sumNamedAmounts } = require('../money');
 
@@ -94,112 +94,6 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
   const year = Number(yearNum) || Number(attendance?.year) || Number(adjustments?.year) || new Date().getFullYear();
   const month = Number(monthNum) || Number(attendance?.month) || Number(adjustments?.month) || (new Date().getMonth() + 1);
 
-  const getYYYYMMDD = (dateVal) => {
-    const dateObj = new Date(dateVal);
-    if (isNaN(dateObj.getTime())) return '';
-    const y = dateObj.getUTCFullYear();
-    const m = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(dateObj.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  };
-
-  const getEmployeeParamsForDate = (dateStr) => {
-    const revisions = [...(employee.salaryRevisions || [])].sort((a, b) => new Date(a.effectiveDate) - new Date(b.effectiveDate));
-    if (revisions.length === 0) {
-      return employee;
-    }
-    const latestRevision = revisions[revisions.length - 1];
-    const latestRevDateStr = getYYYYMMDD(latestRevision.effectiveDate);
-    if (dateStr >= latestRevDateStr) {
-      return employee;
-    }
-    let activeRevision = null;
-    for (let i = revisions.length - 1; i >= 0; i--) {
-      const revDateStr = getYYYYMMDD(revisions[i].effectiveDate);
-      if (revDateStr && revDateStr <= dateStr) {
-        activeRevision = revisions[i];
-        break;
-      }
-    }
-    if (!activeRevision) {
-      activeRevision = revisions[0];
-    }
-
-    const getVal = (field, def) => {
-      if (activeRevision && activeRevision[field] !== undefined && activeRevision[field] !== null) {
-        return activeRevision[field];
-      }
-      if (employee[field] !== undefined && employee[field] !== null) {
-        return employee[field];
-      }
-      return def;
-    };
-
-    const getDeductionVal = (field, def) => {
-      if (activeRevision && activeRevision.deductions && activeRevision.deductions[field] !== undefined && activeRevision.deductions[field] !== null) {
-        return activeRevision.deductions[field];
-      }
-      if (employee.deductions && employee.deductions[field] !== undefined && employee.deductions[field] !== null) {
-        return employee.deductions[field];
-      }
-      return def;
-    };
-
-    const getStructureVal = (field, def) => {
-      if (activeRevision && activeRevision.salaryStructure && activeRevision.salaryStructure[field] !== undefined && activeRevision.salaryStructure[field] !== null) {
-        return activeRevision.salaryStructure[field];
-      }
-      if (employee.salaryStructure && employee.salaryStructure[field] !== undefined && employee.salaryStructure[field] !== null) {
-        return employee.salaryStructure[field];
-      }
-      return def;
-    };
-
-    let monthlyCTC = Number(activeRevision.newCTC) || Number(activeRevision.monthlyCTC) || 0;
-    if (!monthlyCTC && activeRevision === revisions[0]) {
-      monthlyCTC = Number(revisions[0].previousCTC) || Number(employee.monthlyCTC) || 0;
-    }
-
-    return {
-      monthlyCTC,
-      compensationType: getVal('compensationType', null),
-      employmentType: getVal('employmentType', 'full-time'),
-      compensationModel: getVal('compensationModel', 'SALARIED'),
-      paymentBasis: getVal('paymentBasis', 'MONTHLY'),
-      payType: getVal('payType', 'salaried'),
-      hourlyRate: getVal('hourlyRate', 0),
-      pfEnabled: getVal('pfEnabled', true),
-      esiEnabled: getVal('esiEnabled', true),
-      ptEnabled: getVal('ptEnabled', true),
-      ptState: getVal('ptState', ''),
-      lwfEnabled: getVal('lwfEnabled', true),
-      tdsEnabled: getVal('tdsEnabled', true),
-      gratuityEnabled: getVal('gratuityEnabled', true),
-      includePfInCTC: getVal('includePfInCTC', false),
-      includeGratuityInCTC: getVal('includeGratuityInCTC', true),
-      basicPercent: getVal('basicPercent', null),
-      hraPercent: getVal('hraPercent', null),
-      useSalaryComponents: getVal('useSalaryComponents', true),
-      joiningBonus: getVal('joiningBonus', 0),
-      flexiAmount: getVal('flexiAmount', 0),
-      broadband: getVal('broadband', 0),
-      petrol: getVal('petrol', 0),
-      lta: getVal('lta', 0),
-      employerNPS: getVal('employerNPS', 0),
-      insuranceAmount: getVal('insuranceAmount', 0),
-      deductions: {
-        tds: getDeductionVal('tds', 0),
-        professionalTax: getDeductionVal('professionalTax', 0),
-        otherDeductions: getDeductionVal('otherDeductions', []),
-      },
-      salaryStructure: {
-        conveyance: getStructureVal('conveyance', 0),
-        medicalAllowance: getStructureVal('medicalAllowance', 0),
-        otherAllowances: getStructureVal('otherAllowances', []),
-      },
-    };
-  };
-
   const totalDaysInMonth = new Date(year, month, 0).getDate();
   const dailyStructures = [];
   const dailyOtherAllowances = [];
@@ -222,7 +116,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
 
   for (let d = 1; d <= totalDaysInMonth; d++) {
     const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const activeParams = getEmployeeParamsForDate(currentStr);
+    const activeParams = getEmployeeParamsForDate(employee, currentStr);
     
     const daySource = {
       ...activeParams,
@@ -341,8 +235,8 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
 
   for (let d = 1; d <= totalDaysInMonth; d++) {
     const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const activeParams = getEmployeeParamsForDate(currentStr);
-    const key = `${activeParams.monthlyCTC}-${activeParams.pfEnabled}-${activeParams.esiEnabled}-${activeParams.tdsEnabled}-${activeParams.gratuityEnabled}`;
+    const activeParams = getEmployeeParamsForDate(employee, currentStr);
+    const key = `${activeParams.compensationType || ''}-${activeParams.monthlyCTC}-${activeParams.pfEnabled}-${activeParams.esiEnabled}-${activeParams.tdsEnabled}-${activeParams.gratuityEnabled}`;
 
     if (!currentSegment || currentSegment.key !== key) {
       if (currentSegment) {
@@ -653,7 +547,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
         ? adjustments.tds
         : (Number(employee.deductions?.tds) > 0
             ? employee.deductions.tds
-            : (employee.compensationModel && employee.compensationModel !== 'SALARIED'
+            : (((effectiveCompType && ['retainer', 'project_based', 'milestone_based', 'commission_only'].includes(effectiveCompType)) || (employee.compensationModel && employee.compensationModel !== 'SALARIED'))
                 ? roundAmount(earnings.totalEarnings * (config.tds194JRate ?? 0.10))
                 : master.tds))
     ),

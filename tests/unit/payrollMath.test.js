@@ -345,5 +345,28 @@ describe('Payroll Strategy Engine & Statutory Math Tests', () => {
         expect(typeof res.esiEnabled).toBe('boolean');
       });
     });
+
+    test('TDS 194J fallback: applies 10% 194J rate for retainer, project_based, milestone_based, commission_only', () => {
+      const contractorTypes = ['retainer', 'project_based', 'milestone_based', 'commission_only'];
+      contractorTypes.forEach(compType => {
+        const emp = {
+          monthlyCTC: 100000,
+          compensationType: compType,
+          tdsEnabled: true,
+          pfEnabled: false,
+          esiEnabled: false,
+          ptEnabled: false,
+          rateCard: [{ paymentType: 'MONTHLY', rate: 100000 }],
+        };
+        const adj = {
+          retainer: {},
+          project_based: { projectFee: 100000 },
+          milestone_based: { milestoneAmount: 100000 },
+          commission_only: { variableTransactions: [{ amount: 100000, paymentType: 'COMMISSION' }] },
+        }[compType];
+        const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, adj, 7, 2026);
+        expect(snapshot.deductions.tds).toBe(10000); // 10% of 100,000
+      });
+    });
   });
 });
