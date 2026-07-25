@@ -11,6 +11,13 @@ const Settings = require('../../models/Settings');
 const { getSalarySplits, buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems } = require('../../utils/payrollMath');
 const { monthName, getOrCreateConfig } = require('./common');
 
+const {
+  generateSinglePayslipPdf,
+  createBulkPayslipsZip,
+  getStoredPayslipPath,
+} = require('../../services/pdfGeneratorService');
+const fs = require('fs');
+
 const generatePayslip = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
@@ -292,6 +299,108 @@ const generatePayslip = async (req, res) => {
   }
 };
 
+const getPayslipPdf = async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
+      return res.status(404).json({ message: 'Payroll not found' });
+    }
+
+    const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id })
+      .populate({
+        path: 'employee',
+        populate: { path: 'department', select: 'name code' },
+      });
+
+    if (!payroll) {
+      return res.status(404).json({ message: 'Payroll not found' });
+    }
+
+    const settings = await Settings.findOne({ user: req.user._id }).lean();
+    const isEncryptedReq = req.query.encrypted === 'true' || req.headers['x-encrypt-pdf'] === 'true';
+
+    let userPassword = null;
+    if (isEncryptedReq) {
+      const emp = payroll.employee || payroll.employeeSnapshot || {};
+      const firstName = emp.firstName || payroll.employeeSnapshot?.firstName || '';
+      const lastName = emp.lastName || payroll.employeeSnapshot?.lastName || '';
+      const cleanName = (firstName + lastName).replace(/\s+/g, '').toUpperCase();
+      const namePart = cleanName.slice(0, 4).padEnd(4, 'X');
+
+      const dateRef = emp.dateOfBirth ? new Date(emp.dateOfBirth) : (emp.joiningDate ? new Date(emp.joiningDate) : new Date());
+      const day = String(dateRef.getDate()).padStart(2, '0');
+      const month = String(dateRef.getMonth() + 1).padStart(2, '0');
+      userPassword = `${namePart}${day}${month}`;
+    }
+
+    // Serve persisted file for non-encrypted paid payrolls if available
+    const storedPath = getStoredPayslipPath(payroll._id);
+    if (!isEncryptedReq && payroll.status === 'paid' && fs.existsSync(storedPath)) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="Payslip_${payroll.employeeSnapshot?.employeeId || 'EMP'}_${monthName(payroll.month)}_${payroll.year}.pdf"`);
+      return fs.createReadStream(storedPath).pipe(res);
+    }
+
+    const pdfBuffer = await generateSinglePayslipPdf({ payroll, settings, userPassword });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="Payslip_${payroll.employeeSnapshot?.employeeId || 'EMP'}_${monthName(payroll.month)}_${payroll.year}.pdf"`);
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error('Error generating PDF payslip:', error);
+    res.status(500).json({ message: 'Server error generating PDF payslip', error: error.message });
+  }
+};
+
+const bulkPayslipPdf = async (req, res) => {
+  try {
+    const { ids, month, year, department } = req.body || {};
+    const query = { user: req.user._id };
+
+    if (Array.isArray(ids) && ids.length > 0) {
+      const validIds = ids.filter((id) => mongoose.Types.ObjectId.isValid(String(id)));
+      query._id = { $in: validIds };
+    } else {
+      if (month !== undefined && month !== '') query.month = Number(month);
+      if (year !== undefined && year !== '') query.year = Number(year);
+    }
+
+    let payrolls = await Payroll.find(query)
+      .populate({
+        path: 'employee',
+        populate: { path: 'department', select: 'name code' },
+      });
+
+    if (department && mongoose.Types.ObjectId.isValid(String(department))) {
+      payrolls = payrolls.filter(p => p.employee?.department?._id?.toString() === String(department));
+    }
+
+    if (!payrolls || payrolls.length === 0) {
+      return res.status(404).json({ message: 'No matching payroll records found for bulk PDF generation' });
+    }
+
+    const settings = await Settings.findOne({ user: req.user._id }).lean();
+    const payslipFiles = [];
+
+    for (const payroll of payrolls) {
+      const empId = payroll.employeeSnapshot?.employeeId || payroll.employee?.employeeId || 'EMP';
+      const mName = monthName(payroll.month);
+      const filename = `Payslip_${empId}_${mName}_${payroll.year}.pdf`;
+      const buffer = await generateSinglePayslipPdf({ payroll, settings });
+      payslipFiles.push({ filename, buffer });
+    }
+
+    const zipBuffer = await createBulkPayslipsZip(payslipFiles);
+
+    const archiveName = `Payslips_${month ? monthName(Number(month)) : 'Batch'}_${year || new Date().getFullYear()}.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${archiveName}"`);
+    return res.send(zipBuffer);
+  } catch (error) {
+    console.error('Error generating bulk payslip ZIP:', error);
+    res.status(500).json({ message: 'Server error generating bulk payslip ZIP', error: error.message });
+  }
+};
+
 const emailPayslip = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
@@ -306,7 +415,7 @@ const emailPayslip = async (req, res) => {
       return res.status(400).json({ message: 'Employee email address is not configured.' });
     }
 
-    const settings = await Settings.findOne({ user: req.user._id }) || {};
+    const settings = await Settings.findOne({ user: req.user._id }).lean() || {};
     const companyName = settings.companyName || 'Flance';
     
     const smtpHost = process.env.SMTP_HOST || 'smtp.mailtrap.io';
@@ -466,11 +575,22 @@ const emailPayslip = async (req, res) => {
       </html>
     `;
 
+    // Generate real PDF attachment
+    const pdfBuffer = await generateSinglePayslipPdf({ payroll, settings });
+    const attachmentFilename = `Payslip_${payroll.employeeSnapshot?.employeeId || 'EMP'}_${monthLabel}_${payroll.year}.pdf`;
+
     await transporter.sendMail({
       from: `"${companyName} HR & Payroll" <${process.env.SMTP_SENDER || 'payroll@flance.local'}>`,
       to: employeeEmail,
       subject: `Payslip Statement for ${payPeriodLabel} - ${employeeName}`,
-      html: emailHtmlBody
+      html: emailHtmlBody,
+      attachments: [
+        {
+          filename: attachmentFilename,
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        },
+      ],
     });
 
     payroll.auditLog.push({
@@ -479,11 +599,11 @@ const emailPayslip = async (req, res) => {
       changedById: req.user._id,
       changedAt: new Date(),
       netSalary: payroll.netSalary,
-      notes: `Payslip email successfully sent to ${employeeEmail}`
+      notes: `Payslip email with PDF attachment successfully sent to ${employeeEmail}`
     });
     await payroll.save();
 
-    res.json({ message: `Payslip email successfully sent to ${employeeEmail}.` });
+    res.json({ message: `Payslip email with PDF attachment successfully sent to ${employeeEmail}.` });
   } catch (error) {
     console.error('Error sending payslip email:', error.message);
     res.status(500).json({ message: `Failed to dispatch payslip email: ${error.message}` });
@@ -492,5 +612,7 @@ const emailPayslip = async (req, res) => {
 
 module.exports = {
   generatePayslip,
+  getPayslipPdf,
+  bulkPayslipPdf,
   emailPayslip,
 };

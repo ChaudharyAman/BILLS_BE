@@ -7,7 +7,7 @@
 
 const { processPayroll, getBatchJobStatus, previewPayroll, bulkApprovePayroll, bulkDeletePayroll } = require('./processRun');
 const { getPayrolls, getPayrollById, updatePayroll, markPayrollAsPaid, reopenPayroll, deletePayroll, processFullAndFinalSettlement } = require('./lifecycle');
-const { generatePayslip, emailPayslip } = require('./payslip');
+const { generatePayslip, getPayslipPdf, bulkPayslipPdf, emailPayslip } = require('./payslip');
 const { getPayrollConfig, updatePayrollConfig, calculateSalary, getCompensationTypes } = require('./config');
 const { buildPayrollWorkbook, exportPayrollExcel, getPayrollTrend, getPayrollAuditLog } = require('./reporting');
 const { syncEmployees, syncAttendance, receiveHrmsWebhook } = require('./integrations');
@@ -27,6 +27,8 @@ module.exports = {
   deletePayroll,
   processFullAndFinalSettlement,
   generatePayslip,
+  getPayslipPdf,
+  bulkPayslipPdf,
   emailPayslip,
   getPayrollConfig,
   updatePayrollConfig,
