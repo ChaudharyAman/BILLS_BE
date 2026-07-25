@@ -92,13 +92,21 @@ describe('Payroll Strategy Engine & Statutory Math Tests', () => {
       expect(snapshot.earnings.totalEarnings).toBe(45000);
     });
 
-    test('7. milestone_based: calculates gross from milestoneAmount', () => {
-      const emp = {
+    test('7. milestone_based: calculates gross from milestoneAmount or rateCard fallback', () => {
+      const empRateCard = {
+        compensationType: 'milestone_based',
+        pfEnabled: false,
+        rateCard: [{ paymentType: 'MILESTONE', rate: 40000, unit: 'milestone' }],
+      };
+      const snapshotWithRateCard = buildPayrollSnapshot(empRateCard, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, {}, 7, 2026);
+      expect(snapshotWithRateCard.earnings.totalEarnings).toBe(40000);
+
+      const empManual = {
         compensationType: 'milestone_based',
         pfEnabled: false,
       };
       const adjustments = { milestoneAmount: 35000 };
-      const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, adjustments, 7, 2026);
+      const snapshot = buildPayrollSnapshot(empManual, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, adjustments, 7, 2026);
       expect(snapshot.earnings.totalEarnings).toBe(35000);
     });
 
@@ -280,6 +288,61 @@ describe('Payroll Strategy Engine & Statutory Math Tests', () => {
       APPLICABLE_TYPES.forEach((compType) => {
         const isUnsupported = UNIFORM_UNSUPPORTED_TYPES.includes(compType);
         expect(isUnsupported).toBe(false);
+      });
+    });
+  });
+
+  describe('buildMasterSalaryStructure Strategy Branches & Snapshot Config Tests', () => {
+    test('retainer: prefers rateCard MONTHLY rate over monthlyCTC', () => {
+      const emp = {
+        compensationType: 'retainer',
+        monthlyCTC: 0,
+        rateCard: [{ paymentType: 'MONTHLY', rate: 75000 }],
+      };
+      const res = buildMasterSalaryStructure(emp, DEFAULT_PAYROLL_CONFIG);
+      expect(res.monthlyCTC).toBe(75000);
+    });
+
+    test('weekly_salary: converts weeklyRate to monthly CTC via weeksPerMonth (52/12)', () => {
+      const emp = {
+        compensationType: 'weekly_salary',
+        weeklyRate: 10000,
+      };
+      const res = buildMasterSalaryStructure(emp, DEFAULT_PAYROLL_CONFIG);
+      expect(res.monthlyCTC).toBe(43333.33);
+    });
+
+    test('commission_only: sets monthlyCTC to 0 and returns isVariablePay flag', () => {
+      const emp = {
+        compensationType: 'commission_only',
+        commissionNotes: '10% per sale',
+      };
+      const res = buildMasterSalaryStructure(emp, DEFAULT_PAYROLL_CONFIG);
+      expect(res.monthlyCTC).toBe(0);
+      expect(res.isVariablePay).toBe(true);
+      expect(res.compensationBasis).toBe('commission');
+    });
+
+    test('buildMasterSalaryStructure returns valid structure for all 12 compensation types', () => {
+      const ALL_12_TYPES = [
+        'monthly_salary', 'attendance_based', 'salary_plus_commission',
+        'hourly', 'timesheet_based', 'daily_wage', 'weekly_salary',
+        'piece_rate', 'project_based', 'milestone_based', 'commission_only', 'retainer'
+      ];
+      ALL_12_TYPES.forEach(type => {
+        const emp = {
+          compensationType: type,
+          monthlyCTC: 50000,
+          hourlyRate: 500,
+          dailyRate: 2000,
+          weeklyRate: 10000,
+          rateCard: [{ paymentType: 'MONTHLY', rate: 50000 }, { paymentType: 'UNIT', rate: 50 }],
+        };
+        const res = buildMasterSalaryStructure(emp, DEFAULT_PAYROLL_CONFIG);
+        expect(res).toBeDefined();
+        expect(typeof res.monthlyCTC).toBe('number');
+        expect(typeof res.pfEnabled).toBe('boolean');
+        expect(typeof res.esiEnabled).toBe('boolean');
       });
     });
   });

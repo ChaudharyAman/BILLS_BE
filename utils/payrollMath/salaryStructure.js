@@ -64,6 +64,16 @@ const normalizeConfig = (config = {}) => {
 };
 
 const getMonthlyCTCValue = (source = {}) => {
+  const compType = source.compensationType;
+  if (compType === 'commission_only') return 0;
+
+  if (compType === 'retainer' && Array.isArray(source.rateCard)) {
+    const retainerItem = source.rateCard.find(r => r.paymentType === 'MONTHLY');
+    if (retainerItem && Number.isFinite(Number(retainerItem.rate)) && Number(retainerItem.rate) > 0) {
+      return Number(retainerItem.rate);
+    }
+  }
+
   const monthlyCTC = Number(source.monthlyCTC);
   if (Number.isFinite(monthlyCTC) && monthlyCTC > 0) return monthlyCTC;
 
@@ -205,6 +215,8 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
       includeGratuityInCTC: false,
       useComponents: false,
       monthlyCTC: monthlyCTC || gross,
+      isVariablePay: effectiveCompType === 'commission_only',
+      compensationBasis: effectiveCompType === 'commission_only' ? 'commission' : undefined,
     };
   }
 
@@ -542,7 +554,9 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     gratuityEnabled,
     includePfInCTC,
     includeGratuityInCTC,
-    useSalaryComponents: src.useSalaryComponents !== false,
+    useSalaryComponents: useComponents,
+    isVariablePay: effectiveCompType === 'commission_only',
+    compensationBasis: effectiveCompType === 'commission_only' ? 'commission' : undefined,
     earningsMap,
     deductionsMap,
   };

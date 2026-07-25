@@ -17,13 +17,16 @@ module.exports = {
   zeroesFixedAllowances: true,
   requiredPeriodInputFields: ['milestoneAmount'],
 
-  computeGrossEarnings(_src, _config, periodInput) {
+  computeGrossEarnings(src, _config, periodInput) {
     const txns = periodInput.variableTransactions || [];
     const milestoneTxns = txns.filter(t => t.paymentType === 'MILESTONE');
     let gross = roundToPaise(sumField(milestoneTxns, 'amount'));
 
     if (gross === 0) {
-      gross = roundToPaise(periodInput.milestoneAmount || 0);
+      const rateCardEntry = (src.rateCard || []).find(r => r.paymentType === 'MILESTONE');
+      gross = roundToPaise(
+        rateCardEntry ? rateCardEntry.rate : (periodInput.milestoneAmount || 0)
+      );
     }
 
     return {
