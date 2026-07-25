@@ -668,8 +668,11 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
           ? Number(record.absentDays)
           : Math.max(hrmsWorkingDays - presentDays - paidLeaves - unpaidLeaves, 0);
 
-        const lop = absentDays + unpaidLeaves;
-        let paidDays = Math.min(Math.max(activeCalendarDays - lop, 0), calendarDays);
+        // paidDays = presentDays + paidLeaves, clamped to [0, workingDays].
+        // This matches the formula TalentCIO uses in getAttendanceSummary (calculatedPaidDays).
+        // The old formula (activeCalendarDays - absentDays - unpaidLeaves) mixed calendar-day
+        // and working-day denominators, producing inflated values for partial-month employees.
+        const paidDays = Math.min(Math.max(presentDays + paidLeaves, 0), hrmsWorkingDays);
 
         mapped.push({
           employeeId:     emp._id,
