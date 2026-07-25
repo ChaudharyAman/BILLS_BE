@@ -370,6 +370,18 @@ const markPayrollAsPaid = async (req, res) => {
       }
     })();
 
+    // Reverse sync: notify HRMS of payroll result (fire-and-forget, non-blocking)
+    (async () => {
+      try {
+        const Settings = require('../../models/Settings');
+        const { dispatchPayrollResultToHrms } = require('../../services/hrmsSyncService');
+        const settings = await Settings.findOne({ user: req.user._id }).lean();
+        await dispatchPayrollResultToHrms(payroll, settings);
+      } catch (dispatchErr) {
+        console.error('Payroll result dispatch error:', dispatchErr.message);
+      }
+    })();
+
     res.json({ payroll, expense });
   } catch (error) {
     console.error('Error marking payroll as paid:', error);
