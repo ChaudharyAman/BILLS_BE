@@ -627,7 +627,12 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
     }
 
     const attendanceRecords = Array.isArray(rawData) ? rawData : (rawData?.attendance || []);
-    const calendarDays = new Date(year, month, 0).getDate();
+    const now = new Date();
+    const isCurrentMonth = (now.getFullYear() === year) && ((now.getMonth() + 1) === month);
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    const totalMonthDays = new Date(year, month, 0).getDate();
+    const calendarDays = isCurrentMonth ? now.getDate() : totalMonthDays;
     const localEmployees = await Employee.find({ user: userId }).select('_id employeeId joiningDate dateOfLeaving');
 
     const mapped = [];
@@ -640,12 +645,13 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
 
       const startOfMonth = new Date(year, month - 1, 1);
       const endOfMonth   = new Date(year, month, 0);
+      const effectiveMonthEnd = (isCurrentMonth && today < endOfMonth) ? today : endOfMonth;
 
       const jDate = emp.joiningDate   ? new Date(emp.joiningDate)   : startOfMonth;
-      const lDate = emp.dateOfLeaving ? new Date(emp.dateOfLeaving) : endOfMonth;
+      const lDate = emp.dateOfLeaving ? new Date(emp.dateOfLeaving) : effectiveMonthEnd;
 
       const activeStart = jDate > startOfMonth ? jDate : startOfMonth;
-      const activeEnd   = lDate < endOfMonth   ? lDate : endOfMonth;
+      const activeEnd   = lDate < effectiveMonthEnd ? lDate : effectiveMonthEnd;
 
       const activeStartMidnight = new Date(activeStart.getFullYear(), activeStart.getMonth(), activeStart.getDate());
       const activeEndMidnight   = new Date(activeEnd.getFullYear(),   activeEnd.getMonth(),   activeEnd.getDate());
