@@ -2100,6 +2100,7 @@ exports.addSalaryRevision = async (req, res) => {
       tdsEnabled: nextPayload.tdsEnabled !== false,
       esiEnabled: isHourly ? false : nextPayload.esiEnabled,
       ptEnabled: isHourly ? false : nextPayload.ptEnabled,
+      ptState: nextPayload.ptState || '',
       lwfEnabled: isHourly ? false : nextPayload.lwfEnabled,
       gratuityEnabled: isHourly ? false : nextPayload.gratuityEnabled,
       includePfInCTC: isHourly ? false : nextPayload.includePfInCTC,
@@ -2144,6 +2145,7 @@ exports.addSalaryRevision = async (req, res) => {
     employee.tdsEnabled = nextPayload.tdsEnabled !== false;
     employee.esiEnabled = isHourly ? false : nextPayload.esiEnabled;
     employee.ptEnabled = isHourly ? false : nextPayload.ptEnabled;
+    employee.ptState = nextPayload.ptState || '';
     employee.lwfEnabled = isHourly ? false : nextPayload.lwfEnabled;
     employee.gratuityEnabled = isHourly ? false : nextPayload.gratuityEnabled;
     employee.includePfInCTC = isHourly ? false : nextPayload.includePfInCTC;
@@ -2337,6 +2339,7 @@ exports.updateSalaryRevision = async (req, res) => {
       tdsEnabled: getVal('tdsEnabled') !== false,
       esiEnabled: req.body.esiEnabled !== undefined ? req.body.esiEnabled : (skipFixedComponents ? stratFlags.esiEligible : getVal('esiEnabled')),
       ptEnabled: req.body.ptEnabled !== undefined ? req.body.ptEnabled : (skipFixedComponents ? stratFlags.ptApplicable : getVal('ptEnabled')),
+      ptState: req.body.ptState !== undefined ? req.body.ptState : (roleDoc?.ptState || employee.ptState || ''),
       lwfEnabled: req.body.lwfEnabled !== undefined ? req.body.lwfEnabled : (skipFixedComponents ? stratFlags.lwfApplicable : getVal('lwfEnabled')),
       gratuityEnabled: req.body.gratuityEnabled !== undefined ? req.body.gratuityEnabled : (skipFixedComponents ? stratFlags.gratuityEligible : getVal('gratuityEnabled')),
       includePfInCTC: skipFixedComponents ? false : getVal('includePfInCTC'),
@@ -2396,6 +2399,7 @@ exports.updateSalaryRevision = async (req, res) => {
     revision.tdsEnabled = nextPayload.tdsEnabled !== false;
     revision.esiEnabled = stratFlags.esiEligible ? nextPayload.esiEnabled : false;
     revision.ptEnabled = stratFlags.ptApplicable ? nextPayload.ptEnabled : false;
+    revision.ptState = nextPayload.ptState || '';
     revision.lwfEnabled = stratFlags.lwfApplicable ? nextPayload.lwfEnabled : false;
     revision.gratuityEnabled = stratFlags.gratuityEligible ? nextPayload.gratuityEnabled : false;
     revision.includePfInCTC = stratFlags.pfEligible ? nextPayload.includePfInCTC : false;
