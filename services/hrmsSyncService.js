@@ -6,6 +6,7 @@ const Role = require('../models/Role');
 const escapeRegex = require('../utils/escapeRegex');
 const { decryptPayload, encryptPIIField } = require('../utils/cryptoHelper');
 const { buildMasterSalaryStructure } = require('../utils/payrollMath');
+const { appendSalaryRevisionIfChanged } = require('../utils/salaryRevisionHelper');
 
 // Helper to detect an AES-GCM encrypted response package.
 const isEncryptedPackage = (obj) =>
@@ -553,7 +554,15 @@ exports.syncEmployeesFromExternal = async (userId) => {
         const query = { user: userId, employeeId: empId };
         const existingEmp = await Employee.findOne(query);
         if (existingEmp) {
-          await Employee.updateOne(query, { $set: updateData });
+          await appendSalaryRevisionIfChanged({
+            employee: existingEmp,
+            updateData,
+            effectiveDate: new Date(),
+            reason: 'HRMS pull sync',
+            revisedBy: 'System (HRMS Sync)',
+          });
+          Object.assign(existingEmp, updateData);
+          await existingEmp.save();
           updatedCount += 1;
         } else {
           await Employee.create({ ...updateData, user: userId });

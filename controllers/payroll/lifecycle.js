@@ -578,6 +578,12 @@ const processFullAndFinalSettlement = async (req, res) => {
       noticePeriodRequiredDays = 0,
       leaveEncashmentDays = 0,
       comments = '',
+      // Period-specific inputs for variable-compensation employees in their final period.
+      // Hourly / timesheet_based: actual hours worked (not the stale employee.hoursWorked field).
+      // Piece-rate: units produced and optional rate override for the final period.
+      hoursWorked,
+      unitsProduced,
+      ratePerUnit,
     } = req.body;
 
     if (!employeeId || !lastWorkingDay) {
@@ -622,6 +628,17 @@ const processFullAndFinalSettlement = async (req, res) => {
     loanRecoveryDeduction = roundAmount(Math.max(0, loanRecoveryDeduction));
 
     employee.dateOfLeaving = exitDate;
+    // Build periodInput only when the caller actually supplied values — undefined means
+    // "not provided", which lets each strategy apply its own default (e.g. piece-rate
+    // defaults to 1 unit when unitsProduced is undefined, not 0).
+    const fnfPeriodInput = {};
+    if (unitsProduced !== undefined && unitsProduced !== null && unitsProduced !== '') {
+      fnfPeriodInput.unitsProduced = Number(unitsProduced);
+    }
+    if (ratePerUnit !== undefined && ratePerUnit !== null && ratePerUnit !== '') {
+      fnfPeriodInput.ratePerUnit = Number(ratePerUnit);
+    }
+
     const adjustments = {
       otherEarnings: leaveEncashmentAmount > 0 ? [{ name: 'Leave Encashment', amount: leaveEncashmentAmount }] : [],
       otherDeductions: [
@@ -629,9 +646,22 @@ const processFullAndFinalSettlement = async (req, res) => {
         ...(loanRecoveryDeduction > 0 ? [{ name: 'Loan Balance Recovery', amount: loanRecoveryDeduction }] : []),
       ],
       variablePay: gratuityPayout > 0 ? { specialBonus: gratuityPayout } : {},
+      ...(Object.keys(fnfPeriodInput).length > 0 ? { periodInput: fnfPeriodInput } : {}),
     };
 
-    const snapshot = buildPayrollSnapshot(employee, config, { paidDays: exitDate.getUTCDate() }, adjustments, month, year);
+    // Pass hoursWorked through attendance so snapshot.js:104's priority chain
+    // (attendance?.hoursWorked first) picks it up ahead of the stale employee field.
+    // workingDays = paidDays so snapshot.js prorate = 1.0: the salary strategy
+    // (piece-rate, hourly, etc.) already owns the total-gross calculation for the
+    // period; the F&F gross should not be scaled further by the calendar fraction.
+    const exitDayCount = exitDate.getUTCDate();
+    const fnfAttendance = {
+      paidDays: exitDayCount,
+      workingDays: exitDayCount,
+      ...(hoursWorked !== undefined && hoursWorked !== null && hoursWorked !== '' ? { hoursWorked: Number(hoursWorked) } : {}),
+    };
+
+    const snapshot = buildPayrollSnapshot(employee, config, fnfAttendance, adjustments, month, year);
 
     const payroll = await Payroll.create({
       user: req.user._id,

@@ -11,6 +11,7 @@ const Employee     = require('../../models/Employee');
 const PayrollConfig = require('../../models/PayrollConfig');
 const { decryptPayload } = require('../../utils/cryptoHelper');
 const hrmsSyncService = require('../../services/hrmsSyncService');
+const { appendSalaryRevisionIfChanged } = require('../../utils/salaryRevisionHelper');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pull sync handlers (protected by JWT middleware)
@@ -69,7 +70,15 @@ const receiveHrmsWebhook = async (req, res) => {
     const query = { user: userId, employeeId: empId };
     const existingEmp = await Employee.findOne(query);
     if (existingEmp) {
-      await Employee.updateOne(query, { $set: updateData });
+      await appendSalaryRevisionIfChanged({
+        employee: existingEmp,
+        updateData,
+        effectiveDate: new Date(),
+        reason: 'HRMS webhook sync',
+        revisedBy: 'System (HRMS Sync)',
+      });
+      Object.assign(existingEmp, updateData);
+      await existingEmp.save();
     } else {
       await Employee.create({ ...updateData, user: userId });
     }

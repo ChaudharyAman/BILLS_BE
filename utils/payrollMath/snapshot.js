@@ -99,13 +99,13 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
   const dailyOtherAllowances = [];
   const dailyOtherDeductions = [];
 
-  const effectiveCompType = resolveCompensationType(employee);
+  const effectiveCompType = adjustments.compensationType || resolveCompensationType(employee);
   const isHourly = effectiveCompType === 'hourly' || employee.payType === 'hourly';
   const hoursWorked = isHourly ? (Number(attendance?.hoursWorked) || Number(adjustments?.hoursWorked) || Number(employee.hoursWorked) || 0) : 0;
 
   const periodInput = {
     daysWorked:      Number(adjustments.daysWorked ?? adjustments.periodInput?.daysWorked ?? attendance?.paidDays ?? 0),
-    unitsProduced:   Number(adjustments.unitsProduced ?? adjustments.periodInput?.unitsProduced ?? 0),
+    unitsProduced:   adjustments.unitsProduced !== undefined ? Number(adjustments.unitsProduced) : (adjustments.periodInput?.unitsProduced !== undefined ? Number(adjustments.periodInput.unitsProduced) : undefined),
     hoursLogged:     Number(adjustments.hoursLogged ?? adjustments.periodInput?.hoursLogged ?? adjustments.timesheetHours ?? 0),
     hoursWorked:     Number(attendance?.hoursWorked ?? adjustments.hoursWorked ?? adjustments.periodInput?.hoursWorked ?? employee.hoursWorked ?? 0),
     projectFee:      adjustments.projectFee !== undefined ? Number(adjustments.projectFee) : (adjustments.periodInput?.projectFee !== undefined ? Number(adjustments.periodInput.projectFee) : undefined),

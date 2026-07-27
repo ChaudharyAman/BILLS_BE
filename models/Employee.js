@@ -295,6 +295,12 @@ EmployeeSchema.pre('save', async function() {
   if (!this.compensationType && effectiveCompType) {
     this.compensationType = effectiveCompType;
   }
+  if (this.compensationType && this.salaryRevisions && this.salaryRevisions.length > 0) {
+    const latestRev = this.salaryRevisions[this.salaryRevisions.length - 1];
+    if (latestRev) {
+      latestRev.compensationType = this.compensationType;
+    }
+  }
 
   const strategyMeta = resolveStrategy(effectiveCompType);
   const statutoryDefaults = getStrategyStatutoryDefaults(effectiveCompType);
@@ -739,20 +745,38 @@ const decryptEmployeePII = (doc) => {
 // Decrypt PII only on full Mongoose Document instances.
 // Plain objects returned by .lean() queries keep the encrypted value (or are absent via
 // select:false), preventing accidental PII exposure in logs or serialised responses.
+const ensureCompensationType = (doc) => {
+  if (!doc) return;
+  if (!doc.compensationType) {
+    doc.compensationType = deriveCompensationTypeFromLegacy({
+      payType: doc.payType,
+      compensationModel: doc.compensationModel,
+      employmentType: doc.employmentType,
+    });
+  }
+};
+
 EmployeeSchema.post('find', function (docs) {
   if (Array.isArray(docs)) {
     docs.forEach((doc) => {
+      ensureCompensationType(doc);
       if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
     });
   }
 });
 
 EmployeeSchema.post('findOne', function (doc) {
-  if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
+  if (doc) {
+    ensureCompensationType(doc);
+    if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
+  }
 });
 
 EmployeeSchema.post('findOneAndUpdate', function (doc) {
-  if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
+  if (doc) {
+    ensureCompensationType(doc);
+    if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
+  }
 });
 
 EmployeeSchema.plugin(softDeletePlugin);

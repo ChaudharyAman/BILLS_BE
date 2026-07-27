@@ -71,13 +71,28 @@ describe('Payroll Strategy Engine & Statutory Math Tests', () => {
       expect(snapshot.earnings.totalEarnings).toBeGreaterThan(0);
     });
 
-    test('5. piece_rate: calculates earnings based on unitsProduced and ratePerUnit', () => {
-      const emp = {
+    test('5. piece_rate: calculates earnings based on unitsProduced and ratePerUnit / rateCard defaults', () => {
+      const empWithRateCard = {
         compensationType: 'piece_rate',
         pfEnabled: false,
+        rateCard: [{ paymentType: 'UNIT', rate: 500 }],
       };
+      // (a) No unitsProduced supplied -> defaults to 1 unit * ₹500 = ₹500
+      const snapshotDefault = buildPayrollSnapshot(empWithRateCard, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, {}, 7, 2026);
+      expect(snapshotDefault.earnings.totalEarnings).toBe(500);
+
+      // (b) Supplying unitsProduced: 3 -> 3 units * ₹500 = ₹1500
+      const snapshot3Units = buildPayrollSnapshot(empWithRateCard, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, { unitsProduced: 3 }, 7, 2026);
+      expect(snapshot3Units.earnings.totalEarnings).toBe(1500);
+
+      // (c) Supplying unitsProduced: 0 explicitly -> 0 units * ₹500 = ₹0
+      const snapshot0Units = buildPayrollSnapshot(empWithRateCard, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, { unitsProduced: 0 }, 7, 2026);
+      expect(snapshot0Units.earnings.totalEarnings).toBe(0);
+
+      // (d) Explicit adjustments for units & rate (when no rateCard present)
+      const empNoRateCard = { compensationType: 'piece_rate', pfEnabled: false };
       const adjustments = { unitsProduced: 200, ratePerUnit: 25 };
-      const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, adjustments, 7, 2026);
+      const snapshot = buildPayrollSnapshot(empNoRateCard, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, adjustments, 7, 2026);
       expect(snapshot.earnings.totalEarnings).toBe(5000);
       expect(snapshot.netSalary).toBe(5000);
     });
@@ -367,6 +382,120 @@ describe('Payroll Strategy Engine & Statutory Math Tests', () => {
         const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, adj, 7, 2026);
         expect(snapshot.deductions.tds).toBe(10000); // 10% of 100,000
       });
+    });
+  });
+
+  describe('Full & Final Settlement Path', () => {
+    // These tests reproduce the F&F call signature in lifecycle.js after the Bug B fix:
+    //   buildPayrollSnapshot(employee, config, { paidDays, hoursWorked }, adjustments, month, year)
+    // where adjustments may carry periodInput for piece-rate employees.
+
+    test('hourly employee: F&F with explicit hoursWorked uses supplied hours, not employee.hoursWorked', () => {
+      const emp = {
+        compensationType: 'hourly',
+        hourlyRate: 400,
+        // Stale / wrong value stored on the employee document — must NOT be used
+        // when attendance.hoursWorked is supplied.
+        hoursWorked: 1,
+        pfEnabled: false,
+        esiEnabled: false,
+      };
+      // Simulates lifecycle.js: fnfAttendance = { paidDays: 15, hoursWorked: 8 }
+      const attendance = { paidDays: 15, hoursWorked: 8 };
+      const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, attendance, {}, 7, 2026);
+      // gross should be 400 × 8 = 3200, not 400 × 1 = 400
+      expect(snapshot.earnings.totalEarnings).toBe(3200);
+    });
+
+    test('hourly employee: F&F without hoursWorked falls back to employee.hoursWorked (existing behavior)', () => {
+      const emp = {
+        compensationType: 'hourly',
+        hourlyRate: 400,
+        hoursWorked: 8,
+        pfEnabled: false,
+        esiEnabled: false,
+      };
+      // No hoursWorked in attendance — backend did not receive it (old flow or user left blank)
+      const attendance = { paidDays: 15 };
+      const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, attendance, {}, 7, 2026);
+      expect(snapshot.earnings.totalEarnings).toBe(3200); // 400 × 8 from employee fallback
+    });
+
+    test('piece-rate employee: F&F with periodInput.unitsProduced uses supplied units', () => {
+      const emp = {
+        compensationType: 'piece_rate',
+        pfEnabled: false,
+        esiEnabled: false,
+      };
+      // Simulates lifecycle.js: fnfAttendance = { paidDays: N, workingDays: N, ... }
+      // workingDays must equal paidDays for an F&F exit so prorate = 1.0 (no further scaling).
+      const adjustments = { periodInput: { unitsProduced: 10, ratePerUnit: 150 } };
+      const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, { paidDays: 15, workingDays: 15 }, adjustments, 7, 2026);
+      expect(snapshot.earnings.totalEarnings).toBe(1500); // 10 × 150
+    });
+
+    test('piece-rate employee: F&F without unitsProduced defaults to 1 unit (Bug A + B combined)', () => {
+      const emp = {
+        compensationType: 'piece_rate',
+        pfEnabled: false,
+        esiEnabled: false,
+        rateCard: [{ paymentType: 'UNIT', rate: 500 }],
+      };
+      // No periodInput supplied — backend received nothing from the old form.
+      // workingDays = paidDays so prorate = 1.0 (F&F exit = full period elapsed).
+      const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, { paidDays: 15, workingDays: 15 }, {}, 7, 2026);
+      // Should default to 1 unit × 500 = 500, not 0 × 500 = 0
+      expect(snapshot.earnings.totalEarnings).toBe(500);
+    });
+  });
+
+  describe('Compensation Type Resolution & Strategy Dispatch', () => {
+    const { resolveCompensationType } = require('../../utils/payrollStrategies');
+
+    test('payType=hourly with compensationType unset resolves to hourly and calculates gross = hourlyRate × hoursWorked', () => {
+      const emp = {
+        payType: 'hourly',
+        hourlyRate: 400,
+        monthlyCTC: 10320, // Distractor monthlyCTC — must NOT be used for hourly strategy
+        compensationType: null,
+        pfEnabled: false,
+        esiEnabled: false,
+      };
+      const resolved = resolveCompensationType(emp);
+      expect(resolved).toBe('hourly');
+
+      const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, { paidDays: 30, hoursWorked: 8 }, {}, 7, 2026);
+      // Must be 400 × 8 = 3200, NOT monthlyCTC/160 × 8 = (10320/160)*8 = 516
+      expect(snapshot.earnings.totalEarnings).toBe(3200);
+    });
+
+    test('compensationType explicitly set to timesheet_based uses timesheet formula (monthlyCTC / 160 × hoursLogged)', () => {
+      const emp = {
+        compensationType: 'timesheet_based',
+        hourlyRate: 400, // Distractor rate — timesheet_based computes from monthlyCTC / 160
+        monthlyCTC: 10320,
+        pfEnabled: false,
+        esiEnabled: false,
+      };
+      const resolved = resolveCompensationType(emp);
+      expect(resolved).toBe('timesheet_based');
+
+      const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, { paidDays: 30 }, { periodInput: { hoursLogged: 8 } }, 7, 2026);
+      // (10320 / 160) × 8 = 64.5 × 8 = 516
+      expect(snapshot.earnings.totalEarnings).toBe(516);
+    });
+
+    test('reproduces EMP-2026-1005 scenario: hourlyRate=400, hoursWorked=8, monthlyCTC=10320 calculates 3200', () => {
+      const emp = {
+        employeeId: 'EMP-2026-1005',
+        compensationType: 'hourly',
+        hourlyRate: 400,
+        monthlyCTC: 10320,
+        pfEnabled: false,
+        esiEnabled: false,
+      };
+      const snapshot = buildPayrollSnapshot(emp, DEFAULT_PAYROLL_CONFIG, { paidDays: 30, hoursWorked: 8 }, {}, 7, 2026);
+      expect(snapshot.earnings.totalEarnings).toBe(3200);
     });
   });
 });

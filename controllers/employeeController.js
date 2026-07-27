@@ -10,6 +10,7 @@ const Project = require('../models/Project');
 const escapeRegex = require('../utils/escapeRegex');
 const { XLSX, setHeaderStyle, sendWorkbook } = require('../utils/excel');
 const { buildMasterSalaryStructure, roundAmount } = require('../utils/payrollMath');
+const { appendSalaryRevisionIfChanged } = require('../utils/salaryRevisionHelper');
 
 const toCamelCase = (str) => {
   return str
@@ -910,6 +911,15 @@ exports.updateEmployee = async (req, res) => {
     const isSalaryChange = isSalariedChange || isHourlyChange || isDailyChange || isRateCardChange;
 
     if (isSalaryChange) {
+      if (existingEmployee.salaryRevisions && existingEmployee.salaryRevisions.length > 0) {
+        const latestRev = existingEmployee.salaryRevisions[existingEmployee.salaryRevisions.length - 1];
+        if (updateData.monthlyCTC !== undefined) latestRev.newCTC = newCTC;
+        if (updateData.hourlyRate !== undefined) latestRev.newHourlyRate = newHourly;
+        if (updateData.dailyRate !== undefined) latestRev.dailyRate = newDaily;
+        if (updateData.compensationType !== undefined) latestRev.compensationType = updateData.compensationType;
+        if (updateData.rateCard !== undefined) latestRev.rateCard = updateData.rateCard;
+      }
+
       try {
         const AuditLog = require('../models/AuditLog');
         await AuditLog.create({
@@ -920,7 +930,7 @@ exports.updateEmployee = async (req, res) => {
           changes: {
             from: { monthlyCTC: oldCTC, hourlyRate: oldHourly, dailyRate: oldDaily, rateCard: existingEmployee.rateCard },
             to: { monthlyCTC: newCTC, hourlyRate: newHourly, dailyRate: newDaily, rateCard: updateData.rateCard || existingEmployee.rateCard },
-            reason: req.body.reason || 'Profile update compensation adjustment',
+            reason: req.body.reason || 'Profile edit direct update',
           },
         });
       } catch (auditErr) {
@@ -928,11 +938,10 @@ exports.updateEmployee = async (req, res) => {
       }
     }
 
-    const employee = await Employee.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
-      { $set: updateData },
-      { returnDocument: 'after', runValidators: true }
-    )
+    Object.assign(existingEmployee, updateData);
+    await existingEmployee.save();
+
+    const employee = await Employee.findOne({ _id: req.params.id, user: req.user._id })
       .populate('department', 'name code')
       .select('+panNumber +uanNumber +aadharNumber +bankDetails.accountNumber');
 
@@ -1445,11 +1454,15 @@ exports.importEmployees = async (req, res) => {
         let created;
         const existing = await Employee.findOne({ user: req.user._id, employeeId });
         if (existing) {
-          created = await Employee.findOneAndUpdate(
-            { _id: existing._id, user: req.user._id },
-            { $set: payload },
-            { returnDocument: 'after', runValidators: true }
-          );
+          await appendSalaryRevisionIfChanged({
+            employee: existing,
+            updateData: payload,
+            effectiveDate: new Date(),
+            reason: 'Bulk employee import',
+            revisedBy: req.user._id ? String(req.user._id) : 'System (Bulk Import)',
+          });
+          Object.assign(existing, payload);
+          created = await existing.save();
         } else {
           created = await Employee.create(payload);
         }
