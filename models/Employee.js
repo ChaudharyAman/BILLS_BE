@@ -250,6 +250,12 @@ const EmployeeSchema = new mongoose.Schema({
     lta: { type: Number },
     employerNPS: { type: Number },
     insuranceAmount: { type: Number },
+    // Rate snapshot fields for non-component compensation types
+    dailyRate:       { type: Number },
+    weeklyRate:      { type: Number },
+    projectFee:      { type: Number },
+    milestoneAmount: { type: Number },
+    commissionNotes: { type: String },
     deductions: {
       tds: { type: Number },
       professionalTax: { type: Number },

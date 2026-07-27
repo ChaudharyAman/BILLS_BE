@@ -126,3 +126,194 @@ describe('Salary Revision Helper & Historical Payroll Protection', () => {
     expect(currentParams.monthlyCTC).toBe(80000);
   });
 });
+
+// ─── Non-component compensation type regression tests ────────────────────────
+describe('daily_wage / non-component type revision logic', () => {
+  function makeDailyWageEmployee(overrides = {}) {
+    return {
+      _id: 'emp-dw-01',
+      employeeId: 'EMP-DW-01',
+      joiningDate: new Date('2025-03-01'),
+      compensationType: 'daily_wage',
+      payType: 'salaried',
+      monthlyCTC: 0,
+      hourlyRate: 0,
+      dailyRate: 500,
+      weeklyRate: 0,
+      projectFee: 0,
+      milestoneAmount: 0,
+      commissionNotes: '',
+      rateCard: [],
+      employmentType: 'full-time',
+      useSalaryComponents: false,
+      pfEnabled: false,
+      esiEnabled: false,
+      ptEnabled: false,
+      lwfEnabled: false,
+      gratuityEnabled: false,
+      salaryRevisions: [],
+      ...overrides,
+    };
+  }
+
+  test('dailyRate change creates revision with dailyRate populated and CTC/statutory correctly zeroed', async () => {
+    const employee = makeDailyWageEmployee();
+    const updateData = { dailyRate: 650 };
+
+    const result = await appendSalaryRevisionIfChanged({
+      employee,
+      updateData,
+      effectiveDate: new Date('2026-07-01'),
+      reason: 'Daily rate hike',
+      revisedBy: 'admin',
+    });
+
+    expect(result).not.toBeNull();
+    // Bootstrap + new revision
+    expect(employee.salaryRevisions.length).toBe(2);
+
+    // ── Bootstrap entry assertions ──
+    const bootstrap = employee.salaryRevisions[0];
+    expect(bootstrap.compensationType).toBe('daily_wage');
+    expect(bootstrap.dailyRate).toBe(500);      // captured from original employee
+    expect(bootstrap.monthlyCTC).toBe(0);       // must NOT be defaulted to old value
+    expect(bootstrap.pfEnabled).toBe(false);    // non-component type: must stay false
+    expect(bootstrap.esiEnabled).toBe(false);
+    expect(bootstrap.gratuityEnabled).toBe(false);
+    expect(bootstrap.useSalaryComponents).toBe(false);
+
+    // ── New revision entry assertions ──
+    expect(result.compensationType).toBe('daily_wage');
+    expect(result.dailyRate).toBe(650);         // updated value snapshotted
+    expect(result.monthlyCTC).toBe(0);          // non-component: must be 0, not newCTC
+    expect(result.pfEnabled).toBe(false);
+    expect(result.esiEnabled).toBe(false);
+    expect(result.gratuityEnabled).toBe(false);
+    expect(result.useSalaryComponents).toBe(false);
+    // CTC history fields must be zeroed for non-component types
+    expect(result.previousCTC).toBe(0);
+    expect(result.newCTC).toBe(0);
+  });
+
+  test('weeklyRate change triggers a revision entry', async () => {
+    const employee = makeDailyWageEmployee({ compensationType: 'weekly_salary', weeklyRate: 3000 });
+    const result = await appendSalaryRevisionIfChanged({
+      employee,
+      updateData: { weeklyRate: 3500 },
+      reason: 'Weekly rate hike',
+    });
+
+    expect(result).not.toBeNull();
+    expect(result.weeklyRate).toBe(3500);
+  });
+
+  test('projectFee change triggers a revision entry for project_based employee', async () => {
+    const employee = makeDailyWageEmployee({ compensationType: 'project_based', projectFee: 20000, dailyRate: 0 });
+    const result = await appendSalaryRevisionIfChanged({
+      employee,
+      updateData: { projectFee: 25000 },
+      reason: 'Project fee renegotiated',
+    });
+
+    expect(result).not.toBeNull();
+    expect(result.projectFee).toBe(25000);
+    expect(result.monthlyCTC).toBe(0);
+  });
+
+  test('milestoneAmount change triggers a revision entry for milestone_based employee', async () => {
+    const employee = makeDailyWageEmployee({ compensationType: 'milestone_based', milestoneAmount: 50000, dailyRate: 0 });
+    const result = await appendSalaryRevisionIfChanged({
+      employee,
+      updateData: { milestoneAmount: 60000 },
+      reason: 'Milestone payout increase',
+    });
+
+    expect(result).not.toBeNull();
+    expect(result.milestoneAmount).toBe(60000);
+  });
+
+  test('non-pay field change on daily_wage employee produces no revision', async () => {
+    const employee = makeDailyWageEmployee();
+    const result = await appendSalaryRevisionIfChanged({
+      employee,
+      updateData: { designation: 'Site Worker' },
+    });
+
+    expect(result).toBeNull();
+    expect(employee.salaryRevisions.length).toBe(0);
+  });
+});
+
+// ─── Round-trip schema persistence test ──────────────────────────────────────
+// Guards against a regression of the strict sub-schema fix (part c):
+// if dailyRate/weeklyRate/projectFee/milestoneAmount/commissionNotes are ever
+// removed from the salaryRevisions inline sub-schema, Mongoose strict mode will
+// silently drop them on save and this test will catch it.
+describe('salaryRevisions sub-schema round-trip persistence (Mongoose + MongoMemoryServer)', () => {
+  const mongoose = require('mongoose');
+  const { MongoMemoryServer } = require('mongodb-memory-server');
+  const Employee = require('../../models/Employee');
+
+  let mongod;
+
+  beforeAll(async () => {
+    mongod = await MongoMemoryServer.create();
+    await mongoose.connect(mongod.getUri());
+  }, 60000);
+
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mongod.stop();
+  });
+
+  afterEach(async () => {
+    await Employee.deleteMany({});
+  });
+
+  test('dailyRate and non-component rate fields survive a Mongoose save/reload cycle', async () => {
+    const fakeUserId = new mongoose.Types.ObjectId();
+    const emp = await Employee.create({
+      user: fakeUserId,
+      employeeId: 'EMP-SCHEMA-RT-01',
+      firstName: 'Schema',
+      lastName: 'RoundTrip',
+      email: 'schema.rt@test.local',
+      joiningDate: new Date('2025-01-01'),
+      compensationType: 'daily_wage',
+      dailyRate: 0,
+      monthlyCTC: 0,
+      salaryRevisions: [],
+    });
+
+    // Run the helper against the live Mongoose document
+    await appendSalaryRevisionIfChanged({
+      employee: emp,
+      updateData: {
+        dailyRate:       750,
+        weeklyRate:      3750,
+        projectFee:      15000,
+        milestoneAmount: 40000,
+        commissionNotes: 'Q3 target bonus',
+      },
+      effectiveDate: new Date('2026-07-01'),
+      reason: 'Schema persistence test',
+    });
+
+    // Persist via Mongoose — strict sub-schema drops undeclared fields silently here
+    await emp.save();
+
+    // Reload from MongoDB and verify the fields actually survived
+    const reloaded = await Employee.findById(emp._id).lean();
+    expect(reloaded.salaryRevisions).toHaveLength(2); // bootstrap + new
+
+    const rev = reloaded.salaryRevisions[1];
+    expect(rev.dailyRate).toBe(750);
+    expect(rev.weeklyRate).toBe(3750);
+    expect(rev.projectFee).toBe(15000);
+    expect(rev.milestoneAmount).toBe(40000);
+    expect(rev.commissionNotes).toBe('Q3 target bonus');
+    // Non-component type: these must be zeroed/false after round-trip
+    expect(rev.monthlyCTC).toBe(0);
+    expect(rev.pfEnabled).toBe(false);
+  });
+});

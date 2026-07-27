@@ -101,18 +101,37 @@ exports.verifyMultiTenantWebhook = async (req, res, next) => {
       return res.status(401).json({ message: `Access denied: Integration is disabled or not configured for tenant ${externalTenantId}.` });
     }
 
-    const webhookSecret = settings.integration?.webhookSecret || process.env.SHARED_WEBHOOK_SECRET;
+    // Require each tenant to have its own webhookSecret — no shared fallback.
+    // A single fallback key breaks tenant isolation (forging one tenant's signature
+    // would work for every tenant relying on the fallback).
+    const webhookSecret = settings.integration?.webhookSecret;
     if (!webhookSecret) {
-      console.error(`[SECURITY] No webhook secret configured for tenant ${externalTenantId} and no SHARED_WEBHOOK_SECRET fallback set.`);
+      console.error(`[SECURITY] No webhook secret configured for tenant ${externalTenantId}. Integration requires a tenant-specific webhookSecret.`);
       return res.status(401).json({ message: 'Webhook integration is not properly configured for this tenant — no secret available for signature verification.' });
     }
-    
+
+    // ── Replay protection ─────────────────────────────────────────────────────
+    // Require x-hrms-timestamp (Unix seconds) and reject requests outside a
+    // ±5-minute window. This prevents captured valid requests being replayed.
+    const REPLAY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+    const tsHeader = req.headers['x-hrms-timestamp'];
+    if (!tsHeader) {
+      return res.status(400).json({ message: 'Replay protection: x-hrms-timestamp header is required.' });
+    }
+    const tsMs = Number(tsHeader) * 1000; // header is Unix seconds
+    if (!Number.isFinite(tsMs) || Math.abs(Date.now() - tsMs) > REPLAY_WINDOW_MS) {
+      return res.status(401).json({ message: 'Replay protection: request timestamp is missing, invalid, or outside the 5-minute acceptance window.' });
+    }
+
     // Use rawBody buffer if available to avoid stringify mismatches, fallback to req.body stringify
     const rawBody = req.rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
 
+    // HMAC input = timestamp + '.' + rawBody so the timestamp is part of the signed content.
+    // Senders must use the same concatenation when generating the signature.
+    const hmacInput = `${tsHeader}.${rawBody}`;
     const computedSignature = crypto
       .createHmac('sha256', webhookSecret)
-      .update(rawBody)
+      .update(hmacInput)
       .digest('hex');
 
     const sigBuffer = Buffer.from(signature, 'hex');
@@ -135,18 +154,25 @@ exports.verifyMultiTenantWebhook = async (req, res, next) => {
 
 const checkWebhookSecretStartup = async () => {
   try {
-    if (!process.env.SHARED_WEBHOOK_SECRET) {
-      const enabledTenantWithoutSecret = await Settings.findOne({
-        'integration.enabled': true,
-        $or: [
-          { 'integration.webhookSecret': { $exists: false } },
-          { 'integration.webhookSecret': '' },
-          { 'integration.webhookSecret': null }
-        ]
-      });
-      if (enabledTenantWithoutSecret) {
-        console.warn('[SECURITY WARNING] SHARED_WEBHOOK_SECRET environment variable is unset while tenant integration is enabled with no tenant-specific secret!');
-      }
+    // Find every tenant with integration enabled but no webhook secret configured.
+    // Without a tenant-specific secret, incoming webhooks cannot be verified.
+    // The shared-secret fallback has been removed to preserve tenant isolation.
+    const tenantsWithoutSecret = await Settings.find({
+      'integration.enabled': true,
+      $or: [
+        { 'integration.webhookSecret': { $exists: false } },
+        { 'integration.webhookSecret': '' },
+        { 'integration.webhookSecret': null },
+      ],
+    }).select('integration.externalTenantId user').lean();
+
+    for (const tenant of tenantsWithoutSecret) {
+      const id = tenant.integration?.externalTenantId || String(tenant._id);
+      console.warn(
+        `[SECURITY WARNING] Tenant ${id} has integration enabled but no webhookSecret configured. ` +
+        'Incoming webhooks cannot be verified for this tenant. ' +
+        'Set integration.webhookSecret via the Settings API to resolve this.'
+      );
     }
   } catch (error) {
     // Non-blocking warning check during early startup
@@ -182,11 +208,6 @@ const verifyProductionSecretAudit = () => {
   }
   if (KNOWN_BAD_SECRETS.includes(encryptionSecret)) {
     throw new Error(`[FATAL SECURITY ERROR] ENCRYPTION_SECRET_KEY / PII_ENCRYPTION_KEY is set to an insecure default string ("${encryptionSecret}"). Server startup halted.`);
-  }
-
-  const webhookSecret = process.env.SHARED_WEBHOOK_SECRET;
-  if (webhookSecret && KNOWN_BAD_SECRETS.includes(webhookSecret)) {
-    throw new Error(`[FATAL SECURITY ERROR] SHARED_WEBHOOK_SECRET is set to an insecure default string ("${webhookSecret}"). Server startup halted.`);
   }
 };
 

@@ -808,16 +808,20 @@ exports.dispatchPayrollResultToHrms = async (payroll, settings) => {
     },
   };
 
+  const payloadStr = JSON.stringify(payload);
+  const tsHeader = String(Math.floor(Date.now() / 1000)); // Unix seconds
+  // HMAC input must match verifyMultiTenantWebhook: timestamp + '.' + rawBody
   const signature = crypto
     .createHmac('sha256', webhookSecret)
-    .update(JSON.stringify(payload))
+    .update(`${tsHeader}.${payloadStr}`)
     .digest('hex');
 
   try {
     await axios.post(`${apiUrl.replace(/\/$/, '')}/api/v1/payroll-result`, payload, {
       headers: {
-        'Content-Type':       'application/json',
-        'Authorization':      `Bearer ${apiKey}`,
+        'Content-Type':        'application/json',
+        'Authorization':       `Bearer ${apiKey}`,
+        'x-hrms-timestamp':    tsHeader,
         'x-mybills-signature': signature,
       },
       timeout: 10000,
