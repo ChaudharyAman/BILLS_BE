@@ -766,7 +766,7 @@ EmployeeSchema.post('find', function (docs) {
   if (Array.isArray(docs)) {
     docs.forEach((doc) => {
       ensureCompensationType(doc);
-      if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
+      if (doc) decryptEmployeePII(doc);
     });
   }
 });
@@ -774,14 +774,14 @@ EmployeeSchema.post('find', function (docs) {
 EmployeeSchema.post('findOne', function (doc) {
   if (doc) {
     ensureCompensationType(doc);
-    if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
+    if (doc) decryptEmployeePII(doc);
   }
 });
 
 EmployeeSchema.post('findOneAndUpdate', function (doc) {
   if (doc) {
     ensureCompensationType(doc);
-    if (doc instanceof mongoose.Document) decryptEmployeePII(doc);
+    if (doc) decryptEmployeePII(doc);
   }
 });
 
