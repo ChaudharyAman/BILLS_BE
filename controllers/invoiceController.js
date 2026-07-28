@@ -15,7 +15,7 @@ const { parseOptionalDateRange, parseImportedDate } = require('../utils/dateRang
 
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
-const ACTIVE_INVOICE_STATUSES = ['SENT', 'PAID', 'PARTIAL', 'UNPAID'];
+const ACTIVE_INVOICE_STATUSES = ['SENT', 'PAID', 'RECEIVED', 'PARTIAL', 'UNPAID'];
 const TDS_SECTION_LABELS = {
   '194C': 'Contractor',
   '194J': 'Professional/Technical Fees',

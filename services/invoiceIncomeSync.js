@@ -1,8 +1,8 @@
 const Income = require('../models/Income');
 
 function mapInvoiceStatusToIncomeStatus(invoice) {
-  if (invoice.status === 'PAID' || Number(invoice.balanceDue) <= 0) {
-    return 'PAID';
+  if (invoice.status === 'PAID' || invoice.status === 'RECEIVED' || Number(invoice.balanceDue) <= 0) {
+    return 'RECEIVED';
   }
 
   if (invoice.status === 'PARTIAL' || (invoice.status === 'SENT' && Number(invoice.advancePaid) > 0)) {
@@ -86,7 +86,7 @@ async function syncIncomeFromInvoice(invoice, session = null) {
     return null;
   }
 
-  const isFullyPaid = invoice.status === 'PAID' || Number(invoice.balanceDue) <= 0;
+  const isFullyPaid = invoice.status === 'PAID' || invoice.status === 'RECEIVED' || Number(invoice.balanceDue) <= 0;
   const isPartial = invoice.status === 'PARTIAL' || (invoice.status === 'SENT' && Number(invoice.advancePaid) > 0);
 
   if (!isFullyPaid && !isPartial) {
