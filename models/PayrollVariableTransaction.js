@@ -7,7 +7,7 @@ const PayrollVariableTransactionSchema = new mongoose.Schema({
   payroll: { type: mongoose.Schema.Types.ObjectId, ref: 'Payroll', index: true },
   paymentType: {
     type: String,
-    enum: ['SALARY', 'BONUS', 'POSITION', 'PROJECT', 'INTERVIEW', 'MILESTONE', 'COMMISSION', 'OTHER'],
+    enum: ['SALARY', 'BONUS', 'POSITION', 'PROJECT', 'INTERVIEW', 'MILESTONE', 'COMMISSION', 'ARREARS', 'OTHER'],
     required: true,
   },
   reference: { type: String, default: '' },   // e.g., "Senior React Dev", "ERP Project", "Candidate Name"

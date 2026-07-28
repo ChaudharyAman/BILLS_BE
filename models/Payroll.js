@@ -6,7 +6,6 @@ const NamedAmountSchema = new mongoose.Schema({
   amount: { type: Number, default: 0 },
 }, { _id: false });
 
-const sumNamedAmounts = (items = []) => items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
 
 const PayrollSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -24,6 +23,9 @@ const PayrollSchema = new mongoose.Schema({
   attendanceSource: { type: String, enum: ['hrms', 'manual', 'default'], default: 'default' },
   payType: { type: String, enum: ['salaried', 'hourly'], default: 'salaried' },
   hourlyRate: { type: Number, default: 0 },
+  // Raw strategy-specific inputs for this pay run (e.g. {unitsProduced:150} for piece_rate).
+  // Stored so historical payslips remain fully reproducible.
+  periodInput: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   earnings: {
     basic: { type: Number, default: 0 },
@@ -81,6 +83,12 @@ const PayrollSchema = new mongoose.Schema({
     gratuityDeduction: { type: Number, default: 0 },
     loanDeduction: { type: Number, default: 0 },
     advanceDeduction: { type: Number, default: 0 },
+    loanRepayments: [{
+      loanId: { type: mongoose.Schema.Types.ObjectId, ref: 'Loan' },
+      loanReference: { type: String, default: '' },
+      amountApplied: { type: Number, default: 0 },
+      remainingBalance: { type: Number, default: 0 }
+    }],
     otherDeductions: [NamedAmountSchema],
     deductionsMap: { type: mongoose.Schema.Types.Mixed, default: {} },
     totalDeductions: { type: Number, required: true },
@@ -102,11 +110,29 @@ const PayrollSchema = new mongoose.Schema({
     default: 'draft',
     index: true,
   },
+  isFullAndFinal: { type: Boolean, default: false },
+  settlementType: { type: String, enum: ['monthly', 'full_and_final'], default: 'monthly' },
+  fnfDetails: {
+    lastWorkingDay: Date,
+    tenureYears: Number,
+    leaveEncashmentDays: Number,
+    leaveEncashmentAmount: Number,
+    gratuityPayout: Number,
+    noticeShortfallDeduction: Number,
+    loanRecoveryDeduction: Number,
+    comments: String
+  },
   approvalWorkflow: [{
     status: { type: String, required: true },
     actor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     remarks: { type: String, default: '' },
     timestamp: { type: Date, default: Date.now },
+  }],
+  requiredApprovers: [{
+    role: { type: String, required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approved: { type: Boolean, default: false },
+    approvedAt: { type: Date }
   }],
   employeeSnapshot: {
     employeeId: String,
@@ -130,6 +156,12 @@ const PayrollSchema = new mongoose.Schema({
     ptState: String,
     taxRegime: String,
     declarations: mongoose.Schema.Types.Mixed,
+    // Compensation dimension snapshot — required for reproducible historical payslips
+    compensationType: String,
+    payFrequency: String,
+    attendanceMode: String,
+    overtimePolicy: mongoose.Schema.Types.Mixed,
+    componentFrequencies: mongoose.Schema.Types.Mixed,
   },
   reimbursements: [{
     _id: { type: mongoose.Schema.Types.ObjectId, ref: 'ReimbursementClaim' },
@@ -160,6 +192,8 @@ const PayrollSchema = new mongoose.Schema({
   ],
 }, { timestamps: true });
 
+const { add, subtract, roundToPaise, sumField, sumNamedAmounts } = require('../utils/money');
+
 PayrollSchema.pre('validate', function() {
   const earnings = this.earnings || {};
   const employerContributions = this.employerContributions || {};
@@ -170,73 +204,106 @@ PayrollSchema.pre('validate', function() {
   const dynamicEarningsSum = earnings.earningsMap 
     ? Object.entries(earnings.earningsMap)
         .filter(([k]) => !standardEarningKeys.includes(k))
-        .reduce((sum, [, v]) => sum + (Number(v) || 0), 0) 
+        .reduce((sum, [, v]) => add(sum, v), 0) 
     : 0;
 
-  earnings.totalEarnings =
-    (Number(earnings.basic) || 0) +
-    (Number(earnings.hra) || 0) +
-    (Number(earnings.flexiAmount) || 0) +
-    (Number(earnings.broadband) || 0) +
-    (Number(earnings.petrol) || 0) +
-    (Number(earnings.lta) || 0) +
-    (Number(earnings.specialAllowance) || 0) +
-    (Number(earnings.overtime) || 0) +
-    (Number(earnings.conveyance) || 0) +
-    (Number(earnings.medicalAllowance) || 0) +
-    sumNamedAmounts(earnings.otherEarnings) +
-    dynamicEarningsSum;
+  const totalEarningsDec = add(
+    earnings.basic,
+    earnings.hra,
+    earnings.flexiAmount,
+    earnings.broadband,
+    earnings.petrol,
+    earnings.lta,
+    earnings.specialAllowance,
+    earnings.overtime,
+    earnings.conveyance,
+    earnings.medicalAllowance,
+    sumNamedAmounts(earnings.otherEarnings),
+    dynamicEarningsSum
+  );
+  earnings.totalEarnings = roundToPaise(totalEarningsDec);
 
-  employerContributions.grossTotalSalary =
-    earnings.totalEarnings +
-    (Number(employerContributions.pfEmployer) || 0) +
-    (Number(employerContributions.esiEmployer) || 0) +
-    (Number(employerContributions.gratuity) || 0) +
-    (Number(employerContributions.lwfEmployer) || 0) +
-    (Number(employerContributions.insuranceEmployer) || 0) +
-    (Number(employerContributions.nps) || 0);
+  const grossTotalSalaryDec = add(
+    earnings.totalEarnings,
+    employerContributions.pfEmployer,
+    employerContributions.esiEmployer,
+    employerContributions.gratuity,
+    employerContributions.lwfEmployer,
+    employerContributions.insuranceEmployer,
+    employerContributions.nps
+  );
+  employerContributions.grossTotalSalary = roundToPaise(grossTotalSalaryDec);
 
-  variablePay.totalVariablePay =
-    (Number(variablePay.joiningBonus) || 0) +
-    (Number(variablePay.loyaltyBonus) || 0) +
-    (Number(variablePay.incentive) || 0) +
-    (Number(variablePay.specialBonus) || 0) +
-    (Number(variablePay.otherAllowanceArrear) || 0);
+  const totalVariablePayDec = add(
+    variablePay.joiningBonus,
+    variablePay.loyaltyBonus,
+    variablePay.incentive,
+    variablePay.specialBonus,
+    variablePay.otherAllowanceArrear
+  );
+  variablePay.totalVariablePay = roundToPaise(totalVariablePayDec);
 
-  this.totalPayable = employerContributions.grossTotalSalary + variablePay.totalVariablePay;
+  this.totalPayable = roundToPaise(add(employerContributions.grossTotalSalary, variablePay.totalVariablePay));
 
   const standardDeductionKeys = ['pfEmployee', 'esiEmployee', 'professionalTax', 'tds', 'insuranceEmployee', 'lwfEmployee', 'gratuityDeduction', 'loanDeduction', 'advanceDeduction'];
   const dynamicDeductionsSum = deductions.deductionsMap 
     ? Object.entries(deductions.deductionsMap)
         .filter(([k]) => !standardDeductionKeys.includes(k))
-        .reduce((sum, [, v]) => sum + (Number(v) || 0), 0) 
+        .reduce((sum, [, v]) => add(sum, v), 0) 
     : 0;
 
-  deductions.totalDeductions =
-    (Number(deductions.pfEmployee) || 0) +
-    (Number(deductions.esiEmployee) || 0) +
-    (Number(deductions.professionalTax) || 0) +
-    (Number(deductions.tds) || 0) +
-    (Number(deductions.insuranceEmployee) || 0) +
-    (Number(deductions.lwfEmployee) || 0) +
-    (Number(deductions.gratuityDeduction) || 0) +
-    (Number(deductions.loanDeduction) || 0) +
-    (Number(deductions.advanceDeduction) || 0) +
-    sumNamedAmounts(deductions.otherDeductions) +
-    dynamicDeductionsSum;
+  const totalDeductionsDec = add(
+    deductions.pfEmployee,
+    deductions.esiEmployee,
+    deductions.professionalTax,
+    deductions.tds,
+    deductions.insuranceEmployee,
+    deductions.lwfEmployee,
+    deductions.gratuityDeduction,
+    deductions.loanDeduction,
+    deductions.advanceDeduction,
+    sumNamedAmounts(deductions.otherDeductions),
+    dynamicDeductionsSum
+  );
+  deductions.totalDeductions = roundToPaise(totalDeductionsDec);
 
-  this.totalReimbursementApproved = (this.reimbursements || []).reduce((sum, item) => sum + (Number(item.approved) || 0), 0);
+  this.totalReimbursementApproved = roundToPaise(sumField(this.reimbursements, 'approved'));
 
-  this.netSalary = Math.max(0, (Number(earnings.totalEarnings) || 0) + (Number(variablePay.totalVariablePay) || 0) + (Number(this.totalReimbursementApproved) || 0) - (Number(deductions.totalDeductions) || 0));
+  const rawNetDec = subtract(
+    add(earnings.totalEarnings, variablePay.totalVariablePay, this.totalReimbursementApproved),
+    deductions.totalDeductions
+  );
+  this.netSalary = Math.max(0, roundToPaise(rawNetDec));
   this.earnings = earnings;
   this.employerContributions = employerContributions;
   this.variablePay = variablePay;
   this.deductions = deductions;
 });
 
-PayrollSchema.index({ user: 1, employee: 1, month: 1, year: 1 }, { unique: true });
-PayrollSchema.index({ user: 1, year: -1, month: -1 });
+PayrollSchema.index(
+  { user: 1, employee: 1, month: 1, year: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } }
+);
+PayrollSchema.post('init', function () {
+  this._originalStatus = this.status;
+});
 
-NamedAmountSchema.plugin(softDeletePlugin);
+PayrollSchema.pre('save', function (next) {
+  if (!this.isNew && this.isModified()) {
+    if (this._originalStatus === 'paid' && this.status === 'paid') {
+      const modifiedPaths = this.modifiedPaths();
+      const allowedKeys = ['auditLog', 'approvalWorkflow', 'expenseRef', 'paymentDate', 'paymentMethod', 'transactionId', 'updatedAt'];
+      const forbiddenPaths = modifiedPaths.filter(p => !allowedKeys.includes(p));
+      if (forbiddenPaths.length > 0) {
+        const err = new Error(`[Immutability Guard] Cannot mutate paid payroll record (forbidden fields: ${forbiddenPaths.join(', ')}). Use reopening or retroactive arrears workflow.`);
+        if (typeof next === 'function') return next(err);
+        throw err;
+      }
+    }
+  }
+  if (typeof next === 'function') next();
+});
+
+PayrollSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Payroll', PayrollSchema);

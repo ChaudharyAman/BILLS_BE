@@ -1,7 +1,8 @@
 const mongoose = require('mongoose');
 
 const PayrollConfigSchema = new mongoose.Schema({
-  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  effectiveFrom: { type: Date, default: () => new Date('2020-01-01'), required: true, index: true },
   basicPercent: { type: Number, default: 0.5 },
   hraPercent: { type: Number, default: 0.5 },
   pfRate: { type: Number, default: 0.12 },
@@ -33,6 +34,16 @@ const PayrollConfigSchema = new mongoose.Schema({
       { id: 'medical',                  name: 'Medical Allowance',             type: 'earning',   taxable: false, linkedTo: 'fixed',         linkValue: 0,             frequency: 'monthly' },
     ]
   },
+  // Per-compensation-type statutory flag overrides.
+  // e.g. { retainer: { pfEligible: false, esiEligible: false } }
+  // Strategy defaults apply when a type is not listed here.
+  compensationTypeDefaults: { type: mongoose.Schema.Types.Mixed, default: {} },
+  // Used by timesheet_based strategy: (monthlyCTC / standardMonthlyHours) × hoursLogged
+  standardMonthlyHours: { type: Number, default: 160 },
+  requireDualApproval: { type: Boolean, default: false },
+  approverRoles: { type: [String], default: ['manager', 'finance'] },
 }, { timestamps: true });
+
+PayrollConfigSchema.index({ user: 1, effectiveFrom: -1 });
 
 module.exports = mongoose.model('PayrollConfig', PayrollConfigSchema);

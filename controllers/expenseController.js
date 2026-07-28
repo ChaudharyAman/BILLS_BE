@@ -70,19 +70,46 @@ const resolvePaymentState = (grandTotal, amountPaid, requestedStatus, reverseCha
   const basePayable = reverseCharge ? Math.max(total - tax, 0) : total;
   const payableAmount = Math.max(basePayable - tds, 0);
 
+  let paid = Number(amountPaid) || 0;
+
   if (requestedStatus === 'CANCELLED' || requestedStatus === 'DRAFT') {
+    const safePaid = Math.min(Math.max(paid, 0), payableAmount);
     return {
-      amountPaid: Number(amountPaid) || 0,
-      balanceDue: Math.max(payableAmount - (Number(amountPaid) || 0), 0),
+      amountPaid: safePaid,
+      balanceDue: Math.max(payableAmount - safePaid, 0),
       status: requestedStatus,
     };
   }
 
   if (requestedStatus === 'PAID') {
-    return { amountPaid: payableAmount, balanceDue: 0, status: 'PAID' };
+    return {
+      amountPaid: payableAmount,
+      balanceDue: 0,
+      status: 'PAID',
+    };
   }
 
-  const paid = Math.min(Math.max(Number(amountPaid) || 0, 0), payableAmount);
+  if (requestedStatus === 'UNPAID') {
+    return {
+      amountPaid: 0,
+      balanceDue: payableAmount,
+      status: 'UNPAID',
+    };
+  }
+
+  if (requestedStatus === 'PARTIAL') {
+    let partialPaid = paid;
+    if (partialPaid <= 0 || partialPaid >= payableAmount) {
+      partialPaid = Math.round((payableAmount / 2) * 100) / 100;
+    }
+    return {
+      amountPaid: partialPaid,
+      balanceDue: Math.max(payableAmount - partialPaid, 0),
+      status: 'PARTIAL',
+    };
+  }
+
+  paid = Math.min(Math.max(paid, 0), payableAmount);
   const balanceDue = Math.max(payableAmount - paid, 0);
   let status = 'UNPAID';
 
@@ -234,15 +261,32 @@ async function resolveParty({
   }
 
   const name = String(partyName || '').trim();
-  if (!name) return null;
+  const gstinClean = partyGST ? String(partyGST).trim().toUpperCase() : null;
+  const panClean = partyPAN ? String(partyPAN).trim().toUpperCase() : null;
 
-  const escaped = escapeRegex(name).replace(/\s+/g, '\\s+');
-  const regex = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
+  if (!name && !gstinClean && !panClean) return null;
 
-  const existing = await ClientModel.findOne({
-    user: userId,
-    name: { $regex: regex }
-  });
+  let existing = null;
+  if (gstinClean) {
+    existing = await ClientModel.findOne({ user: userId, gstin: gstinClean });
+  }
+  if (!existing && panClean) {
+    existing = await ClientModel.findOne({ user: userId, pan: panClean });
+  }
+  if (!existing && name) {
+    const escaped = escapeRegex(name).replace(/\s+/g, '\\s+');
+    const exactRegex = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
+    existing = await ClientModel.findOne({ user: userId, name: { $regex: exactRegex } });
+
+    if (!existing) {
+      const cleanCore = name.replace(/\b(Pvt|Ltd|Private|Limited|Inc|LLP|Co|Corporation|Corp)\b\.?/gi, '').replace(/[^a-zA-Z0-9\s]/g, '').trim();
+      if (cleanCore && cleanCore.length > 2) {
+        const coreEscaped = escapeRegex(cleanCore).replace(/\s+/g, '\\s+');
+        const flexRegex = new RegExp(`^\\s*${coreEscaped}`, 'i');
+        existing = await ClientModel.findOne({ user: userId, name: { $regex: flexRegex } });
+      }
+    }
+  }
 
   if (existing) {
     let needsUpdate = false;

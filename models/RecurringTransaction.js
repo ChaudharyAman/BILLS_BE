@@ -37,6 +37,6 @@ const RecurringTransactionSchema = new mongoose.Schema({
 
 RecurringTransactionSchema.index({ user: 1, type: 1, isActive: 1, nextProcessDate: 1 });
 
-PartySchema.plugin(softDeletePlugin);
+RecurringTransactionSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('RecurringTransaction', RecurringTransactionSchema);

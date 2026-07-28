@@ -8,8 +8,14 @@ const KEY_LENGTH = 32;
 
 // Utility function to derive a key from a raw secret string and salt
 const deriveKey = (secret, salt) => {
-  const cleanSecret = String(secret || process.env.ENCRYPTION_SECRET_KEY || 'default-secret-key-32-chars-long-!!');
-  return crypto.pbkdf2Sync(cleanSecret, salt, 100000, KEY_LENGTH, 'sha256');
+  const cleanSecret = secret || process.env.ENCRYPTION_SECRET_KEY;
+  if (!cleanSecret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('[FATAL SECURITY ERROR] No encryption secret provided and ENCRYPTION_SECRET_KEY is not set. Server startup/operation halted.');
+    }
+    return crypto.pbkdf2Sync('dev-only-insecure-default-key', salt, 100000, KEY_LENGTH, 'sha256');
+  }
+  return crypto.pbkdf2Sync(String(cleanSecret), salt, 100000, KEY_LENGTH, 'sha256');
 };
 
 /**
@@ -95,14 +101,37 @@ exports.verifyMultiTenantWebhook = async (req, res, next) => {
       return res.status(401).json({ message: `Access denied: Integration is disabled or not configured for tenant ${externalTenantId}.` });
     }
 
-    const webhookSecret = settings.integration.webhookSecret || process.env.SHARED_WEBHOOK_SECRET || 'default-webhook-secret';
-    
+    // Require each tenant to have its own webhookSecret — no shared fallback.
+    // A single fallback key breaks tenant isolation (forging one tenant's signature
+    // would work for every tenant relying on the fallback).
+    const webhookSecret = settings.integration?.webhookSecret;
+    if (!webhookSecret) {
+      console.error(`[SECURITY] No webhook secret configured for tenant ${externalTenantId}. Integration requires a tenant-specific webhookSecret.`);
+      return res.status(401).json({ message: 'Webhook integration is not properly configured for this tenant — no secret available for signature verification.' });
+    }
+
+    // ── Replay protection ─────────────────────────────────────────────────────
+    // Require x-hrms-timestamp (Unix seconds) and reject requests outside a
+    // ±5-minute window. This prevents captured valid requests being replayed.
+    const REPLAY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+    const tsHeader = req.headers['x-hrms-timestamp'];
+    if (!tsHeader) {
+      return res.status(400).json({ message: 'Replay protection: x-hrms-timestamp header is required.' });
+    }
+    const tsMs = Number(tsHeader) * 1000; // header is Unix seconds
+    if (!Number.isFinite(tsMs) || Math.abs(Date.now() - tsMs) > REPLAY_WINDOW_MS) {
+      return res.status(401).json({ message: 'Replay protection: request timestamp is missing, invalid, or outside the 5-minute acceptance window.' });
+    }
+
     // Use rawBody buffer if available to avoid stringify mismatches, fallback to req.body stringify
     const rawBody = req.rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
 
+    // HMAC input = timestamp + '.' + rawBody so the timestamp is part of the signed content.
+    // Senders must use the same concatenation when generating the signature.
+    const hmacInput = `${tsHeader}.${rawBody}`;
     const computedSignature = crypto
       .createHmac('sha256', webhookSecret)
-      .update(rawBody)
+      .update(hmacInput)
       .digest('hex');
 
     const sigBuffer = Buffer.from(signature, 'hex');
@@ -120,5 +149,101 @@ exports.verifyMultiTenantWebhook = async (req, res, next) => {
   } catch (error) {
     console.error('Webhook auth error:', error.message);
     res.status(500).json({ message: 'Internal validation failure during webhook verification.' });
+  }
+};
+
+const checkWebhookSecretStartup = async () => {
+  try {
+    // Find every tenant with integration enabled but no webhook secret configured.
+    // Without a tenant-specific secret, incoming webhooks cannot be verified.
+    // The shared-secret fallback has been removed to preserve tenant isolation.
+    const tenantsWithoutSecret = await Settings.find({
+      'integration.enabled': true,
+      $or: [
+        { 'integration.webhookSecret': { $exists: false } },
+        { 'integration.webhookSecret': '' },
+        { 'integration.webhookSecret': null },
+      ],
+    }).select('integration.externalTenantId user').lean();
+
+    for (const tenant of tenantsWithoutSecret) {
+      const id = tenant.integration?.externalTenantId || String(tenant._id);
+      console.warn(
+        `[SECURITY WARNING] Tenant ${id} has integration enabled but no webhookSecret configured. ` +
+        'Incoming webhooks cannot be verified for this tenant. ' +
+        'Set integration.webhookSecret via the Settings API to resolve this.'
+      );
+    }
+  } catch (error) {
+    // Non-blocking warning check during early startup
+  }
+};
+
+exports.checkWebhookSecretStartup = checkWebhookSecretStartup;
+
+const KNOWN_BAD_SECRETS = [
+  'default-secret-key-32-chars-long-!!',
+  'dev-only-insecure-default-key',
+  'default-webhook-secret',
+  'dev-pii-encryption-key-32-bytes-long!!',
+  'default-secret-key',
+  'secret',
+  '12345678',
+  'password'
+];
+
+/**
+ * Startup security audit running at server boot.
+ * In production mode, halts server startup if essential encryption/webhook secrets
+ * are missing or set to known-bad insecure default strings.
+ */
+const verifyProductionSecretAudit = () => {
+  if (process.env.NODE_ENV !== 'production') {
+    return;
+  }
+
+  const encryptionSecret = process.env.PII_ENCRYPTION_KEY || process.env.ENCRYPTION_SECRET_KEY;
+  if (!encryptionSecret) {
+    throw new Error('[FATAL SECURITY ERROR] ENCRYPTION_SECRET_KEY or PII_ENCRYPTION_KEY is not set in production environment. Server startup halted.');
+  }
+  if (KNOWN_BAD_SECRETS.includes(encryptionSecret)) {
+    throw new Error(`[FATAL SECURITY ERROR] ENCRYPTION_SECRET_KEY / PII_ENCRYPTION_KEY is set to an insecure default string ("${encryptionSecret}"). Server startup halted.`);
+  }
+};
+
+exports.verifyProductionSecretAudit = verifyProductionSecretAudit;
+
+const getPIIEncryptionSecret = () => {
+  const secret = process.env.PII_ENCRYPTION_KEY || process.env.ENCRYPTION_SECRET_KEY;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('[FATAL SECURITY ERROR] PII_ENCRYPTION_KEY or ENCRYPTION_SECRET_KEY environment variable is required in production mode! Server startup/operation halted.');
+    }
+    return 'dev-pii-encryption-key-32-bytes-long!!';
+  }
+  return secret;
+};
+
+exports.encryptPIIField = (plaintext) => {
+  if (!plaintext || typeof plaintext !== 'string') return plaintext;
+  if (plaintext.startsWith('enc:v1:')) return plaintext;
+  const secret = getPIIEncryptionSecret();
+  const pkg = exports.encryptPayload(plaintext, secret);
+  return `enc:v1:${pkg.salt}:${pkg.iv}:${pkg.authTag}:${pkg.data}`;
+};
+
+exports.decryptPIIField = (ciphertext) => {
+  if (!ciphertext || typeof ciphertext !== 'string' || !ciphertext.startsWith('enc:v1:')) {
+    return ciphertext;
+  }
+  const parts = ciphertext.split(':');
+  if (parts.length !== 6) return ciphertext;
+  const [, , salt, iv, authTag, data] = parts;
+  const secret = getPIIEncryptionSecret();
+  try {
+    return exports.decryptPayload({ salt, iv, authTag, data }, secret);
+  } catch (err) {
+    console.error('Failed to decrypt PII field:', err.message);
+    return ciphertext;
   }
 };

@@ -39,6 +39,6 @@ const BankStatementSchema = new mongoose.Schema({
 // One user can have many statements — index for fast lookups
 BankStatementSchema.index({ user: 1, createdAt: -1 });
 
-BankTransactionSchema.plugin(softDeletePlugin);
+BankStatementSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('BankStatement', BankStatementSchema);

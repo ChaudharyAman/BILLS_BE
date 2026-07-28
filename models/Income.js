@@ -101,6 +101,6 @@ IncomeSchema.pre('save', function() {
 IncomeSchema.index({ user: 1, incomeNumber: 1 }, { unique: true });
 IncomeSchema.index({ user: 1, sourceInvoice: 1 }, { unique: true, sparse: true });
 
-IncomeItemSchema.plugin(softDeletePlugin);
+IncomeSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Income', IncomeSchema);

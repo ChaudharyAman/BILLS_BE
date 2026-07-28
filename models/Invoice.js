@@ -215,6 +215,6 @@ InvoiceSchema.index({ user: 1, invoiceType: 1 });
 InvoiceSchema.index({ user: 1, gstInvoiceType: 1 });
 InvoiceSchema.index({ user: 1, 'items.taxRate': 1 });
 
-InvoiceItemSchema.plugin(softDeletePlugin);
+InvoiceSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Invoice', InvoiceSchema);

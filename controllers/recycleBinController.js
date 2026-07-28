@@ -21,9 +21,10 @@ const PayrollComponent = require('../models/PayrollComponent');
 const PayrollVariableTransaction = require('../models/PayrollVariableTransaction');
 const LeaveRequest = require('../models/LeaveRequest');
 const BankStatement = require('../models/BankStatement');
+const Loan = require('../models/Loan');
 
 const MODELS_MAP = {
-  Invoice, Quote, Proforma, PurchaseOrder, Expense, Income, Client, Item, Employee, Project, Asset, Liability, Budget, Category, Department, Role, ReimbursementClaim, RecurringTransaction, Payroll, PayrollComponent, PayrollVariableTransaction, LeaveRequest, BankStatement
+  Invoice, Quote, Proforma, PurchaseOrder, Expense, Income, Client, Item, Employee, Project, Asset, Liability, Budget, Category, Department, Role, ReimbursementClaim, RecurringTransaction, Payroll, PayrollComponent, PayrollVariableTransaction, LeaveRequest, BankStatement, Loan
 };
 
 function getDisplayName(doc, type) {
@@ -75,6 +76,8 @@ function getDisplayName(doc, type) {
       return `Leave Request: ${doc.leaveType || 'Leave'}`;
     case 'BankStatement':
       return `Bank Statement: ${doc.fileName || doc.name || 'Statement'}`;
+    case 'Loan':
+      return `Employee Loan (Principal: ₹${doc.principalAmount || 0})`;
     default:
       return `${type} (ID: ${doc._id})`;
   }
@@ -97,6 +100,8 @@ function getDisplayAmount(doc, type) {
       return doc.amount || null;
     case 'Payroll':
       return doc.netSalary || doc.netPay || null;
+    case 'Loan':
+      return doc.principalAmount || null;
     default:
       return null;
   }
@@ -194,8 +199,92 @@ const permanentlyDeleteItem = async (req, res) => {
   }
 };
 
+const bulkRestoreItems = async (req, res) => {
+  try {
+    const { items, forceRestore } = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: 'Items array is required' });
+    }
+
+    let restoredCount = 0;
+    const errors = [];
+
+    for (const { id, type } of items) {
+      const Model = MODELS_MAP[type];
+      if (!Model) continue;
+
+      try {
+        const item = await Model.findOneAndUpdate(
+          { _id: id, user: req.user._id },
+          { $set: { isDeleted: false }, $unset: { deletedAt: 1 } },
+          { new: true }
+        ).setOptions({ withDeleted: true, forceRestore: !!forceRestore });
+
+        if (item) restoredCount++;
+      } catch (err) {
+        errors.push({ id, type, error: err.message });
+      }
+    }
+
+    res.json({ message: `${restoredCount} item(s) restored successfully`, restoredCount, errors });
+  } catch (error) {
+    console.error('Failed to bulk restore items:', error);
+    res.status(500).json({ message: 'Failed to bulk restore items', error: error.message });
+  }
+};
+
+const bulkPermanentlyDeleteItems = async (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: 'Items array is required' });
+    }
+
+    const grouped = {};
+    items.forEach(({ id, type }) => {
+      if (id && type && MODELS_MAP[type]) {
+        if (!grouped[type]) grouped[type] = [];
+        grouped[type].push(id);
+      }
+    });
+
+    let totalDeleted = 0;
+    for (const [type, ids] of Object.entries(grouped)) {
+      const Model = MODELS_MAP[type];
+      const result = await Model.deleteMany({ _id: { $in: ids }, user: req.user._id }).setOptions({ hardDelete: true });
+      totalDeleted += result.deletedCount || 0;
+    }
+
+    res.json({ message: `${totalDeleted} item(s) permanently deleted`, deletedCount: totalDeleted });
+  } catch (error) {
+    console.error('Failed to bulk delete items:', error);
+    res.status(500).json({ message: 'Failed to bulk delete items', error: error.message });
+  }
+};
+
+const emptyRecycleBin = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    let totalPurged = 0;
+    const promises = Object.values(MODELS_MAP).map(async (Model) => {
+      const result = await Model.deleteMany({ user: userId, isDeleted: true }).setOptions({ hardDelete: true });
+      totalPurged += result.deletedCount || 0;
+    });
+
+    await Promise.all(promises);
+    res.json({ message: `Recycle Bin emptied successfully (${totalPurged} items purged)`, deletedCount: totalPurged });
+  } catch (error) {
+    console.error('Failed to empty recycle bin:', error);
+    res.status(500).json({ message: 'Failed to empty recycle bin', error: error.message });
+  }
+};
+
 module.exports = {
   getRecycleBinItems,
   restoreItem,
-  permanentlyDeleteItem
+  permanentlyDeleteItem,
+  bulkRestoreItems,
+  bulkPermanentlyDeleteItems,
+  emptyRecycleBin
 };
+

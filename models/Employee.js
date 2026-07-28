@@ -1,5 +1,8 @@
 const mongoose = require('mongoose');
 const softDeletePlugin = require('../middleware/softDeletePlugin');
+const { RATE_CARD_TYPE_VALUES } = require('../utils/rateCardTypes');
+const { resolveStrategy, deriveCompensationTypeFromLegacy, getStrategyStatutoryDefaults } = require('../utils/payrollStrategies/index');
+const { buildMasterSalaryStructure } = require('../utils/payrollMath');
 
 const AllowanceSchema = new mongoose.Schema({
   name: { type: String, trim: true },
@@ -7,7 +10,7 @@ const AllowanceSchema = new mongoose.Schema({
 }, { _id: false });
 
 const RateCardItemSchema = new mongoose.Schema({
-  paymentType: { type: String, required: true },
+  paymentType: { type: String, required: true, enum: RATE_CARD_TYPE_VALUES },
   rate: { type: Number, required: true, default: 0 },
   unit: { type: String, default: '' },
 }, { _id: false });
@@ -37,9 +40,17 @@ const EmployeeSchema = new mongoose.Schema({
   joiningDate: { type: Date, required: true },
   location: { type: String, default: '' },
   dateOfLeaving: { type: Date, default: null },
+
+  // ── Legacy classification fields (kept for backward compat; deprecated after migration) ──
   employmentType: {
     type: String,
-    enum: ['full-time', 'part-time', 'contract', 'intern'],
+    // Extended to cover all real employment relationships.
+    // Old values (full-time, part-time, contract, intern) remain valid.
+    enum: [
+      'full-time', 'part-time', 'contract', 'intern',
+      'permanent', 'probation', 'temporary', 'consultant',
+      'freelancer', 'casual', 'seasonal',
+    ],
     default: 'full-time',
   },
   compensationModel: {
@@ -53,6 +64,54 @@ const EmployeeSchema = new mongoose.Schema({
     default: 'MONTHLY',
   },
   rateCard: [RateCardItemSchema],
+
+  // ── New canonical compensation dimensions ──────────────────────────────────────────────────
+  // compensationType is THE key field that selects the payroll compute strategy.
+  // null = not yet migrated; engine falls back to payType/compensationModel during transition.
+  compensationType: {
+    type: String,
+    enum: [
+      'monthly_salary',        // Standard CTC-based monthly salary (existing salaried path)
+      'hourly',                // Hours × hourly rate (existing hourly path)
+      'daily_wage',            // Days worked × daily rate
+      'weekly_salary',         // Weekly salary (pay-frequency future)
+      'piece_rate',            // Units produced × rate per unit
+      'project_based',         // Flat project fee
+      'milestone_based',       // Payment on milestone completion
+      'attendance_based',      // Like monthly_salary but proration is always mandatory
+      'timesheet_based',       // Hours logged from timesheet × blended rate
+      'commission_only',       // Commission from variableTransactions[] only
+      'salary_plus_commission',// Base (monthly_salary) + commission
+      'retainer',              // Fixed monthly retainer; no attendance proration
+    ],
+    default: null,
+    index: true,
+  },
+  payFrequency: {
+    type: String,
+    enum: ['monthly', 'weekly', 'biweekly', 'semi_monthly'],
+    default: 'monthly',
+  },
+  // attendanceMode declares what raw input the compute strategy expects.
+  attendanceMode: {
+    type: String,
+    enum: [
+      'attendance',   // paidDays / workingDays (default — existing HRMS sync)
+      'timesheet',    // hoursLogged from timesheet entries
+      'shift',        // shiftsWorked, shiftType[]
+      'unit_count',   // unitsProduced for piece-rate
+      'fixed',        // Always fully paid (retainer / consultant flat monthly)
+      'none',         // No attendance concept applies
+    ],
+    default: 'attendance',
+  },
+  overtimePolicy: {
+    enabled:              { type: Boolean, default: false },
+    multiplier:           { type: Number,  default: 1.5,  min: 1 },
+    holidayMultiplier:    { type: Number,  default: 2.0,  min: 1 },
+    thresholdHoursPerDay: { type: Number,  default: 8,    min: 0 },
+  },
+
   status: {
     type: String,
     enum: ['active', 'inactive', 'terminated'],
@@ -74,6 +133,7 @@ const EmployeeSchema = new mongoose.Schema({
   basicPercent: { type: Number, default: null },
   hraPercent: { type: Number, default: null },
   useSalaryComponents: { type: Boolean, default: true },
+  componentFrequencies: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   pfEnabled: { type: Boolean, default: true },
   tdsEnabled: { type: Boolean, default: true },
@@ -156,12 +216,18 @@ const EmployeeSchema = new mongoose.Schema({
     reason: { type: String },
     revisedBy: { type: String },
     createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date },
+    updatedBy: { type: String },
     role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null, set: v => v === '' ? null : v },
     useSalaryComponents: { type: Boolean },
     employmentType: { type: String },
     compensationModel: { type: String },
     paymentBasis: { type: String },
     rateCard: [RateCardItemSchema],
+    // New canonical fields — stored per-revision so getEmployeeParamsForDate() can snapshot them
+    compensationType: { type: String },
+    payFrequency: { type: String },
+    attendanceMode: { type: String },
 
     // Configuration snapshot fields
     monthlyCTC: { type: Number },
@@ -176,6 +242,7 @@ const EmployeeSchema = new mongoose.Schema({
     includeGratuityInCTC: { type: Boolean },
     basicPercent: { type: Number },
     hraPercent: { type: Number },
+    componentFrequencies: { type: mongoose.Schema.Types.Mixed },
     joiningBonus: { type: Number },
     flexiAmount: { type: Number },
     broadband: { type: Number },
@@ -183,6 +250,12 @@ const EmployeeSchema = new mongoose.Schema({
     lta: { type: Number },
     employerNPS: { type: Number },
     insuranceAmount: { type: Number },
+    // Rate snapshot fields for non-component compensation types
+    dailyRate:       { type: Number },
+    weeklyRate:      { type: Number },
+    projectFee:      { type: Number },
+    milestoneAmount: { type: Number },
+    commissionNotes: { type: String },
     deductions: {
       tds: { type: Number },
       professionalTax: { type: Number },
@@ -203,7 +276,7 @@ EmployeeSchema.pre('save', async function() {
   // Guard: cannot compute salary without a user reference
   if (!this.user) return;
 
-  if (!this.isNew && (this.isModified('monthlyCTC') || this.isModified('role') || this.isModified('basicPercent') || this.isModified('hraPercent') || this.isModified('useSalaryComponents') || this.isModified('payType') || this.isModified('employmentType') || this.isModified('compensationModel') || this.isModified('paymentBasis'))) {
+  if (!this.isNew && (this.isModified('monthlyCTC') || this.isModified('role') || this.isModified('basicPercent') || this.isModified('hraPercent') || this.isModified('useSalaryComponents') || this.isModified('payType') || this.isModified('employmentType') || this.isModified('compensationModel') || this.isModified('paymentBasis') || this.isModified('compensationType') || this.isModified('attendanceMode'))) {
     if (!this.isModified('salaryStructure.basic') && !this.isModified('basic')) {
       if (this.salaryStructure) {
         this.salaryStructure.basic = undefined;
@@ -216,16 +289,43 @@ EmployeeSchema.pre('save', async function() {
     }
   }
 
-  if (this.payType === 'hourly' || this.employmentType === 'intern' || (this.compensationModel && this.compensationModel !== 'SALARIED')) {
-    this.pfEnabled = false;
-    this.esiEnabled = false;
-    this.ptEnabled = false;
-    this.lwfEnabled = false;
-    this.gratuityEnabled = false;
+  // Resolve the effective compensation type (new canonical field OR derived from legacy fields).
+  // The strategy registry provides defaultStatutoryFlags() so the pre-save hook no longer
+  // contains inline isHourly / isIntern logic.
+  const effectiveCompType = this.compensationType || deriveCompensationTypeFromLegacy({
+    payType: this.payType,
+    compensationModel: this.compensationModel,
+    employmentType: this.employmentType,
+  });
+  // Sync compensationType from legacy fields if it was not explicitly set
+  if (!this.compensationType && effectiveCompType) {
+    this.compensationType = effectiveCompType;
+  }
+  if (this.compensationType && this.salaryRevisions && this.salaryRevisions.length > 0) {
+    const latestRev = this.salaryRevisions[this.salaryRevisions.length - 1];
+    if (latestRev) {
+      latestRev.compensationType = this.compensationType;
+    }
+  }
+
+  const strategyMeta = resolveStrategy(effectiveCompType);
+  const statutoryDefaults = getStrategyStatutoryDefaults(effectiveCompType);
+  const skipFixedComponents = !strategyMeta.usesSalaryComponents;
+
+  if (skipFixedComponents) {
+    this.useSalaryComponents = false;
     this.includePfInCTC = false;
     this.includeGratuityInCTC = false;
-    this.useSalaryComponents = false;
-    if (this.payType === 'hourly') {
+    this.flexiAmount = 0;
+    this.broadband = 0;
+    this.petrol = 0;
+    this.lta = 0;
+    if (this.pfEnabled === undefined) this.pfEnabled = statutoryDefaults.pfEligible;
+    if (this.esiEnabled === undefined) this.esiEnabled = statutoryDefaults.esiEligible;
+    if (this.ptEnabled === undefined) this.ptEnabled = statutoryDefaults.ptApplicable;
+    if (this.lwfEnabled === undefined) this.lwfEnabled = statutoryDefaults.lwfApplicable;
+    if (this.gratuityEnabled === undefined) this.gratuityEnabled = statutoryDefaults.gratuityEligible;
+    if (effectiveCompType === 'hourly') {
       this.monthlyCTC = 0;
     }
   }
@@ -283,7 +383,6 @@ EmployeeSchema.pre('save', async function() {
   if (this.user) {
     config = await PayrollConfig.findOne({ user: this.user }).lean() || {};
   }
-  const { buildMasterSalaryStructure } = require('../utils/payrollMath');
   const master = buildMasterSalaryStructure(this, config);
 
   this.flexiAmount = master.flexi;
@@ -332,6 +431,8 @@ const applySalaryStructureUpdate = async function() {
     set.role !== undefined ||
     set.payType !== undefined ||
     set.hourlyRate !== undefined ||
+    set.compensationType !== undefined ||
+    set.attendanceMode !== undefined ||
     set.pfEnabled !== undefined ||
     set.tdsEnabled !== undefined ||
     set.esiEnabled !== undefined ||
@@ -403,20 +504,45 @@ const applySalaryStructureUpdate = async function() {
     }
   }
 
+  // Resolve effective compensation type using strategy registry
   const resolvedPayType = getField('payType', 'salaried');
   const resolvedEmploymentType = getField('employmentType', 'full-time');
   const resolvedCompensationModel = getField('compensationModel', 'SALARIED');
-  if (resolvedPayType === 'hourly' || resolvedEmploymentType === 'intern' || resolvedCompensationModel !== 'SALARIED') {
-    const fieldsToForceFalse = [
-      'pfEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled', 'gratuityEnabled',
-      'includePfInCTC', 'includeGratuityInCTC', 'useSalaryComponents'
-    ];
+  const resolvedCompensationType = getField('compensationType', null);
+
+  const effectiveCompType = resolvedCompensationType || deriveCompensationTypeFromLegacy({
+    payType: resolvedPayType,
+    compensationModel: resolvedCompensationModel,
+    employmentType: resolvedEmploymentType,
+  });
+  // Sync compensationType into the update if not already supplied
+  if (!resolvedCompensationType && effectiveCompType) {
     if (!update.$set) update.$set = {};
-    fieldsToForceFalse.forEach(field => {
-      update.$set[field] = false;
-      set[field] = false;
-    });
-    if (resolvedPayType === 'hourly') {
+    update.$set.compensationType = effectiveCompType;
+    set.compensationType = effectiveCompType;
+  }
+
+  const strategyMeta = resolveStrategy(effectiveCompType);
+  const statutoryDefaults = getStrategyStatutoryDefaults(effectiveCompType);
+  const skipFixedComponents = !strategyMeta.usesSalaryComponents;
+
+  if (skipFixedComponents) {
+    if (!update.$set) update.$set = {};
+    update.$set.useSalaryComponents = false;
+    update.$set.includePfInCTC = false;
+    update.$set.includeGratuityInCTC = false;
+    update.$set.flexiAmount = 0;
+    update.$set.broadband = 0;
+    update.$set.petrol = 0;
+    update.$set.lta = 0;
+    set.useSalaryComponents = false;
+    set.includePfInCTC = false;
+    set.includeGratuityInCTC = false;
+    set.flexiAmount = 0;
+    set.broadband = 0;
+    set.petrol = 0;
+    set.lta = 0;
+    if (effectiveCompType === 'hourly') {
       update.$set.monthlyCTC = 0;
       set.monthlyCTC = 0;
     }
@@ -433,7 +559,7 @@ const applySalaryStructureUpdate = async function() {
     }
   }
 
-  const isCTCChanging = set.monthlyCTC !== undefined || set.role !== undefined || set.basicPercent !== undefined || set.hraPercent !== undefined || set.useSalaryComponents !== undefined || set.payType !== undefined || set.employmentType !== undefined || set.compensationModel !== undefined || set.paymentBasis !== undefined || Object.keys(set).some((key) => key.endsWith('Percent'));
+  const isCTCChanging = set.monthlyCTC !== undefined || set.role !== undefined || set.basicPercent !== undefined || set.hraPercent !== undefined || set.useSalaryComponents !== undefined || set.payType !== undefined || set.employmentType !== undefined || set.compensationModel !== undefined || set.paymentBasis !== undefined || set.compensationType !== undefined || set.attendanceMode !== undefined || Object.keys(set).some((key) => key.endsWith('Percent'));
   if (isCTCChanging) {
     if (set.basic === undefined && set['salaryStructure.basic'] === undefined && (set.salaryStructure === undefined || set.salaryStructure.basic === undefined)) {
       delete mergedSalary.basic;
@@ -460,6 +586,8 @@ const applySalaryStructureUpdate = async function() {
     basicPercent: getField('basicPercent', null),
     compensationModel: getField('compensationModel', 'SALARIED'),
     paymentBasis: getField('paymentBasis', 'MONTHLY'),
+    compensationType: getField('compensationType', null),
+    attendanceMode: getField('attendanceMode', 'attendance'),
     useSalaryComponents: getField('useSalaryComponents', true),
     salaryStructure: {
       ...(currentDoc.salaryStructure || {}),
@@ -479,7 +607,6 @@ const applySalaryStructureUpdate = async function() {
     config = await PayrollConfig.findOne({ user: userId }).lean() || {};
   }
 
-  const { buildMasterSalaryStructure } = require('../utils/payrollMath');
   const master = buildMasterSalaryStructure(mergedEmployee, config);
 
   if (set.salaryStructure && typeof set.salaryStructure === 'object') {
@@ -589,6 +716,75 @@ const removeEmployeePII = (doc, ret) => {
 EmployeeSchema.set('toJSON', { transform: removeEmployeePII });
 EmployeeSchema.set('toObject', { transform: removeEmployeePII });
 
-AllowanceSchema.plugin(softDeletePlugin);
+const { encryptPIIField, decryptPIIField } = require('../utils/cryptoHelper');
+
+EmployeeSchema.pre('save', function (next) {
+  if (this.isModified('panNumber') && this.panNumber) {
+    this.panNumber = encryptPIIField(this.panNumber);
+  }
+  if (this.isModified('uanNumber') && this.uanNumber) {
+    this.uanNumber = encryptPIIField(this.uanNumber);
+  }
+  if (this.isModified('aadharNumber') && this.aadharNumber) {
+    this.aadharNumber = encryptPIIField(this.aadharNumber);
+  }
+  if (this.isModified('esiNumber') && this.esiNumber) {
+    this.esiNumber = encryptPIIField(this.esiNumber);
+  }
+  if (this.bankDetails && this.isModified('bankDetails.accountNumber') && this.bankDetails.accountNumber) {
+    this.bankDetails.accountNumber = encryptPIIField(this.bankDetails.accountNumber);
+  }
+  if (typeof next === 'function') next();
+});
+
+const decryptEmployeePII = (doc) => {
+  if (!doc) return;
+  if (doc.panNumber) doc.panNumber = decryptPIIField(doc.panNumber);
+  if (doc.uanNumber) doc.uanNumber = decryptPIIField(doc.uanNumber);
+  if (doc.aadharNumber) doc.aadharNumber = decryptPIIField(doc.aadharNumber);
+  if (doc.esiNumber) doc.esiNumber = decryptPIIField(doc.esiNumber);
+  if (doc.bankDetails && doc.bankDetails.accountNumber) {
+    doc.bankDetails.accountNumber = decryptPIIField(doc.bankDetails.accountNumber);
+  }
+};
+
+// Decrypt PII only on full Mongoose Document instances.
+// Plain objects returned by .lean() queries keep the encrypted value (or are absent via
+// select:false), preventing accidental PII exposure in logs or serialised responses.
+const ensureCompensationType = (doc) => {
+  if (!doc) return;
+  if (!doc.compensationType) {
+    doc.compensationType = deriveCompensationTypeFromLegacy({
+      payType: doc.payType,
+      compensationModel: doc.compensationModel,
+      employmentType: doc.employmentType,
+    });
+  }
+};
+
+EmployeeSchema.post('find', function (docs) {
+  if (Array.isArray(docs)) {
+    docs.forEach((doc) => {
+      ensureCompensationType(doc);
+      if (doc) decryptEmployeePII(doc);
+    });
+  }
+});
+
+EmployeeSchema.post('findOne', function (doc) {
+  if (doc) {
+    ensureCompensationType(doc);
+    if (doc) decryptEmployeePII(doc);
+  }
+});
+
+EmployeeSchema.post('findOneAndUpdate', function (doc) {
+  if (doc) {
+    ensureCompensationType(doc);
+    if (doc) decryptEmployeePII(doc);
+  }
+});
+
+EmployeeSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('Employee', EmployeeSchema);

@@ -171,7 +171,18 @@ exports.updateSettings = async (req, res) => {
         Object.assign(settings.integration, safeIntegration);
       }
     }
-    
+
+    // Enforce: integration.enabled requires a tenant-specific webhookSecret.
+    // Without it, incoming webhooks cannot be verified and tenant isolation breaks.
+    if (settings.integration?.enabled) {
+      const hasSecret = settings.integration.webhookSecret && settings.integration.webhookSecret !== SECRET_MASK;
+      if (!hasSecret) {
+        return res.status(400).json({
+          message: 'Integration cannot be enabled without a webhookSecret. Please configure a webhook secret before enabling the integration.',
+        });
+      }
+    }
+
     await settings.save();
     // Return populated settings with secrets masked
     const populatedSettings = await Settings.findById(settings._id).populate('user', 'username email phone');
