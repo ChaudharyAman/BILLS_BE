@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const RecurringTransaction = require('../models/RecurringTransaction');
 const Category = require('../models/Category');
+const BusinessUnit = require('../models/BusinessUnit');
 const {
   initialNextProcessDate,
   processDueRecurringTransactions,
@@ -21,6 +22,13 @@ const validateCategory = async (userId, type, categoryId) => {
   return category._id;
 };
 
+const validateBusinessUnit = async (userId, buId) => {
+  if (!buId) return null;
+  if (!mongoose.Types.ObjectId.isValid(buId)) return null;
+  const bu = await BusinessUnit.findOne({ _id: buId, user: userId });
+  return bu ? bu._id : null;
+};
+
 const sanitizeObject = (source, allowedKeys = []) => {
   if (!source || typeof source !== 'object') return {};
   const target = Object.create(null);
@@ -34,6 +42,7 @@ const sanitizeObject = (source, allowedKeys = []) => {
 
 const buildPayload = async (body, userId) => {
   const category = await validateCategory(userId, body.type, body.category);
+  const businessUnit = await validateBusinessUnit(userId, body.businessUnit);
   const allowedVendorKeys = ['name', 'vendorRef', 'email', 'phone', 'address'];
   const allowedClientKeys = ['name', 'clientRef', 'email', 'phone', 'address'];
 
@@ -41,6 +50,7 @@ const buildPayload = async (body, userId) => {
     type: body.type,
     category,
     subCategory: body.subCategory || null,
+    businessUnit,
     name: body.name,
     amount: Number(body.amount) || 0,
     description: body.description || '',
@@ -82,12 +92,14 @@ exports.getRecurringTransactions = async (req, res) => {
     const skip = (page - 1) * limit;
     const query = { user: req.user._id };
     if (req.query.type) query.type = req.query.type;
+    if (req.query.businessUnit) query.businessUnit = req.query.businessUnit;
     if (req.query.isActive !== undefined) query.isActive = req.query.isActive === 'true';
 
     const total = await RecurringTransaction.countDocuments(query);
     const data = await RecurringTransaction.find(query)
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon')
+      .populate('businessUnit', 'name code color')
       .sort({ nextProcessDate: 1, createdAt: -1 })
       .skip(skip)
       .limit(limit)

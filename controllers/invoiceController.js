@@ -382,6 +382,11 @@ exports.getInvoices = async (req, res) => {
       query.invoiceType = invoiceType;
     }
 
+    // Business Unit Filter
+    if (req.query.businessUnit && mongoose.Types.ObjectId.isValid(req.query.businessUnit)) {
+      query.businessUnit = req.query.businessUnit;
+    }
+
     // Date Range Filter
     if (startDate || endDate) {
       const dateField = dateType === 'dueDate' ? 'dueDate' : 'date';
@@ -1558,7 +1563,7 @@ exports.getGSTReport = async (req, res) => {
 // ─── GET Revenue Report ───────────────────────────────────────────────────────
 exports.getRevenueReport = async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, businessUnit, groupBy } = req.query;
     const parsedDateRange = parseOptionalDateRange(req.query);
     
     // Filter by user
@@ -1567,6 +1572,10 @@ exports.getRevenueReport = async (req, res) => {
       status: { $in: ACTIVE_INVOICE_STATUSES },
     };
 
+    if (businessUnit && mongoose.Types.ObjectId.isValid(businessUnit)) {
+      matchStage.businessUnit = new mongoose.Types.ObjectId(businessUnit);
+    }
+
     // Apply date filters if provided
     if (startDate || endDate) {
       matchStage.date = {};
@@ -1574,20 +1583,32 @@ exports.getRevenueReport = async (req, res) => {
       if (parsedDateRange.endDate) matchStage.date.$lte = parsedDateRange.endDate;
     }
 
+    let groupStage = {
+      _id: "$client.clientRef",
+      clientName: { $first: "$client.name" },
+      clientEmail: { $first: "$client.email" },
+      clientPhone: { $first: "$client.phone" },
+      totalInvoices: { $sum: 1 },
+      totalRevenue: { $sum: "$grandTotal" },
+      totalAdvancePaid: { $sum: "$advancePaid" },
+      totalBalanceDue: { $sum: "$balanceDue" }
+    };
+
+    if (groupBy === 'businessUnit') {
+      groupStage = {
+        _id: "$businessUnit",
+        businessUnitId: { $first: "$businessUnit" },
+        clientName: { $first: "$businessUnit" },
+        totalInvoices: { $sum: 1 },
+        totalRevenue: { $sum: "$grandTotal" },
+        totalAdvancePaid: { $sum: "$advancePaid" },
+        totalBalanceDue: { $sum: "$balanceDue" }
+      };
+    }
+
     const report = await Invoice.aggregate([
       { $match: matchStage },
-      {
-        $group: {
-          _id: "$client.clientRef",
-          clientName: { $first: "$client.name" },
-          clientEmail: { $first: "$client.email" },
-          clientPhone: { $first: "$client.phone" },
-          totalInvoices: { $sum: 1 },
-          totalRevenue: { $sum: "$grandTotal" },
-          totalAdvancePaid: { $sum: "$advancePaid" },
-          totalBalanceDue: { $sum: "$balanceDue" }
-        }
-      },
+      { $group: groupStage },
       { $sort: { totalRevenue: -1 } } // Sort by highest revenue
     ]);
 

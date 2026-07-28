@@ -207,6 +207,13 @@ const InvoiceSchema = new mongoose.Schema({
     ref: 'PurchaseOrder',
   },
 
+  businessUnit: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'BusinessUnit',
+    default: null,
+    index: true,
+  },
+
 }, { timestamps: true });
 
 InvoiceSchema.index({ user: 1, invoiceNo: 1 }, { unique: true });

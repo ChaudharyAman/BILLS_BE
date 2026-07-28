@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Budget = require('../models/Budget');
 const Category = require('../models/Category');
 const Department = require('../models/Department');
+const BusinessUnit = require('../models/BusinessUnit');
 const Expense = require('../models/Expense');
 
 const validateOptionalRef = async (Model, id, userId, label) => {
@@ -24,6 +25,7 @@ const normalizeBudgetPayload = async (body, userId) => ({
   name: body.name,
   category: await validateOptionalRef(Category, body.category, userId, 'Category'),
   department: await validateOptionalRef(Department, body.department, userId, 'Department'),
+  businessUnit: await validateOptionalRef(BusinessUnit, body.businessUnit, userId, 'Business Unit'),
   project: body.project || null,
   period: body.period,
   startDate: body.startDate,
@@ -115,6 +117,7 @@ exports.getBudgets = async (req, res) => {
     const query = { user: req.user._id };
 
     if (req.query.category) query.category = req.query.category;
+    if (req.query.businessUnit) query.businessUnit = req.query.businessUnit;
     if (req.query.status) query.status = req.query.status;
     if (req.query.period) query.period = req.query.period;
 
@@ -122,6 +125,7 @@ exports.getBudgets = async (req, res) => {
     const budgets = await Budget.find(query)
       .populate('category', 'name type color icon')
       .populate('department', 'name code')
+      .populate('businessUnit', 'name code color')
       .sort({ startDate: -1, createdAt: -1 })
       .skip(skip)
       .limit(limit)

@@ -90,6 +90,13 @@ const ProformaSchema = new mongoose.Schema({
     branch:        String,
     ifscCode:      String,
   },
+
+  businessUnit: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'BusinessUnit',
+    default: null,
+    index: true,
+  },
 }, { timestamps: true });
 
 ProformaSchema.index({ user: 1, proformaNo: 1 }, { unique: true });

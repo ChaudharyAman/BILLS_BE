@@ -12,6 +12,7 @@ const RecurringTransactionSchema = new mongoose.Schema({
   type: { type: String, enum: ['income', 'expense'], required: true, index: true },
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true },
   subCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
+  businessUnit: { type: mongoose.Schema.Types.ObjectId, ref: 'BusinessUnit', default: null, index: true },
   name: { type: String, required: true, trim: true },
   amount: { type: Number, required: true, min: 0 },
   description: { type: String, default: '' },
