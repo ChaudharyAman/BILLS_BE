@@ -571,7 +571,10 @@ const getSalarySplits = (employeeInput, configInput, monthNum, yearNum, paidDays
   const year = Number(yearNum) || new Date().getFullYear();
   const month = Number(monthNum) || (new Date().getMonth() + 1);
   const totalDaysInMonth = new Date(year, month, 0).getDate();
-  
+
+  const segments = [];
+  let currentSegment = null;
+
   for (let d = 1; d <= totalDaysInMonth; d++) {
     const currentStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const activeParams = getEmployeeParamsForDate(employee, currentStr);

@@ -91,6 +91,7 @@ const generatePayslip = async (req, res) => {
 
     let basicGross = 0;
     let hraGross = 0;
+    let flexiGross = 0;
     let specialGross = 0;
     let mealGross = 0;
     let broadbandGross = 0;
@@ -105,6 +106,7 @@ const generatePayslip = async (req, res) => {
     for (const pr of fyPayrolls) {
       basicGross += Number(pr.earnings?.basic || 0);
       hraGross += Number(pr.earnings?.hra || 0);
+      flexiGross += Number(pr.earnings?.flexiAmount || pr.earnings?.flexi || 0);
       specialGross += Number(pr.earnings?.specialAllowance || pr.earnings?.special || 0);
       mealGross += Number(pr.earnings?.mealAllowance || pr.earnings?.meal || 0);
       broadbandGross += Number(pr.earnings?.broadband || 0);
@@ -128,7 +130,7 @@ const generatePayslip = async (req, res) => {
       }
       bonusGross += bonusVal;
 
-      if (pr.deductions?.tds) {
+      if (pr.deductions?.tds && pr.month in tdsMonths) {
         tdsMonths[pr.month] = Number(pr.deductions.tds) || 0;
       }
     }
@@ -149,7 +151,8 @@ const generatePayslip = async (req, res) => {
     const componentBreakdown = [
       { name: 'Basic', gross: basicGross, exempt: 0, taxable: basicGross },
       { name: 'HRA', gross: hraGross, exempt: exemptHra, taxable: hraGross - exemptHra },
-      { name: 'Special All', gross: specialGross, exempt: 0, taxable: specialGross },
+      { name: 'Flexi Allowance', gross: flexiGross, exempt: 0, taxable: flexiGross },
+      { name: 'Special Allowance', gross: specialGross, exempt: 0, taxable: specialGross },
       { name: 'Meal', gross: mealGross, exempt: 0, taxable: mealGross },
       { name: 'Broadband', gross: broadbandGross, exempt: 0, taxable: broadbandGross },
       { name: 'Other', gross: otherGross, exempt: 0, taxable: otherGross },
@@ -157,7 +160,7 @@ const generatePayslip = async (req, res) => {
       { name: 'Arrear', gross: arrearGross, exempt: 0, taxable: arrearGross }
     ];
 
-    const grossSalary = basicGross + hraGross + specialGross + mealGross + broadbandGross + otherGross + bonusGross + arrearGross;
+    const grossSalary = basicGross + hraGross + flexiGross + specialGross + mealGross + broadbandGross + otherGross + bonusGross + arrearGross;
     const taxableIncome = Math.max(0, grossSalary - exemptHra - standardDeduction);
 
     let totalTax = 0;
