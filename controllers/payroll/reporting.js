@@ -11,7 +11,15 @@ const { XLSX, setHeaderStyle, applyNumberFormat, sendWorkbook } = require('../..
 const { buildEmployeeName, isValidMonth, isValidYear, sumNamedAmounts, getOrCreateConfig } = require('./common');
 
 const buildPayrollWorkbook = (payrolls, config) => {
-  const headerGroups = ['MASTER DATA', '', '', '', '', '', '', '', '', '', '', '', '', 'COMPENSATION MODEL', '', 'Monthly Salary', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'Other Payables', '', '', '', '', '', 'Deductions'];
+  const headerGroups = [
+    'MASTER DATA', '', '', '', '', '', '', '', '', '', '', '', '',
+    'COMPENSATION MODEL', '',
+    'MONTHLY MASTER CTC COMPONENTS', '', '', '', '', '', '',
+    'EARNINGS & STATUTORY CONTRIBUTIONS (PAID)', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
+    'VARIABLE PAY & REIMBURSEMENTS', '', '', '', '', '', '',
+    'DEDUCTIONS (EMPLOYEE DUES)', '', '', '', '', '', '', '', '', '',
+    'NET PAYOUT', '',
+  ];
 
   const getComponentName = (id, defaultName) => {
     if (!config || !Array.isArray(config.salaryComponents)) return defaultName;
@@ -31,9 +39,9 @@ const buildPayrollWorkbook = (payrolls, config) => {
     'Sr No', 'Name', 'DOJ', 'DOL', 'Gender', 'Emp No', 'Email', 'Bank A/C', 'IFSC', 'PAN', 'Aadhar', 'Location', 'Designation',
     'Compensation Type', 'Period Input Summary',
     'Monthly CTC', `${basicName}(master)`, `${hraName}(master)`, `${flexiName}(master)`, 'PF Employer', `${specialName}`, 'DIFF',
-    'Working Days', 'Paid Days', 'Hours Worked', 'Hourly Rate', `${basicName}(paid)`, `${hraName}(paid)`, `${flexiName}`, `${broadbandName}`, `${petrolName}`, `${ltaName}`, 'Employer NPS', 'Insurance',
-    'PF(Emp Contrib)', 'Gratuity', 'LWF', 'GROSS TOTAL', 'Joining Bonus', 'Loyalty Bonus', 'Incentive', 'Other Allowance', 'Special Bonus', 'Total Payable',
-    'PF Deduction', 'Insurance(ded)', 'Gratuity(ded)', 'LWF(ded)', 'Other Deduction', 'Income Tax', 'TOTAL DEDUCTION', 'NET TAKE HOME', 'Remarks',
+    'Working Days', 'Paid Days', 'Hours Worked', 'Hourly Rate', `${basicName}(paid)`, `${hraName}(paid)`, `${flexiName}`, `${broadbandName}`, `${petrolName}`, `${ltaName}`, 'Conveyance', 'Medical Allowance', 'Overtime', 'Employer NPS', 'Insurance', 'PF(Emp Contrib)', 'ESI Employer', 'Gratuity', 'LWF', 'GROSS TOTAL',
+    'Joining Bonus', 'Loyalty Bonus', 'Incentive', 'Other Allowance', 'Special Bonus', 'Reimbursements', 'Total Payable',
+    'PF Deduction', 'ESI Deduction', 'Professional Tax (PT)', 'Insurance(ded)', 'Gratuity(ded)', 'LWF(ded)', 'Loan EMI Deduction', 'Other Deduction', 'Income Tax', 'TOTAL DEDUCTION', 'NET TAKE HOME', 'Remarks',
   ];
 
   const rows = payrolls.map((payroll, index) => {
@@ -99,22 +107,30 @@ const buildPayrollWorkbook = (payrolls, config) => {
       Number(payroll.earnings?.broadband) || 0,
       Number(payroll.earnings?.petrol) || 0,
       Number(payroll.earnings?.lta) || 0,
+      Number(payroll.earnings?.conveyance) || 0,
+      Number(payroll.earnings?.medicalAllowance) || 0,
+      Number(payroll.earnings?.overtime) || 0,
       Number(payroll.employerContributions?.nps) || 0,
       Number(payroll.employerContributions?.insuranceEmployer) || 0,
       Number(payroll.employerContributions?.pfEmployer) || 0,
+      Number(payroll.employerContributions?.esiEmployer) || 0,
       Number(payroll.employerContributions?.gratuity) || 0,
       Number(payroll.employerContributions?.lwfEmployer) || 0,
-      Number(payroll.employerContributions?.grossTotalSalary) || 0,
+      Number(payroll.employerContributions?.grossTotalSalary) || Number(payroll.earnings?.totalEarnings) || 0,
       Number(payroll.variablePay?.joiningBonus) || 0,
       Number(payroll.variablePay?.loyaltyBonus) || 0,
       Number(payroll.variablePay?.incentive) || 0,
       sumNamedAmounts(payroll.earnings?.otherEarnings) + (Number(payroll.variablePay?.otherAllowanceArrear) || 0),
       Number(payroll.variablePay?.specialBonus) || 0,
+      Number(payroll.totalReimbursementApproved) || 0,
       Number(payroll.totalPayable) || 0,
       Number(payroll.deductions?.pfEmployee) || 0,
+      Number(payroll.deductions?.esiEmployee) || 0,
+      Number(payroll.deductions?.professionalTax) || 0,
       Number(payroll.deductions?.insuranceEmployee) || 0,
       Number(payroll.deductions?.gratuityDeduction) || 0,
       Number(payroll.deductions?.lwfEmployee) || 0,
+      Number(payroll.deductions?.loanDeduction) || 0,
       sumNamedAmounts(payroll.deductions?.otherDeductions),
       Number(payroll.deductions?.tds) || 0,
       Number(payroll.deductions?.totalDeductions) || 0,
@@ -141,16 +157,18 @@ const buildPayrollWorkbook = (payrolls, config) => {
   sheet['!merges'] = [
     XLSX.utils.decode_range('A1:M1'),
     XLSX.utils.decode_range('N1:O1'),
-    XLSX.utils.decode_range('P1:AL1'),
-    XLSX.utils.decode_range('AM1:AR1'),
-    XLSX.utils.decode_range('AS1:AZ1'),
+    XLSX.utils.decode_range('P1:V1'),
+    XLSX.utils.decode_range('W1:AQ1'),
+    XLSX.utils.decode_range('AR1:AX1'),
+    XLSX.utils.decode_range('AY1:BH1'),
+    XLSX.utils.decode_range('BI1:BJ1'),
   ];
 
   const headerCells = [];
   for (let i = 0; i < columns.length; i += 1) {
     headerCells.push(`${XLSX.utils.encode_col(i)}2`);
   }
-  ['A1', 'N1', 'AK1', 'AQ1'].forEach((cell) => {
+  ['A1', 'N1', 'P1', 'W1', 'AR1', 'AY1', 'BI1'].forEach((cell) => {
     if (sheet[cell]) {
       sheet[cell].s = {
         font: { bold: true, color: { rgb: 'FFFFFF' } },
@@ -163,7 +181,7 @@ const buildPayrollWorkbook = (payrolls, config) => {
 
   const numericCells = [];
   for (let rowIndex = 3; rowIndex <= rows.length + 3; rowIndex += 1) {
-    for (let colIndex = 13; colIndex < columns.length - 1; colIndex += 1) {
+    for (let colIndex = 15; colIndex < columns.length - 1; colIndex += 1) {
       numericCells.push(`${XLSX.utils.encode_col(colIndex)}${rowIndex}`);
     }
   }

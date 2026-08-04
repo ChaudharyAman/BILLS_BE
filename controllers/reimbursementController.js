@@ -116,6 +116,43 @@ exports.updateClaimStatus = async (req, res) => {
   }
 };
 
+exports.updateClaim = async (req, res) => {
+  try {
+    const { category, amount, billUrl, status, approverRemarks } = req.body;
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
+      return res.status(404).json({ message: 'Claim not found' });
+    }
+
+    const claim = await ReimbursementClaim.findOne({ _id: req.params.id, user: req.user._id });
+    if (!claim) {
+      return res.status(404).json({ message: 'Claim not found' });
+    }
+
+    if (category) {
+      if (!['petrol', 'broadband', 'lta', 'medical', 'other'].includes(category)) {
+        return res.status(400).json({ message: 'Invalid category' });
+      }
+      claim.category = category;
+    }
+    if (amount !== undefined) {
+      const amt = Number(amount);
+      if (Number.isNaN(amt) || amt <= 0) {
+        return res.status(400).json({ message: 'Amount must be a positive number' });
+      }
+      claim.amount = amt;
+    }
+    if (billUrl !== undefined) claim.billUrl = billUrl;
+    if (status && ['approved', 'rejected', 'pending'].includes(status)) claim.status = status;
+    if (approverRemarks !== undefined) claim.approverRemarks = approverRemarks;
+
+    await claim.save();
+    res.json(claim);
+  } catch (error) {
+    console.error('Error updating claim:', error);
+    res.status(500).json({ message: 'Server error updating claim' });
+  }
+};
+
 exports.deleteClaim = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
