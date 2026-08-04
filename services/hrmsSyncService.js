@@ -696,33 +696,47 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
           ? Number(record.paidDays)
           : Math.min(Math.max(presentDays + paidLeaves, 0), hrmsWorkingDays);
 
+        const weeklyOffDays       = Number(record.weeklyOffDays || 0);
+        const holidayDays         = Number(record.holidayDays || 0);
+        const workedOffDays       = Number(record.workedOffDays || 0);
+        const totalWorkingHours   = Number(record.totalWorkingHours || 0);
+        const dailyDetails        = Array.isArray(record.dailyDetails) ? record.dailyDetails : [];
+
         mapped.push({
-          employeeId:     emp._id,
-          employeeNumber: emp.employeeId,
-          workingDays:    calendarDays,
+          employeeId:          emp._id,
+          employeeNumber:      emp.employeeId,
+          workingDays:         calendarDays,
+          workingDaysTillDate: hrmsWorkingDays,
           presentDays,
           absentDays,
           paidDays,
           unpaidLeaves,
           paidLeaves,
+          weeklyOffDays,
+          holidayDays,
+          workedOffDays,
+          totalWorkingHours,
+          hoursWorked:         totalWorkingHours,
+          dailyDetails,
         });
       } else {
-        // No attendance record found in HRMS for this employee.
-        // Do NOT assume the employee was absent for the entire period — the HRMS
-        // may simply not have processed them yet (e.g. no employeeCode set, or
-        // a new joiner not yet enrolled in the attendance system).
-        // Emit zeros with a `noHrmsRecord` flag so callers can decide whether
-        // to skip, warn, or treat as absent.
         mapped.push({
-          employeeId:     emp._id,
-          employeeNumber: emp.employeeId,
-          workingDays:    calendarDays,
-          presentDays:    0,
-          absentDays:     0,
-          paidDays:       0,
-          unpaidLeaves:   0,
-          paidLeaves:     0,
-          noHrmsRecord:   true,
+          employeeId:          emp._id,
+          employeeNumber:      emp.employeeId,
+          workingDays:         calendarDays,
+          workingDaysTillDate: 0,
+          presentDays:         0,
+          absentDays:          0,
+          paidDays:            0,
+          unpaidLeaves:        0,
+          paidLeaves:          0,
+          weeklyOffDays:       0,
+          holidayDays:         0,
+          workedOffDays:       0,
+          totalWorkingHours:   0,
+          hoursWorked:         0,
+          dailyDetails:        [],
+          noHrmsRecord:        true,
         });
       }
     });
@@ -735,14 +749,20 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
           filter: { user: userId, employeeId: r.employeeId, month, year },
           update: {
             $set: {
-              employeeNumber: r.employeeNumber,
-              workingDays:   r.workingDays,
-              presentDays:   r.presentDays,
-              absentDays:    r.absentDays,
-              paidDays:      r.paidDays,
-              unpaidLeaves:  r.unpaidLeaves,
-              paidLeaves:    r.paidLeaves,
-              syncedAt:      new Date(),
+              employeeNumber:      r.employeeNumber,
+              workingDays:         r.workingDays,
+              workingDaysTillDate: r.workingDaysTillDate,
+              presentDays:         r.presentDays,
+              absentDays:          r.absentDays,
+              paidDays:            r.paidDays,
+              unpaidLeaves:        r.unpaidLeaves,
+              paidLeaves:          r.paidLeaves,
+              weeklyOffDays:       r.weeklyOffDays,
+              holidayDays:         r.holidayDays,
+              workedOffDays:       r.workedOffDays,
+              totalWorkingHours:   r.totalWorkingHours,
+              dailyDetails:        r.dailyDetails,
+              syncedAt:            new Date(),
             },
           },
           upsert: true,

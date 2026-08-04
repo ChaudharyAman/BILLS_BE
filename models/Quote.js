@@ -91,6 +91,13 @@ const QuoteSchema = new mongoose.Schema({
     branch:        String,
     ifscCode:      String,
   },
+
+  businessUnit: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'BusinessUnit',
+    default: null,
+    index: true,
+  },
 }, { timestamps: true });
 
 QuoteSchema.index({ user: 1, quoteNo: 1 }, { unique: true });

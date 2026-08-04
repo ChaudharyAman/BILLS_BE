@@ -82,6 +82,13 @@ const PurchaseOrderSchema = new mongoose.Schema({
   notes: String,
   privateNotes: String,
   terms: String,
+
+  businessUnit: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'BusinessUnit',
+    default: null,
+    index: true,
+  },
 }, { timestamps: true });
 
 PurchaseOrderSchema.index({ user: 1, poNumber: 1 }, { unique: true });

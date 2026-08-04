@@ -183,7 +183,7 @@ const InvoiceSchema = new mongoose.Schema({
   // Status
   status: {
     type: String,
-    enum: ['DRAFT', 'SENT', 'PAID', 'PARTIAL', 'UNPAID', 'CANCELLED'],
+    enum: ['DRAFT', 'SENT', 'PAID', 'RECEIVED', 'PARTIAL', 'UNPAID', 'CANCELLED'],
     default: 'DRAFT',
   },
   
@@ -205,6 +205,13 @@ const InvoiceSchema = new mongoose.Schema({
   purchaseOrderRef: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'PurchaseOrder',
+  },
+
+  businessUnit: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'BusinessUnit',
+    default: null,
+    index: true,
   },
 
 }, { timestamps: true });

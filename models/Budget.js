@@ -7,6 +7,7 @@ const BudgetSchema = new mongoose.Schema({
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null, index: true },
   department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
   project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', default: null },
+  businessUnit: { type: mongoose.Schema.Types.ObjectId, ref: 'BusinessUnit', default: null, index: true },
   period: {
     type: String,
     enum: ['monthly', 'quarterly', 'yearly', 'custom'],

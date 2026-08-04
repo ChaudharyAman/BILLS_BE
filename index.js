@@ -77,6 +77,7 @@ app.use('/api/expenses', require('./routes/expenseRoutes'));
 app.use('/api/incomes', require('./routes/incomeRoutes'));
 app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/departments', require('./routes/departmentRoutes'));
+app.use('/api/business-units', require('./routes/businessUnitRoutes'));
 app.use('/api/employees', require('./routes/employeeRoutes'));
 app.use('/api/loans', require('./routes/loanRoutes'));
 app.use('/api/reimbursements', require('./routes/reimbursementRoutes'));
