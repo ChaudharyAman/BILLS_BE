@@ -81,6 +81,10 @@ exports.getProformas = async (req, res) => {
       ];
     }
 
+    if (req.query.businessUnit && mongoose.Types.ObjectId.isValid(req.query.businessUnit)) {
+      query.businessUnit = req.query.businessUnit;
+    }
+
     const total = await Proforma.countDocuments(query);
     const proformasQuery = Proforma.find(query)
       .select('-items -notes -terms -shippingAddress')

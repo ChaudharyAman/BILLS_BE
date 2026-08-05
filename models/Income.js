@@ -77,7 +77,7 @@ const IncomeSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['DRAFT', 'PAID', 'PARTIAL', 'UNPAID', 'CANCELLED'],
+    enum: ['DRAFT', 'PAID', 'RECEIVED', 'PARTIAL', 'UNPAID', 'CANCELLED'],
     default: 'DRAFT',
   },
 

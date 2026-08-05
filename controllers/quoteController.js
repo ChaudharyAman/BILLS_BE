@@ -129,6 +129,11 @@ exports.getQuotes = async (req, res) => {
       query.status = status;
     }
 
+    // Business Unit Filter
+    if (req.query.businessUnit && mongoose.Types.ObjectId.isValid(req.query.businessUnit)) {
+      query.businessUnit = req.query.businessUnit;
+    }
+
     // Date Range Filter
     if (startDate || endDate) {
       const dateField = dateType === 'validUntil' ? 'validUntil' : 'date';

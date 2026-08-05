@@ -72,6 +72,9 @@ exports.getIncomes = async (req, res) => {
     if (req.query.category) query.category = req.query.category;
     if (req.query.subCategory) query.subCategory = req.query.subCategory;
     if (req.query.project) query.project = req.query.project;
+    if (req.query.businessUnit && mongoose.Types.ObjectId.isValid(req.query.businessUnit)) {
+      query.businessUnit = req.query.businessUnit;
+    }
     if (status) query.status = status;
     if (sourceType) query.sourceType = sourceType;
 
@@ -112,6 +115,7 @@ exports.getIncomes = async (req, res) => {
       .select('-items -terms -privateNotes')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent')
+      .populate('businessUnit', 'name code color')
       .lean()
       .sort(sort);
 
@@ -303,6 +307,7 @@ exports.createIncome = async (req, res) => {
       subCategory,
       project,
       department,
+      businessUnit,
       incomeNumber,
       date,
       vendor,
@@ -374,6 +379,7 @@ exports.createIncome = async (req, res) => {
       ...categoryData,
       project: project || null,
       department: department || null,
+      businessUnit: businessUnit && mongoose.Types.ObjectId.isValid(businessUnit) ? businessUnit : null,
       sourceType: 'manual',
       incomeNumber,
       date,
@@ -415,7 +421,8 @@ exports.getIncomeById = async (req, res) => {
     
     const income = await Income.findOne({ _id: req.params.id, user: req.user._id })
       .populate('category', 'name type color icon')
-      .populate('subCategory', 'name type color icon parent');
+      .populate('subCategory', 'name type color icon parent')
+      .populate('businessUnit', 'name code color');
 
     if (income) {
       res.json(income);
@@ -469,6 +476,7 @@ exports.updateIncome = async (req, res) => {
       subCategory,
       project,
       department,
+      businessUnit,
       incomeNumber,
       date,
       vendor,
@@ -565,6 +573,7 @@ exports.updateIncome = async (req, res) => {
     const updateData = {
       project: project !== undefined ? (project || null) : income.project,
       department: department !== undefined ? (department || null) : income.department,
+      businessUnit: businessUnit !== undefined ? (businessUnit && mongoose.Types.ObjectId.isValid(businessUnit) ? businessUnit : null) : income.businessUnit,
       incomeNumber: incomeNumber !== undefined ? incomeNumber : income.incomeNumber,
       date: date !== undefined ? date : income.date,
       vendor: resolvedVendor !== undefined ? resolvedVendor : income.vendor,

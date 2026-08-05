@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const Category = require('../models/Category');
 const Expense = require('../models/Expense');
 const Income = require('../models/Income');
+const Budget = require('../models/Budget');
+const RecurringTransaction = require('../models/RecurringTransaction');
 
 const DEFAULT_CATEGORIES = {
   expense: [
@@ -56,38 +58,67 @@ const validateParent = async ({ userId, parent, type, categoryId }) => {
   return parentCategory._id;
 };
 
-const createDefaultCategoryTree = async (userId, type, categoryDef) => {
-  const parent = await Category.findOneAndUpdate(
-    { user: userId, name: categoryDef.name, type },
-    {
-      $setOnInsert: {
-        user: userId,
-        name: categoryDef.name,
-        type,
-        icon: categoryDef.icon || '',
-        color: categoryDef.color || '#64748b',
-        isSystem: true,
-        parent: null,
-      },
-    },
-    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
-  );
+const upsertOrRestoreDefaultCategory = async ({ userId, type, name, icon, color, parent = null }) => {
+  const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const nameRegex = new RegExp(`^${escapeRegex(name)}(_del_.*)?$`);
 
-  for (const childName of categoryDef.children || []) {
-    await Category.findOneAndUpdate(
-      { user: userId, name: childName, type },
+  let category = await Category.findOne({
+    user: userId,
+    type,
+    name: nameRegex,
+  }).setOptions({ withDeleted: true });
+
+  if (category) {
+    category = await Category.findOneAndUpdate(
+      { _id: category._id },
       {
-        $setOnInsert: {
-          user: userId,
-          name: childName,
-          type,
+        $set: {
+          name,
+          isDeleted: false,
+          deletedAt: null,
           isSystem: true,
-          parent: parent._id,
-          color: parent.color,
+          parent: parent || null,
+          ...(icon ? { icon } : {}),
+          ...(color ? { color } : {}),
         },
       },
-      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
+      { returnDocument: 'after', setOptions: { withDeleted: true } }
     );
+  } else {
+    category = await Category.create({
+      user: userId,
+      name,
+      type,
+      icon: icon || '',
+      color: color || '#64748b',
+      isSystem: true,
+      parent: parent || null,
+      isDeleted: false,
+    });
+  }
+
+  return category;
+};
+
+const createDefaultCategoryTree = async (userId, type, categoryDef) => {
+  const parent = await upsertOrRestoreDefaultCategory({
+    userId,
+    type,
+    name: categoryDef.name,
+    icon: categoryDef.icon || '',
+    color: categoryDef.color || '#64748b',
+    parent: null,
+  });
+
+  for (const childName of categoryDef.children || []) {
+    await upsertOrRestoreDefaultCategory({
+      userId,
+      type,
+      name: childName,
+      icon: '',
+      color: parent.color || '#64748b',
+      parent: parent._id,
+    });
   }
 };
 
@@ -236,26 +267,63 @@ exports.deleteCategory = async (req, res) => {
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    if (category.isSystem) {
-      return res.status(400).json({ message: 'System categories cannot be deleted' });
+    // Find all child sub-categories (if any)
+    const children = await Category.find({ user: req.user._id, parent: category._id });
+    const categoryIdsToCheck = [category._id, ...children.map(c => c._id)];
+
+    const isSubCategory = !!category.parent;
+    const itemLabel = isSubCategory ? 'sub-category' : 'category';
+
+    // Check if any Expenses, Incomes, Budgets, or Recurring Transactions are assigned
+    const [expenseCount, incomeCount, budgetCount, recurringCount] = await Promise.all([
+      Expense.countDocuments({
+        user: req.user._id,
+        $or: [
+          { category: { $in: categoryIdsToCheck } },
+          { subCategory: { $in: categoryIdsToCheck } }
+        ]
+      }),
+      Income.countDocuments({
+        user: req.user._id,
+        $or: [
+          { category: { $in: categoryIdsToCheck } },
+          { subCategory: { $in: categoryIdsToCheck } }
+        ]
+      }),
+      Budget.countDocuments({
+        user: req.user._id,
+        category: { $in: categoryIdsToCheck }
+      }).catch(() => 0),
+      RecurringTransaction.countDocuments({
+        user: req.user._id,
+        $or: [
+          { category: { $in: categoryIdsToCheck } },
+          { subCategory: { $in: categoryIdsToCheck } }
+        ]
+      }).catch(() => 0)
+    ]);
+
+    const totalAssigned = expenseCount + incomeCount + budgetCount + recurringCount;
+    if (totalAssigned > 0) {
+      return res.status(400).json({
+        message: `Cannot delete ${itemLabel} "${category.name}" because ${totalAssigned} transaction(s)/budget(s) are currently assigned to it.`
+      });
     }
 
-    const hasChildren = await Category.exists({ user: req.user._id, parent: category._id });
-    if (hasChildren) {
-      return res.status(400).json({ message: 'Cannot delete a category with sub-categories' });
+    // Soft-delete any child sub-categories
+    for (const child of children) {
+      await Category.findOneAndUpdate(
+        { _id: child._id, user: req.user._id },
+        { $set: { isDeleted: true, deletedAt: new Date() } }
+      );
     }
 
-    const Model = category.type === 'income' ? Income : Expense;
-    const inUse = await Model.exists({
-      user: req.user._id,
-      $or: [{ category: category._id }, { subCategory: category._id }],
-    });
+    // Soft-delete the target category
+    await Category.findOneAndUpdate(
+      { _id: category._id, user: req.user._id },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
 
-    if (inUse) {
-      return res.status(400).json({ message: 'Cannot delete a category that is used by transactions' });
-    }
-
-    await Category.updateOne({ _id: category._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     res.json({ message: 'Category deleted successfully' });
   } catch (error) {
     console.error('Error deleting category:', error);
