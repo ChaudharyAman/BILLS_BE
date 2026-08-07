@@ -498,4 +498,53 @@ describe('Payroll Strategy Engine & Statutory Math Tests', () => {
       expect(snapshot.earnings.totalEarnings).toBe(3200);
     });
   });
+
+  describe('buildPayrollInputsWorkbook Excel builder tests', () => {
+    const { buildPayrollInputsWorkbook } = require('../../controllers/payroll/reporting');
+
+    test('buildPayrollInputsWorkbook creates a valid workbook for employee template input mode without reference errors', () => {
+      const employees = [
+        {
+          employeeId: 'EMP001',
+          firstName: 'Aman',
+          lastName: 'Kumar',
+          email: 'aman@gmail.com',
+          monthlyCTC: 10000,
+          useSalaryComponents: false,
+        },
+        {
+          employeeId: 'EMP002',
+          firstName: 'Rahul',
+          lastName: 'Sharma',
+          email: 'rahul@gmail.com',
+          monthlyCTC: 30000,
+          useSalaryComponents: true,
+          basicPercent: 0.5,
+          hraPercent: 0.5,
+        }
+      ];
+      const workbook = buildPayrollInputsWorkbook([], employees, DEFAULT_PAYROLL_CONFIG, 7, 2026);
+      expect(workbook).toBeDefined();
+      expect(workbook.SheetNames).toContain('Payroll Inputs');
+    });
+
+    test('buildPayrollInputsWorkbook creates a valid workbook for payroll records mode', () => {
+      const payrolls = [
+        {
+          employeeSnapshot: {
+            employeeId: 'EMP001',
+            firstName: 'Aman',
+            monthlyCTC: 10000,
+            useSalaryComponents: false,
+          },
+          earnings: { basic: 10000, hra: 0, specialAllowance: 0, totalEarnings: 10000 },
+          workingDays: 30,
+          paidDays: 30,
+        }
+      ];
+      const workbook = buildPayrollInputsWorkbook(payrolls, [], DEFAULT_PAYROLL_CONFIG, 7, 2026);
+      expect(workbook).toBeDefined();
+      expect(workbook.SheetNames).toContain('Payroll Inputs');
+    });
+  });
 });

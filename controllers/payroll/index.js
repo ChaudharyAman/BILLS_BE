@@ -9,7 +9,7 @@ const { processPayroll, getBatchJobStatus, previewPayroll, bulkApprovePayroll, b
 const { getPayrolls, getPayrollById, updatePayroll, markPayrollAsPaid, reopenPayroll, deletePayroll, processFullAndFinalSettlement } = require('./lifecycle');
 const { generatePayslip, getPayslipPdf, bulkPayslipPdf, emailPayslip } = require('./payslip');
 const { getPayrollConfig, updatePayrollConfig, calculateSalary, getCompensationTypes } = require('./config');
-const { buildPayrollWorkbook, exportPayrollExcel, getPayrollTrend, getPayrollAuditLog } = require('./reporting');
+const { buildPayrollWorkbook, buildPayrollInputsWorkbook, exportPayrollExcel, exportPayrollInputsExcel, getPayrollTrend, getPayrollAuditLog } = require('./reporting');
 const { syncEmployees, syncAttendance, receiveHrmsWebhook } = require('./integrations');
 const { getOrCreateConfig } = require('./common');
 
@@ -35,7 +35,9 @@ module.exports = {
   calculateSalary,
   getCompensationTypes,
   buildPayrollWorkbook,
+  buildPayrollInputsWorkbook,
   exportPayrollExcel,
+  exportPayrollInputsExcel,
   getPayrollTrend,
   getPayrollAuditLog,
   syncEmployees,
@@ -44,5 +46,6 @@ module.exports = {
   __private__: {
     getOrCreateConfig,
     buildPayrollWorkbook,
+    buildPayrollInputsWorkbook,
   },
 };

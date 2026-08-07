@@ -6,7 +6,8 @@
 
 const mongoose = require('mongoose');
 const Payroll = require('../../models/Payroll');
-const { roundAmount, buildPayslipEarningsLineItems } = require('../../utils/payrollMath');
+const { roundAmount, buildPayslipEarningsLineItems, buildMasterSalaryStructure } = require('../../utils/payrollMath');
+const { getStrategyStatutoryDefaults } = require('../../utils/payrollStrategies/index');
 const { XLSX, setHeaderStyle, applyNumberFormat, sendWorkbook } = require('../../utils/excel');
 const { buildEmployeeName, isValidMonth, isValidYear, sumNamedAmounts, getOrCreateConfig } = require('./common');
 
@@ -141,7 +142,7 @@ const buildPayrollWorkbook = (payrolls, config) => {
 
   const totals = new Array(columns.length).fill('');
   totals[0] = 'TOTAL';
-  for (let columnIndex = 15; columnIndex < columns.length; columnIndex += 1) {
+  for (let columnIndex = 15; columnIndex < columns.length - 1; columnIndex += 1) {
     const total = rows.reduce((sum, row) => sum + (typeof row[columnIndex] === 'number' ? row[columnIndex] : 0), 0);
     totals[columnIndex] = roundAmount(total);
   }
@@ -195,8 +196,367 @@ const buildPayrollWorkbook = (payrolls, config) => {
   return workbook;
 };
 
+const buildPayrollInputsWorkbook = (payrolls, employees, config, month, year) => {
+  const actualDaysInMonth = (isValidMonth(month) && isValidYear(year))
+    ? new Date(year, month, 0).getDate()
+    : 30;
+
+  const defaultWorkingDays = (config?.defaultWorkingDays && config.defaultWorkingDays !== 30)
+    ? config.defaultWorkingDays
+    : actualDaysInMonth;
+
+  const headerGroups = [
+    'EMPLOYEE MASTER INFORMATION', '', '', '', '', '', '', '',
+    'EMPLOYEE CONFIGURATION & APPLIED STATUTORY RULES', '', '', '', '', '', '',
+    'BASE COMPENSATION AMOUNTS', '', '', '', '', '', '',
+    'ATTENDANCE & WORKING DAYS INPUTS', '', '', '', '',
+    'TIME & PRODUCTION INPUTS', '', '',
+    'VARIABLE PAY & BONUS INPUTS', '', '', '', '', '',
+    'MANUAL DEDUCTION & REIMBURSEMENT OVERRIDES', '', '', '',
+    'SUMMARY PAYOUT', '',
+    'PERIOD REMARKS'
+  ];
+
+  const columns = [
+    'Sr No', 'Emp No', 'Employee Name', 'Email', 'Department', 'Designation', 'Compensation Type', 'Attendance Mode',
+    'Salary Structure Mode', 'PF Status', 'ESI Status', 'PT Status', 'LWF Status', 'Gratuity Status', 'TDS Tax Status',
+    'Monthly CTC', 'Basic Salary', 'HRA', 'Special Allowance', 'Gross Salary', 'Total Deductions', 'Net Salary',
+    'Working Days', 'Paid Days', 'Paid Leaves', 'Unpaid Leaves (LOP)', 'LOP Strategy',
+    'Hours Worked', 'Hourly Rate', 'Units Produced',
+    'Overtime Pay', 'Joining Bonus', 'Loyalty Bonus', 'Incentive', 'Special Bonus/Arrears', 'Variable/Commission Pay',
+    'Loan EMI Deduction', 'Manual TDS Override', 'Other Deductions', 'Approved Reimbursements',
+    'Total Payable', 'Net Take Home',
+    'Notes / Remarks'
+  ];
+
+  let rows = [];
+
+  if (Array.isArray(payrolls) && payrolls.length > 0) {
+    rows = payrolls.map((payroll, index) => {
+      const employee = payroll.employee || {};
+      const compType = payroll.employeeSnapshot?.compensationType || employee.compensationType || (payroll.payType === 'hourly' ? 'hourly' : 'monthly_salary');
+      const attMode = payroll.employeeSnapshot?.attendanceMode || employee.attendanceMode || 'attendance';
+
+      const stratFlags = getStrategyStatutoryDefaults(compType, config?.compensationTypeDefaults || {});
+
+      const pfEnabled = (payroll.employeeSnapshot?.pfEnabled ?? employee.pfEnabled) !== false;
+      const esiEnabled = (payroll.employeeSnapshot?.esiEnabled ?? employee.esiEnabled) !== false;
+      const ptEnabled = (payroll.employeeSnapshot?.ptEnabled ?? employee.ptEnabled) !== false;
+      const lwfEnabled = (payroll.employeeSnapshot?.lwfEnabled ?? employee.lwfEnabled) !== false;
+      const gratuityEnabled = (payroll.employeeSnapshot?.gratuityEnabled ?? employee.gratuityEnabled) !== false;
+      const tdsEnabled = (payroll.employeeSnapshot?.tdsEnabled ?? employee.tdsEnabled) !== false;
+      const useComponents = (payroll.employeeSnapshot?.useSalaryComponents ?? employee.useSalaryComponents) !== false;
+
+      const includePfInCTC = (payroll.employeeSnapshot?.includePfInCTC ?? employee.includePfInCTC) === true;
+      const includeGratuityInCTC = (payroll.employeeSnapshot?.includeGratuityInCTC ?? employee.includeGratuityInCTC) !== false;
+
+      const ptState = payroll.employeeSnapshot?.ptState || employee.ptState || '';
+      const taxRegime = payroll.employeeSnapshot?.taxRegime || employee.taxRegime || 'new';
+
+      const pfStatus = (stratFlags.pfEligible && pfEnabled)
+        ? (includePfInCTC ? 'APPLIED (In CTC)' : 'APPLIED (Extra)')
+        : 'NOT APPLIED';
+
+      const esiStatus = (stratFlags.esiEligible && esiEnabled)
+        ? 'APPLIED'
+        : 'NOT APPLIED';
+
+      const ptStatus = (stratFlags.ptApplicable && ptEnabled)
+        ? (ptState ? `APPLIED (${ptState})` : 'APPLIED')
+        : 'NOT APPLIED';
+
+      const lwfStatus = (stratFlags.lwfApplicable && lwfEnabled)
+        ? 'APPLIED'
+        : 'NOT APPLIED';
+
+      const gratuityStatus = (stratFlags.gratuityEligible && gratuityEnabled)
+        ? (includeGratuityInCTC ? 'APPLIED (In CTC)' : 'APPLIED (Extra)')
+        : 'NOT APPLIED';
+
+      const tdsStatus = tdsEnabled
+        ? (['retainer', 'project_based', 'milestone_based', 'commission_only'].includes(compType) ? 'APPLIED (194J - 10%)' : `APPLIED (${taxRegime.toUpperCase()} Regime)`)
+        : 'NOT APPLIED';
+
+      const salaryModeStr = useComponents ? 'Component Breakup' : 'Flat Salary';
+
+      const master = buildMasterSalaryStructure(payroll.employeeSnapshot || employee, config || {});
+
+      const monthlyCTC = payroll.employeeSnapshot?.monthlyCTC || employee.monthlyCTC || (employee.annualCTC ? employee.annualCTC / 12 : 0) || master.monthlyCTC || 0;
+      const basic = payroll.earnings?.basic !== undefined && payroll.earnings?.basic !== null ? Number(payroll.earnings.basic) : master.basicMaster;
+      const hra = payroll.earnings?.hra !== undefined && payroll.earnings?.hra !== null ? Number(payroll.earnings.hra) : master.hraMaster;
+      const special = payroll.earnings?.specialAllowance !== undefined && payroll.earnings?.specialAllowance !== null ? Number(payroll.earnings.specialAllowance) : master.specialAllowance;
+      const gross = Number(payroll.earnings?.totalEarnings) || Number(payroll.employerContributions?.grossTotalSalary) || master.grossSalary || monthlyCTC;
+      const deductions = Number(payroll.deductions?.totalDeductions) || master.totalDeductions || 0;
+      const netSalary = Number(payroll.netSalary) || master.netSalary || monthlyCTC;
+
+      const hoursWorked = Number(payroll.hoursWorked) || Number(payroll.periodInput?.hoursWorked) || Number(payroll.periodInput?.hoursLogged) || 0;
+      const hourlyRate = Number(payroll.hourlyRate) || Number(payroll.employeeSnapshot?.hourlyRate) || Number(employee.hourlyRate) || 0;
+      const unitsProduced = Number(payroll.periodInput?.unitsProduced) || 0;
+
+      const variableCompTotal = Array.isArray(payroll.earnings?.variableCompensation)
+        ? payroll.earnings.variableCompensation.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
+        : 0;
+
+      const workingDaysVal = Number(payroll.workingDays) > 0 ? Number(payroll.workingDays) : actualDaysInMonth;
+      const paidDaysVal = Number(payroll.paidDays) > 0 ? Number(payroll.paidDays) : workingDaysVal;
+
+      return [
+        index + 1,
+        employee.employeeId || payroll.employeeSnapshot?.employeeId || '',
+        buildEmployeeName(employee.firstName ? employee : payroll.employeeSnapshot || {}),
+        employee.email || payroll.employeeSnapshot?.email || '',
+        employee.department?.name || employee.department?.code || '',
+        employee.designation || payroll.employeeSnapshot?.designation || '',
+        compType,
+        attMode,
+        salaryModeStr,
+        pfStatus,
+        esiStatus,
+        ptStatus,
+        lwfStatus,
+        gratuityStatus,
+        tdsStatus,
+        monthlyCTC,
+        basic,
+        hra,
+        special,
+        gross,
+        deductions,
+        netSalary,
+        workingDaysVal,
+        paidDaysVal,
+        Number(payroll.paidLeaves) || 0,
+        Number(payroll.unpaidLeaves) || Number(payroll.lop) || 0,
+        payroll.lopStrategy || 'proportional',
+        hoursWorked,
+        hourlyRate,
+        unitsProduced,
+        Number(payroll.earnings?.overtime) || 0,
+        Number(payroll.variablePay?.joiningBonus) || 0,
+        Number(payroll.variablePay?.loyaltyBonus) || 0,
+        Number(payroll.variablePay?.incentive) || 0,
+        Number(payroll.variablePay?.specialBonus || 0) + Number(payroll.variablePay?.otherAllowanceArrear || 0),
+        variableCompTotal,
+        Number(payroll.deductions?.loanDeduction) || 0,
+        Number(payroll.deductions?.tds) || 0,
+        sumNamedAmounts(payroll.deductions?.otherDeductions),
+        Number(payroll.totalReimbursementApproved) || 0,
+        Number(payroll.totalPayable) || gross,
+        netSalary,
+        payroll.remarks || payroll.notes || '',
+      ];
+    });
+  } else if (Array.isArray(employees) && employees.length > 0) {
+    rows = employees.map((employee, index) => {
+      const compType = employee.compensationType || (employee.payType === 'hourly' ? 'hourly' : 'monthly_salary');
+      const attMode = employee.attendanceMode || 'attendance';
+
+      const stratFlags = getStrategyStatutoryDefaults(compType, config?.compensationTypeDefaults || {});
+
+      const pfEnabled = employee.pfEnabled !== false;
+      const esiEnabled = employee.esiEnabled !== false;
+      const ptEnabled = employee.ptEnabled !== false;
+      const lwfEnabled = employee.lwfEnabled !== false;
+      const gratuityEnabled = employee.gratuityEnabled !== false;
+      const tdsEnabled = employee.tdsEnabled !== false;
+      const useComponents = employee.useSalaryComponents !== false;
+
+      const includePfInCTC = employee.includePfInCTC === true;
+      const includeGratuityInCTC = employee.includeGratuityInCTC !== false;
+
+      const ptState = employee.ptState || '';
+      const taxRegime = employee.taxRegime || 'new';
+
+      const pfStatus = (stratFlags.pfEligible && pfEnabled)
+        ? (includePfInCTC ? 'APPLIED (In CTC)' : 'APPLIED (Extra)')
+        : 'NOT APPLIED';
+
+      const esiStatus = (stratFlags.esiEligible && esiEnabled)
+        ? 'APPLIED'
+        : 'NOT APPLIED';
+
+      const ptStatus = (stratFlags.ptApplicable && ptEnabled)
+        ? (ptState ? `APPLIED (${ptState})` : 'APPLIED')
+        : 'NOT APPLIED';
+
+      const lwfStatus = (stratFlags.lwfApplicable && lwfEnabled)
+        ? 'APPLIED'
+        : 'NOT APPLIED';
+
+      const gratuityStatus = (stratFlags.gratuityEligible && gratuityEnabled)
+        ? (includeGratuityInCTC ? 'APPLIED (In CTC)' : 'APPLIED (Extra)')
+        : 'NOT APPLIED';
+
+      const tdsStatus = tdsEnabled
+        ? (['retainer', 'project_based', 'milestone_based', 'commission_only'].includes(compType) ? 'APPLIED (194J - 10%)' : `APPLIED (${taxRegime.toUpperCase()} Regime)`)
+        : 'NOT APPLIED';
+
+      const salaryModeStr = useComponents ? 'Component Breakup' : 'Flat Salary';
+
+      const master = buildMasterSalaryStructure(employee, config || {});
+
+      const monthlyCTC = master.monthlyCTC || employee.monthlyCTC || (employee.annualCTC ? employee.annualCTC / 12 : 0);
+      const basic = master.basicMaster || 0;
+      const hra = master.hraMaster || 0;
+      const special = master.specialAllowance || 0;
+      const gross = master.grossSalary || monthlyCTC;
+      const deductions = master.totalDeductions || 0;
+      const netSalary = master.netSalary || monthlyCTC;
+
+      return [
+        index + 1,
+        employee.employeeId || '',
+        buildEmployeeName(employee),
+        employee.email || '',
+        employee.department?.name || employee.department?.code || '',
+        employee.designation || '',
+        compType,
+        attMode,
+        salaryModeStr,
+        pfStatus,
+        esiStatus,
+        ptStatus,
+        lwfStatus,
+        gratuityStatus,
+        tdsStatus,
+        monthlyCTC,
+        basic,
+        hra,
+        special,
+        monthlyCTC,
+        0,
+        monthlyCTC,
+        defaultWorkingDays,
+        defaultWorkingDays,
+        0,
+        0,
+        'proportional',
+        compType === 'hourly' ? 160 : 0,
+        Number(employee.hourlyRate) || 0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        monthlyCTC,
+        monthlyCTC,
+        '',
+      ];
+    });
+  }
+
+  const totals = new Array(columns.length).fill('');
+  totals[0] = 'TOTAL';
+  for (let columnIndex = 15; columnIndex < columns.length - 1; columnIndex += 1) {
+    if (columnIndex === 26) continue;
+    const total = rows.reduce((sum, row) => sum + (typeof row[columnIndex] === 'number' ? row[columnIndex] : 0), 0);
+    totals[columnIndex] = roundAmount(total);
+  }
+
+  const sheet = XLSX.utils.aoa_to_sheet([
+    headerGroups,
+    columns,
+    ...rows,
+    totals,
+  ]);
+
+  sheet['!merges'] = [
+    XLSX.utils.decode_range('A1:H1'),
+    XLSX.utils.decode_range('I1:O1'),
+    XLSX.utils.decode_range('P1:V1'),
+    XLSX.utils.decode_range('W1:AA1'),
+    XLSX.utils.decode_range('AB1:AD1'),
+    XLSX.utils.decode_range('AE1:AJ1'),
+    XLSX.utils.decode_range('AK1:AN1'),
+    XLSX.utils.decode_range('AO1:AP1'),
+    XLSX.utils.decode_range('AQ1:AQ1'),
+  ];
+
+  const headerCells = [];
+  for (let i = 0; i < columns.length; i += 1) {
+    headerCells.push(`${XLSX.utils.encode_col(i)}2`);
+  }
+  ['A1', 'I1', 'P1', 'W1', 'AB1', 'AE1', 'AK1', 'AO1', 'AQ1'].forEach((cell) => {
+    if (sheet[cell]) {
+      sheet[cell].s = {
+        font: { bold: true, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: '0F172A' } },
+        alignment: { horizontal: 'center', vertical: 'center' },
+      };
+    }
+  });
+  setHeaderStyle(sheet, headerCells);
+
+  const numericCells = [];
+  for (let rowIndex = 3; rowIndex <= rows.length + 3; rowIndex += 1) {
+    for (let colIndex = 15; colIndex < columns.length - 1; colIndex += 1) {
+      if (colIndex === 26) continue;
+      numericCells.push(`${XLSX.utils.encode_col(colIndex)}${rowIndex}`);
+    }
+  }
+  applyNumberFormat(sheet, numericCells);
+  sheet['!cols'] = columns.map((column, index) => ({
+    wch: index === 2 ? 22 : index === 3 ? 24 : index >= 8 && index <= 14 ? 20 : 16,
+  }));
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Payroll Inputs');
+  return workbook;
+};
+
+const exportPayrollInputsExcel = async (req, res) => {
+  try {
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+
+    if (!isValidMonth(month) || !isValidYear(year)) {
+      return res.status(400).json({ message: 'Valid month and year are required' });
+    }
+
+    const query = { user: req.user._id, month, year };
+    if (req.query.statusFilter && req.query.statusFilter !== 'all') {
+      query.status = req.query.statusFilter;
+    }
+
+    const payrolls = await Payroll.find(query)
+      .populate({
+        path: 'employee',
+        select: 'firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode payType hourlyRate compensationType payFrequency attendanceMode useSalaryComponents department',
+        populate: { path: 'department', select: 'name code' },
+      })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    let employees = [];
+    if (!payrolls.length) {
+      const Employee = require('../../models/Employee');
+      employees = await Employee.find({ user: req.user._id, isDeleted: false })
+        .populate('department', 'name code')
+        .sort({ firstName: 1 })
+        .lean();
+    }
+
+    const config = await getOrCreateConfig(req.user._id);
+    const workbook = buildPayrollInputsWorkbook(payrolls, employees, config, month, year);
+    sendWorkbook(res, workbook, `payroll-inputs-${year}-${String(month).padStart(2, '0')}.xlsx`);
+  } catch (error) {
+    console.error('Error exporting payroll inputs workbook:', error);
+    res.status(500).json({ message: 'Server error exporting payroll inputs' });
+  }
+};
+
 const exportPayrollExcel = async (req, res) => {
   try {
+    if (req.query.type === 'inputs' || req.query.inputsOnly === 'true') {
+      return await exportPayrollInputsExcel(req, res);
+    }
+
     const month = Number(req.query.month);
     const year = Number(req.query.year);
 
@@ -276,7 +636,10 @@ const getPayrollAuditLog = async (req, res) => {
 
 module.exports = {
   buildPayrollWorkbook,
+  buildPayrollInputsWorkbook,
   exportPayrollExcel,
+  exportPayrollInputsExcel,
   getPayrollTrend,
   getPayrollAuditLog,
 };
+
