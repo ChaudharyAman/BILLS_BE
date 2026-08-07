@@ -171,6 +171,10 @@ exports.getPurchaseOrders = async (req, res) => {
 
     let query = { user: req.user._id };
 
+    if (req.query.businessUnit && mongoose.Types.ObjectId.isValid(req.query.businessUnit)) {
+      query.businessUnit = req.query.businessUnit;
+    }
+
     if (status && status !== 'ALL') {
       query.status = status;
     }

@@ -2,7 +2,7 @@ const Income = require('../models/Income');
 
 function mapInvoiceStatusToIncomeStatus(invoice) {
   if (invoice.status === 'PAID' || invoice.status === 'RECEIVED' || Number(invoice.balanceDue) <= 0) {
-    return 'RECEIVED';
+    return 'PAID';
   }
 
   if (invoice.status === 'PARTIAL' || (invoice.status === 'SENT' && Number(invoice.advancePaid) > 0)) {
@@ -114,6 +114,7 @@ async function syncIncomeFromInvoice(invoice, session = null) {
     user: invoice.user,
     sourceType: 'invoice',
     sourceInvoice: invoice._id,
+    businessUnit: invoice.businessUnit || null,
     incomeNumber,
     date: invoice.date || new Date(),
     vendor: undefined,
@@ -198,6 +199,12 @@ async function cleanupStaleIncomes() {
     if (shouldRemove) {
       await Income.deleteOne({ _id: income._id });
       removedCount++;
+    } else {
+      // Backfill missing businessUnit from source invoice
+      const invoice = await Invoice.findById(income.sourceInvoice).select('businessUnit').lean();
+      if (invoice?.businessUnit && String(income.businessUnit || '') !== String(invoice.businessUnit)) {
+        await Income.updateOne({ _id: income._id }, { $set: { businessUnit: invoice.businessUnit } });
+      }
     }
   }
 

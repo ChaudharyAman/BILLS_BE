@@ -151,6 +151,9 @@ exports.getExpenses = async (req, res) => {
     }
     if (req.query.subCategory) query.subCategory = req.query.subCategory;
     if (req.query.project) query.project = req.query.project;
+    if (req.query.businessUnit && mongoose.Types.ObjectId.isValid(req.query.businessUnit)) {
+      query.businessUnit = req.query.businessUnit;
+    }
 
     if (search) {
       const Client = require('../models/Client');

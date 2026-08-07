@@ -5,6 +5,7 @@ const {
   getClaims,
   getClaimById,
   createClaim,
+  updateClaim,
   updateClaimStatus,
   deleteClaim
 } = require('../controllers/reimbursementController');
@@ -17,6 +18,7 @@ router.route('/')
 
 router.route('/:id')
   .get(getClaimById)
+  .put(updateClaim)
   .delete(deleteClaim);
 
 router.put('/:id/status', updateClaimStatus);
