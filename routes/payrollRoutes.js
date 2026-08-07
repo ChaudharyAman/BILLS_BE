@@ -19,6 +19,7 @@ const {
   updatePayrollConfig,
   calculateSalary,
   exportPayrollExcel,
+  exportPayrollInputsExcel,
   emailPayslip,
   reopenPayroll,
   getPayrollTrend,
@@ -54,6 +55,7 @@ router.put('/config', updatePayrollConfig);
 router.post('/calculate-salary', calculateSalary);
 router.get('/trend', getPayrollTrend);
 router.get('/export', exportPayrollExcel);
+router.get('/export-inputs', exportPayrollInputsExcel);
 router.post('/process', processPayroll);
 router.post('/preview', previewPayroll);
 router.put('/bulk-approve', bulkApprovePayroll);
