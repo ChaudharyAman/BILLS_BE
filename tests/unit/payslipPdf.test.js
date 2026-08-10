@@ -13,7 +13,7 @@ const {
   createBulkPayslipsZip,
   getStoredPayslipPath,
 } = require('../../services/pdfGeneratorService');
-const { PDFDocument } = require('pdf-lib');
+const { PDFDocument } = require('@cantoo/pdf-lib');
 const fs = require('fs');
 
 describe('Payslip PDF Generator & Security Tests', () => {
@@ -54,7 +54,7 @@ describe('Payslip PDF Generator & Security Tests', () => {
     expect(html).toContain('Acme Corp');
     expect(html).toContain('Jane Doe');
     expect(html).toContain('EMP101');
-    expect(html).toContain('July 2026');
+    expect(html).toMatch(/July 2026/i);
     expect(html).toContain('₹58,000.00');
   });
 
@@ -91,5 +91,24 @@ describe('Payslip PDF Generator & Security Tests', () => {
   test('getStoredPayslipPath returns valid uploads path for payroll ID', () => {
     const pPath = getStoredPayslipPath('66a1234567890123456789ab');
     expect(pPath).toContain('payslip_66a1234567890123456789ab.pdf');
+  });
+
+  test('calculateTaxForRegime computes 25% slab for income between 20L and 24L without overtaxing', () => {
+    const { calculateTaxForRegime } = require('../../utils/payrollMath');
+    // 22L (2,200,000) taxable income: 20k + 40k + 60k + 80k + (2L * 0.25 = 50k) = 250,000
+    const tax = calculateTaxForRegime('new', 2200000);
+    expect(tax).toBe(250000);
+  });
+
+  test('calculateTaxForRegime computes Section 87A marginal relief for income between 12L and marginal boundary', () => {
+    const { calculateTaxForRegime } = require('../../utils/payrollMath');
+    // 12L (1,200,000) taxable income: 0 tax
+    expect(calculateTaxForRegime('new', 1200000)).toBe(0);
+
+    // 12.2L (1,220,000) taxable income:
+    // Raw tax: (12.2L-12L)*0.15 + 60k = 63,000
+    // Excess income over 12L: 20,000
+    // Marginal relief caps tax to 20,000
+    expect(calculateTaxForRegime('new', 1220000)).toBe(20000);
   });
 });

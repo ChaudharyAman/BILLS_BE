@@ -12,6 +12,8 @@ const {
   buildPayrollSnapshot,
   DEFAULT_PAYROLL_CONFIG,
   getConfigForDate,
+  buildTaxWorksheet,
+  calculateTaxForRegime,
 } = require('../../utils/payrollMath');
 
 describe('Payroll Strategy Engine & Statutory Math Tests', () => {
@@ -545,6 +547,125 @@ describe('Payroll Strategy Engine & Statutory Math Tests', () => {
       const workbook = buildPayrollInputsWorkbook(payrolls, [], DEFAULT_PAYROLL_CONFIG, 7, 2026);
       expect(workbook).toBeDefined();
       expect(workbook.SheetNames).toContain('Payroll Inputs');
+    });
+  });
+
+  describe('buildTaxWorksheet & Tax Slab / Rebate Acceptance Criteria', () => {
+    test('New Regime ₹22,00,000 annual taxable income correctly applies 25% slab (tax = ₹2,50,000)', () => {
+      const tax = calculateTaxForRegime('new', 2200000);
+      expect(tax).toBe(250000);
+    });
+
+    test('New Regime ₹9,50,000 annual taxable income (within 12L rebate band) shows totalTax = 0', () => {
+      const tax = calculateTaxForRegime('new', 950000);
+      expect(tax).toBe(0);
+    });
+
+    test('buildTaxWorksheet calculates identical structure and genuine FY-to-date TDS sum', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: { basic: 20000, hra: 10000 },
+        deductions: { tds: 1000 },
+        employeeSnapshot: { taxRegime: 'new' }
+      };
+      const fyPayrolls = [
+        { month: 4, deductions: { tds: 1000 } },
+        { month: 5, deductions: { tds: 1000 } },
+        { month: 6, deductions: { tds: 1000 } },
+        { month: 7, deductions: { tds: 1000 } }
+      ];
+      const worksheet = buildTaxWorksheet({ payroll, fyPayrolls });
+      expect(worksheet.regime).toBe('new');
+      expect(worksheet.taxDeductionThisMonth).toBe(1000);
+      expect(worksheet.taxDeductedTillDate).toBe(4000);
+      expect(worksheet.hra.from).toBe('April');
+      expect(worksheet.hra.to).toBe('March');
+    });
+
+    // Acceptance criteria 7 — non-component pay types show single correct label, not "Basic"
+    test('AC-7: hourly employee shows "Hourly Wages" row, not 9-row salary structure', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: { basic: 32000, totalEarnings: 32000 },
+        deductions: { tds: 0 },
+        employeeSnapshot: { taxRegime: 'new', compensationType: 'hourly' }
+      };
+      const worksheet = buildTaxWorksheet({ payroll });
+      expect(worksheet.componentBreakdown).toHaveLength(1);
+      expect(worksheet.componentBreakdown[0].name).toBe('Hourly Wages');
+      expect(worksheet.componentBreakdown[0].gross).toBe(384000); // 32000 × 12
+      expect(worksheet.grossSalary).toBe(384000);
+    });
+
+    test('AC-7: daily_wage employee shows "Daily Wage Earnings" row', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: { basic: 15000, totalEarnings: 15000 },
+        deductions: { tds: 0 },
+        employeeSnapshot: { taxRegime: 'new', compensationType: 'daily_wage' }
+      };
+      const worksheet = buildTaxWorksheet({ payroll });
+      expect(worksheet.componentBreakdown).toHaveLength(1);
+      expect(worksheet.componentBreakdown[0].name).toBe('Daily Wage Earnings');
+    });
+
+    test('AC-7: retainer employee shows "Monthly Retainer Fee" row', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: { basic: 50000, totalEarnings: 50000 },
+        deductions: { tds: 0 },
+        employeeSnapshot: { taxRegime: 'new', compensationType: 'retainer' }
+      };
+      const worksheet = buildTaxWorksheet({ payroll });
+      expect(worksheet.componentBreakdown).toHaveLength(1);
+      expect(worksheet.componentBreakdown[0].name).toBe('Monthly Retainer Fee');
+    });
+
+    // Acceptance criteria 8 — salary_plus_commission includes Commission row
+    test('AC-8: salary_plus_commission worksheet includes Commission row reflecting variable compensation', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: {
+          basic: 30000,
+          hra: 15000,
+          variableCompensation: [
+            { amount: 10000, paymentType: 'Sales', reference: 'July deals' }
+          ]
+        },
+        deductions: { tds: 0 },
+        employeeSnapshot: { taxRegime: 'new', compensationType: 'salary_plus_commission' }
+      };
+      const worksheet = buildTaxWorksheet({ payroll });
+      const commissionRow = worksheet.componentBreakdown.find(r => r.name === 'Commission');
+      expect(commissionRow).toBeDefined();
+      expect(commissionRow.gross).toBe(120000); // 10000 × 12
+      expect(commissionRow.taxable).toBe(120000);
+      // grossSalary must include commission
+      expect(worksheet.grossSalary).toBeGreaterThan((30000 + 15000) * 12);
+    });
+
+    // hra block is always present in returned shape, even for non-component types
+    test('hra block present with correct shape for non-component pay type', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: { basic: 20000, totalEarnings: 20000 },
+        deductions: { tds: 0 },
+        employeeSnapshot: { taxRegime: 'new', compensationType: 'piece_rate' }
+      };
+      const worksheet = buildTaxWorksheet({ payroll });
+      expect(worksheet.hra).toMatchObject({
+        from: 'April',
+        to: 'March',
+        rentPaid: 0,
+        actualHRA: 0,
+        exemptHRA: 0
+      });
     });
   });
 });

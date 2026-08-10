@@ -12,6 +12,7 @@ const { computeStatutoryAndTax, calculateGratuityEntitlement, getConfigForDate, 
 const { DEFAULT_PAYROLL_CONFIG, normalizeConfig, getMonthlyCTCValue, buildMasterSalaryStructure, getSalarySplits } = require('./salaryStructure');
 const { buildPayrollSnapshot } = require('./snapshot');
 const { buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems } = require('./payslipLineItems');
+const { buildTaxWorksheet } = require('./taxWorksheet');
 
 module.exports = {
   DEFAULT_PAYROLL_CONFIG,
@@ -34,4 +35,5 @@ module.exports = {
   buildPayrollSnapshot,
   buildPayslipEarningsLineItems,
   buildPayslipDeductionsLineItems,
+  buildTaxWorksheet,
 };
