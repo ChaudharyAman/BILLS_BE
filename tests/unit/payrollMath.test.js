@@ -14,6 +14,8 @@ const {
   getConfigForDate,
   buildTaxWorksheet,
   calculateTaxForRegime,
+  computeStatutoryAndTax,
+  getSalarySplits,
 } = require('../../utils/payrollMath');
 
 describe('Payroll Strategy Engine & Statutory Math Tests', () => {
@@ -668,4 +670,138 @@ describe('Payroll Strategy Engine & Statutory Math Tests', () => {
       });
     });
   });
+
+  // ─── Bug 2: ESI gross-wage consistency ──────────────────────────────────────
+  describe('ESI Gross-Wage Consistency (Bug 2)', () => {
+    const ESI_EMPLOYEE_RATE = DEFAULT_PAYROLL_CONFIG.esiEmployeeRate; // 0.0075
+    const ESI_EMPLOYER_RATE = DEFAULT_PAYROLL_CONFIG.esiEmployerRate; // 0.0325
+
+    // Fixture: basic=15000, HRA=5000, other allowances=2000 → gross=22000, under ESI threshold.
+    // ESI threshold default is 21000; we override to 25000 so this gross qualifies.
+    const esiConfig = {
+      ...DEFAULT_PAYROLL_CONFIG,
+      esiBasicThreshold: 25000,
+    };
+
+    const esiEmployee = {
+      monthlyCTC: 24000,
+      compensationType: 'monthly_salary',
+      pfEnabled: false,
+      esiEnabled: true,
+      ptEnabled: false,
+      gratuityEnabled: false,
+      lwfEnabled: false,
+      tdsEnabled: false,
+      taxRegime: 'new',
+      // Hardcode component split so gross is deterministic
+      basic: 15000,
+      hra:   5000,
+      specialAllowance: 2000,
+    };
+
+    test('computeStatutoryAndTax: ESI based on gross (22000), not basicMaster (15000)', () => {
+      const gross = 22000;       // basic + hra + specialAllowance
+      const basicMaster = 15000;
+      const { esiEmployee: esiEmpDeduction, esiEmployer: esiEmpContrib } = computeStatutoryAndTax({
+        gross,
+        basicMaster,
+        hraMaster: 5000,
+        monthlyCTC: 22000,
+        flags: {
+          pfEnabled: false,
+          esiEnabled: true,
+          ptEnabled: false,
+          lwfEnabled: false,
+          tdsEnabled: false,
+          gratuityEnabled: false,
+        },
+        config: esiConfig,
+        src: { _paidDays: 30, _workingDays: 30, taxRegime: 'new', declarations: {} },
+      });
+      // Must be on gross, not basic
+      expect(esiEmpDeduction).toBe(roundAmount(gross * ESI_EMPLOYEE_RATE));
+      expect(esiEmpContrib).toBe(roundAmount(gross * ESI_EMPLOYER_RATE));
+      // Confirm it differs from the old (wrong) basic-based value
+      expect(esiEmpDeduction).not.toBe(roundAmount(basicMaster * ESI_EMPLOYEE_RATE));
+    });
+
+    test('buildMasterSalaryStructure: ESI based on gross earnings, not basicMaster', () => {
+      const result = buildMasterSalaryStructure(esiEmployee, esiConfig);
+      const gross = result.totalEarnings; // whatever the engine computed
+      // totalEarnings includes basic+hra+special at minimum, so esiEmployee should be gross × rate
+      expect(result.esiEmployee).toBe(roundAmount(gross * ESI_EMPLOYEE_RATE));
+      expect(result.esiEmployer).toBe(roundAmount(gross * ESI_EMPLOYER_RATE));
+    });
+
+    test('getSalarySplits ESI matches buildMasterSalaryStructure ESI for a full calendar month (no revision)', () => {
+      // Full month: paidDays = workingDays = 30 (no mid-month revision, so single segment)
+      const month = 7;
+      const year  = 2026;
+      const paidDays = 30;
+      const workingDays = 30;
+
+      const master = buildMasterSalaryStructure(esiEmployee, esiConfig);
+      const splits = getSalarySplits(esiEmployee, esiConfig, month, year, paidDays, workingDays);
+
+      // getSalarySplits returns an array of segments; sum esiEmployee across all segments
+      const splitEsiSum = splits.reduce((s, seg) => s + (seg.esiEmployee || 0), 0);
+
+      // Within ₹1 rounding tolerance (daily-accumulation vs monthly round)
+      expect(Math.abs(splitEsiSum - master.esiEmployee)).toBeLessThanOrEqual(1);
+    });
+
+    test('ESI is zero when gross exceeds esiBasicThreshold', () => {
+      const { esiEmployee: esiEmpDeduction } = computeStatutoryAndTax({
+        gross: 30000, // above threshold 25000
+        basicMaster: 15000,
+        monthlyCTC: 30000,
+        flags: { pfEnabled: false, esiEnabled: true, ptEnabled: false, lwfEnabled: false, tdsEnabled: false, gratuityEnabled: false },
+        config: esiConfig,
+        src: { taxRegime: 'new', declarations: {} },
+      });
+      expect(esiEmpDeduction).toBe(0);
+    });
+  });
+
+  // ─── Bug 3: Statutory-Only Shortfall Accounting Invariant ──────────────────
+  describe('Statutory-Only Shortfall Accounting Invariant (Bug 3)', () => {
+    test('when statutory deductions exceed gross earnings with zero non-statutory deductions, the accounting identity holds', () => {
+      const employee = {
+        monthlyCTC: 10000,
+        compensationType: 'monthly_salary',
+        pfEnabled: true,
+        esiEnabled: false,
+        ptEnabled: true,
+        ptState: 'MH',
+        tdsEnabled: true,
+        deductions: {
+          tds: 5000, // High manual TDS deduction exceeding gross
+        },
+      };
+
+      const snapshot = buildPayrollSnapshot(
+        employee,
+        DEFAULT_PAYROLL_CONFIG,
+        { paidDays: 5, workingDays: 30 }, // LOP reduces gross significantly below deductions
+        {},
+        4,
+        2026
+      );
+
+      const totalIncome = roundAmount(
+        snapshot.earnings.totalEarnings +
+        snapshot.variablePay.totalVariablePay +
+        snapshot.totalReimbursementApproved
+      );
+
+      // Accounting identity invariant: earnings + variablePay + reimbursements - totalDeductions === netSalary
+      const netSalaryInvariant = roundAmount(totalIncome - snapshot.deductions.totalDeductions);
+      expect(snapshot.netSalary).toBe(netSalaryInvariant);
+
+      // Verify payrollShortfall flags statutory-only case
+      expect(snapshot.payrollShortfall).toBeDefined();
+      expect(snapshot.payrollShortfall.statutoryOnly).toBe(true);
+    });
+  });
+
 });

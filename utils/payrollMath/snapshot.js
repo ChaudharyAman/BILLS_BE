@@ -592,6 +592,7 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
     let advanceShortfall = 0;
 
     if (nonStatutorySum > 0) {
+      // Proportionally reduce non-statutory deductions to prevent negative net salary.
       const ratio = Math.min(1, rawShortfall / nonStatutorySum);
       if (deductions.loanDeduction > 0) {
         loanShortfall = roundAmount(deductions.loanDeduction * ratio);
@@ -609,14 +610,30 @@ const buildPayrollSnapshot = (employeeInput, configInput, attendance, adjustment
         sumNamedAmounts(deductions.otherDeductions) +
         dynamicDeductionsSum
       );
+    } else {
+      // Shortfall is purely statutory (PF/ESI/PT/TDS). There are no non-statutory
+      // deductions to reduce. Cap totalDeductions to what is actually available so
+      // that the accounting identity always holds:
+      //   earnings.totalEarnings + variablePay.totalVariablePay + totalReimbursementApproved
+      //     - deductions.totalDeductions === netSalary
+      // This is the minimum correct change: do NOT touch individual statutory lines
+      // (which would require a documented statutory-reduction order policy) — instead
+      // surface the cap via payrollShortfall.statutoryOnly so payroll managers can
+      // apply the correct manual correction.
+      deductions.totalDeductions = totalAvailableForDeductions;
     }
 
-    netSalary = roundAmount(Math.max(0, totalAvailableForDeductions - deductions.totalDeductions));
+    netSalary = roundAmount(totalAvailableForDeductions - deductions.totalDeductions);
     payrollShortfall = {
       shortfallAmount: rawShortfall,
       loanShortfall,
       advanceShortfall,
-      notes: 'Non-statutory deductions adjusted to prevent negative net salary',
+      // True when the shortfall cannot be resolved by reducing discretionary deductions.
+      // Payroll managers must review and adjust statutory deductions manually.
+      statutoryOnly: nonStatutorySum === 0,
+      notes: nonStatutorySum > 0
+        ? 'Non-statutory deductions adjusted to prevent negative net salary'
+        : 'Statutory deductions exceed gross earnings; totalDeductions capped to available earnings. Requires manual payroll manager review.',
     };
   }
 

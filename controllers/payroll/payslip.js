@@ -9,6 +9,7 @@ const nodemailer = require('nodemailer');
 const axios = require('axios');
 const Payroll = require('../../models/Payroll');
 const Settings = require('../../models/Settings');
+const LeaveBalance = require('../../models/LeaveBalance');
 const { getSalarySplits, buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems, calculateTaxForRegime } = require('../../utils/payrollMath');
 const { monthName, getOrCreateConfig } = require('./common');
 
@@ -151,6 +152,23 @@ const generatePayslip = async (req, res) => {
       }
     }
 
+    let leaveBalance = 0;
+    try {
+      const targetEmpId = payroll.employee || (payroll.employeeSnapshot && payroll.employeeSnapshot._id);
+      if (targetEmpId) {
+        const balances = await LeaveBalance.find({
+          user: req.user._id,
+          employee: targetEmpId,
+          year: payroll.year || new Date().getFullYear(),
+        });
+        if (balances && balances.length > 0) {
+          leaveBalance = balances.reduce((sum, b) => sum + (Number(b.closing) || 0), 0);
+        }
+      }
+    } catch (e) {
+      console.warn('[Payslip] Could not fetch leave balance:', e.message);
+    }
+
     const taxWorksheet = computeTaxWorksheet(payroll, employeeData, { fyPayrolls, tdsMonths });
 
     res.json({
@@ -161,6 +179,7 @@ const generatePayslip = async (req, res) => {
           year: payroll.year,
           monthName: monthName(payroll.month),
         },
+        leaveBalance: Number(leaveBalance) || 0,
         salarySplits: (payroll.salarySplits && payroll.salarySplits.length > 0) ? payroll.salarySplits : splits,
         earningsLineItems: buildPayslipEarningsLineItems(payroll),
         deductionsLineItems: buildPayslipDeductionsLineItems(payroll),
@@ -170,11 +189,17 @@ const generatePayslip = async (req, res) => {
         fnfDetails: payroll.fnfDetails || null,
         complianceNotes: (() => {
           const notes = [];
-          if (payroll.netSalary === 0 && payroll.deductions?.totalDeductions > payroll.earnings?.totalEarnings) {
+          if (payroll.payrollShortfall?.statutoryOnly) {
+            notes.push('Note: Statutory deductions (PF/ESI/PT/TDS) exceed gross earnings. Deductions have been capped to available earnings. Please review with your payroll manager.');
+          } else if (payroll.netSalary === 0 && payroll.deductions?.totalDeductions > payroll.earnings?.totalEarnings) {
             notes.push('Note: Net salary was clamped to ₹0 due to non-statutory deduction shortfall.');
+          }
+          if (!settings?.companyName) {
+            notes.push('Note: Company details are not fully configured in Settings. Complete your company profile to show correct letterhead.');
           }
           return notes;
         })(),
+        company: settings || {},
         earnings: payroll.earnings,
         employerContributions: payroll.employerContributions,
         variablePay: payroll.variablePay,

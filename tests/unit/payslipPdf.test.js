@@ -49,13 +49,14 @@ describe('Payslip PDF Generator & Security Tests', () => {
   };
 
   test('buildPayslipHtml produces structured HTML with company and payroll details', () => {
-    const html = buildPayslipHtml(samplePayroll, samplePayroll.employeeSnapshot, sampleSettings);
+    const html = buildPayslipHtml({ ...samplePayroll, leaveBalance: 14.5 }, samplePayroll.employeeSnapshot, sampleSettings);
     expect(typeof html).toBe('string');
     expect(html).toContain('Acme Corp');
     expect(html).toContain('Jane Doe');
     expect(html).toContain('EMP101');
     expect(html).toMatch(/July 2026/i);
     expect(html).toContain('₹58,000.00');
+    expect(html).toContain('14.50');
   });
 
   test('encryptPdfBuffer returns password-protected PDF bytes via pdf-lib', async () => {

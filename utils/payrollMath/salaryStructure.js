@@ -414,8 +414,9 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     : roundAmount(basicMaster + hraMaster + flexi + broadband + petrol + lta + specialAllowance + conveyance + medicalAllowance + otherAllowancesSum);
 
   const esiApplicable = esiEnabled && (pass1TotalEarnings <= config.esiBasicThreshold);
-  const esiEmployer = roundAmount(esiApplicable ? basicMaster * config.esiEmployerRate : 0);
-  const esiEmployee = roundAmount(esiApplicable ? basicMaster * config.esiEmployeeRate : 0);
+  // ESI is on gross wages (ESI Act, 1948) — use pass1TotalEarnings (= gross before ESI CTC rebalancing).
+  const esiEmployer = roundAmount(esiApplicable ? pass1TotalEarnings * config.esiEmployerRate : 0);
+  const esiEmployee = roundAmount(esiApplicable ? pass1TotalEarnings * config.esiEmployeeRate : 0);
 
   if (esiApplicable) {
     if (hasDynamicComponents) {

@@ -10,56 +10,7 @@
 'use strict';
 
 const { calculateHRAExemption, calculateTaxForRegime } = require('./tax');
-
-/**
- * Pay types whose gross is entirely written into earnings.basic and which have
- * no discrete salary component breakdown.
- */
-const NO_COMPONENT_TYPES = new Set([
-  'hourly',
-  'timesheet_based',
-  'daily_wage',
-  'piece_rate',
-  'project_based',
-  'milestone_based',
-  'retainer',
-  'commission_only',
-]);
-
-/**
- * Returns the single row label for non-component pay types, mirroring the
- * naming already used in buildPayslipEarningsLineItems.
- */
-function _grossRowLabel(compType, payroll) {
-  const periodInput = payroll.periodInput || {};
-  switch (compType) {
-    case 'hourly':
-      return 'Hourly Wages';
-    case 'timesheet_based':
-      return 'Timesheet Logged Hours Pay';
-    case 'daily_wage':
-      return 'Daily Wage Earnings';
-    case 'piece_rate': {
-      const unitType = periodInput.unitType ||
-        (payroll.employeeSnapshot || {}).rateCard?.[0]?.paymentType || 'Units';
-      return `${unitType} Output Pay`;
-    }
-    case 'project_based': {
-      const ref = periodInput.projectRef || periodInput.description || '';
-      return ref ? `Project Fee — ${ref}` : 'Project Fee';
-    }
-    case 'milestone_based': {
-      const ref = periodInput.milestoneRef || '';
-      return ref ? `Milestone Deliverable: ${ref}` : 'Milestone Deliverable';
-    }
-    case 'retainer':
-      return 'Monthly Retainer Fee';
-    case 'commission_only':
-      return 'Commission Earnings';
-    default:
-      return 'Base Earnings';
-  }
-}
+const { NON_COMPONENT_TYPES, resolveNonComponentRowSpec } = require('./compensationRowSpec');
 
 function buildTaxWorksheet({ payroll = {}, employee = {}, fyPayrolls = [], tdsMonthsInput = null } = {}) {
   if (payroll.taxWorksheet) return payroll.taxWorksheet;
@@ -85,28 +36,15 @@ function buildTaxWorksheet({ payroll = {}, employee = {}, fyPayrolls = [], tdsMo
   let basicAnnual = 0;
   let hraAnnual = 0;
 
-  if (NO_COMPONENT_TYPES.has(compType)) {
+  if (NON_COMPONENT_TYPES.has(compType)) {
     // --- Non-component pay types: single gross row, no HRA split. ---
-    const grossMonthly = Number(
-      payroll.earnings?.totalEarnings || payroll.earnings?.basic || 0
-    );
-    const grossAnnual = grossMonthly * 12;
+    const spec = resolveNonComponentRowSpec(compType, payroll);
+    const effectiveGross = spec.amount * 12;
 
-    // Commission-only may have variableCompensation lines instead of a basic entry.
-    let commissionAnnual = 0;
-    if (compType === 'commission_only' && Array.isArray(payroll.earnings?.variableCompensation)) {
-      commissionAnnual = payroll.earnings.variableCompensation
-        .reduce((s, v) => s + (Number(v.amount) || 0), 0) * 12;
-    }
-    const effectiveGross = commissionAnnual || grossAnnual;
-
-    const label = _grossRowLabel(compType, payroll);
     componentBreakdown = [
-      { name: label, gross: effectiveGross, exempt: 0, taxable: effectiveGross }
+      { name: spec.name, gross: effectiveGross, exempt: 0, taxable: effectiveGross }
     ];
     grossSalary = effectiveGross;
-    // HRA row not present; exemptHra stays 0 even if old regime
-    // (no HRA component to exempt for non-component types)
     basicAnnual = effectiveGross; // used for basicPercent / rentMinusBasic10 display only
     hraAnnual = 0;
   } else {
@@ -185,7 +123,19 @@ function buildTaxWorksheet({ payroll = {}, employee = {}, fyPayrolls = [], tdsMo
                   broadbandAnnual + otherAnnual + bonusAnnual + arrearAnnual + commissionAnnual;
   }
 
-  const taxableIncome = Math.max(0, grossSalary - exemptHra - standardDeduction);
+  // Chapter VI-A deductions — old regime only (same caps as tax.js calculateTaxDetails)
+  let chapterVIA = 0;
+  let sec80C = 0, sec80D = 0, sec80CCD1B = 0, sec24b = 0, otherExemptions = 0;
+  if (isOld) {
+    sec80C        = Math.min(Number(declarations.section80C)    || 0, 150000);
+    sec80D        = Math.min(Number(declarations.section80D)    || 0, 25000);
+    sec80CCD1B    = Math.min(Number(declarations.section80CCD1B) || 0, 50000);
+    sec24b        = Math.min(Number(declarations.section24b)    || 0, 200000);
+    otherExemptions = Number(declarations.otherExemptions)      || 0;
+    chapterVIA    = sec80C + sec80D + sec80CCD1B + sec24b + otherExemptions;
+  }
+
+  const taxableIncome = Math.max(0, grossSalary - exemptHra - standardDeduction - chapterVIA);
   const totalTax = calculateTaxForRegime(regime, taxableIncome);
   const cess = Math.round(totalTax * 0.04 * 100) / 100;
   const netTax = Math.round((totalTax + cess) * 100) / 100;
@@ -227,6 +177,14 @@ function buildTaxWorksheet({ payroll = {}, employee = {}, fyPayrolls = [], tdsMo
     taxToDeducted,
     taxDeductionThisMonth,
     tdsMonths,
+    chapterVIADeductions: {
+      section80C: sec80C,
+      section80D: sec80D,
+      section80CCD1B: sec80CCD1B,
+      section24b: sec24b,
+      otherExemptions,
+      total: chapterVIA
+    },
     hra: {
       from: 'April',
       to: 'March',

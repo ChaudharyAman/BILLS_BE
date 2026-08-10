@@ -45,15 +45,19 @@ function computeTaxWorksheet(payroll, employee, options = {}) {
  * Builds clean, responsive A4 HTML template for payslip PDF (Spreadsheet Style).
  */
 function buildPayslipHtml(payroll, employee, settings) {
-  const companyName = settings?.companyName || 'Resource Gateway Consulting Private Limited';
+  const companyName = settings?.companyName || '';
+  const logoInitials = companyName
+    ? companyName.split(' ').filter(Boolean).map(w => w[0]).join('').slice(0, 3).toUpperCase()
+    : '—';
   const companyLogo = settings?.logoUrl || '';
   const companyAddress = settings?.address || {};
-  const addressLine = [
-    companyAddress.line1 || 'C - 5/25, First Floor, Sector- 52',
-    companyAddress.city || 'Gurgaon',
-    companyAddress.state || 'Haryana',
+  const addressParts = [
+    companyAddress.line1,
+    companyAddress.city,
+    companyAddress.state,
     companyAddress.zip
-  ].filter(Boolean).join(', ');
+  ].filter(Boolean);
+  const addressLine = addressParts.join(', ');
 
   const empSnap = payroll.employeeSnapshot || {};
   const emp = employee || payroll.employee || {};
@@ -292,7 +296,7 @@ function buildPayslipHtml(payroll, employee, settings) {
       <!-- Company Header Block -->
       <div class="header-row">
         <div>
-          ${companyLogo ? `<img src="${companyLogo}" style="max-height: 36px; margin-bottom: 4px; display: block;" />` : `<span style="font-weight: 800; font-size: 14px; color: #1e293b;">ResourceGateway</span>`}
+          ${companyLogo ? `<img src="${companyLogo}" style="max-height: 36px; margin-bottom: 4px; display: block;" />` : `<span style="font-weight: 800; font-size: 14px; color: #1e293b;">${logoInitials}</span>`}
         </div>
         <div style="text-align: center; flex: 1; padding: 0 10px;">
           <div class="brand-title">${companyName}</div>
@@ -312,12 +316,11 @@ function buildPayslipHtml(payroll, employee, settings) {
             <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Name</span> <span style="font-weight: 700;">${employeeName}</span></div>
             <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Designation</span> <span style="font-weight: 700;">${designation}</span></div>
             <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Department</span> <span style="font-weight: 700;">${deptName}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Cost Centre</span> <span style="font-weight: 700;">TaaS</span></div>
             <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">DOJ</span> <span style="font-weight: 700;">${formatDisplayDate(emp.joiningDate || empSnap.joiningDate)}</span></div>
           </td>
           <td style="width: 33.33%;">
             <div class="flex-between"><span class="text-muted">PF UAN No.</span> <span style="font-weight: 700;">${emp.uanNumber || empSnap.uanNumber || 'NA'}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Location</span> <span style="font-weight: 700;">${emp.location || empSnap.location || 'Gurgaon'}</span></div>
+            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Location</span> <span style="font-weight: 700;">${emp.location || empSnap.location || '-'}</span></div>
             <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Payment</span> <span style="font-weight: 700;">${payroll.paymentMethod || 'Bank Transfer'}</span></div>
             <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Bank A/c</span> <span style="font-weight: 700;">${emp.bankDetails?.accountNumber || empSnap.bankAccount || '-'}</span></div>
             <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">PAN</span> <span style="font-weight: 700;">${emp.panNumber || empSnap.panNumber || '-'}</span></div>
@@ -479,7 +482,7 @@ function buildPayslipHtml(payroll, employee, settings) {
             <div style="border-top: 1px solid #000000; padding: 4px; background-color: #f9fafb;">
               <div class="flex-between font-bold" style="font-size: 8.5px;">
                 <span>LEAVE BALANCE ON MONTH END</span>
-                <span>0.00</span>
+                <span>${Number(payroll.leaveBalance || 0).toFixed(2)}</span>
               </div>
             </div>
           </td>

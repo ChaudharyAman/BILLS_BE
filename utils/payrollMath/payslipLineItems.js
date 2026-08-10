@@ -5,6 +5,7 @@
  */
 
 const { roundAmount } = require('../money');
+const { NON_COMPONENT_TYPES, resolveNonComponentRowSpec } = require('./compensationRowSpec');
 
 function buildPayslipEarningsLineItems(payroll = {}) {
   const lineItems = [];
@@ -35,57 +36,15 @@ function buildPayslipEarningsLineItems(payroll = {}) {
         }
       });
     }
-  } else if (compType === 'hourly' || compType === 'timesheet_based') {
-    const hours = Number(payroll.hoursWorked) || Number(periodInput.hoursWorked) || Number(periodInput.hoursLogged) || 0;
-    const rate = Number(payroll.hourlyRate) || Number(empSnapshot.hourlyRate) || Number(emp.hourlyRate) || 0;
-    const total = earnings.totalEarnings || earnings.basic || roundAmount(hours * rate);
-    lineItems.push({
-      name: compType === 'timesheet_based' ? 'Timesheet Logged Hours Pay' : 'Hourly Wages',
-      amount: formatCurrency(total),
-      details: `${hours} hrs × ₹${rate}/hr`
-    });
-  } else if (compType === 'daily_wage') {
-    const days = Number(payroll.paidDays) || Number(periodInput.daysWorked) || 0;
-    const rate = Number(empSnapshot.dailyRate) || Number(emp.dailyRate) || (days > 0 ? roundAmount(earnings.totalEarnings / days) : 0);
-    const total = earnings.totalEarnings || earnings.basic || roundAmount(days * rate);
-    lineItems.push({
-      name: 'Daily Wage Earnings',
-      amount: formatCurrency(total),
-      details: `${days} days × ₹${rate}/day`
-    });
-  } else if (compType === 'piece_rate') {
-    const units = Number(periodInput.unitsProduced) || 0;
-    const rate = Number(periodInput.ratePerUnit) || Number(empSnapshot.rateCard?.[0]?.rate) || Number(emp.rateCard?.[0]?.rate) || 0;
-    const unitType = periodInput.unitType || empSnapshot.rateCard?.[0]?.paymentType || 'Units';
-    const total = earnings.totalEarnings || earnings.basic || roundAmount(units * rate);
-    lineItems.push({
-      name: `${unitType} Output Pay`,
-      amount: formatCurrency(total),
-      details: `${units} units × ₹${rate}/unit`
-    });
-  } else if (compType === 'project_based') {
-    const fee = Number(periodInput.projectFee) || earnings.totalEarnings || earnings.basic || 0;
-    const ref = periodInput.projectRef || periodInput.description || '';
-    lineItems.push({
-      name: `Project Fee${ref ? ` — ${ref}` : ''}`,
-      amount: formatCurrency(fee),
-      details: 'Approved Project Deliverable Fee'
-    });
-  } else if (compType === 'milestone_based') {
-    const amt = Number(periodInput.milestoneAmount) || earnings.totalEarnings || earnings.basic || 0;
-    const ref = periodInput.milestoneRef || '';
-    lineItems.push({
-      name: `Milestone Deliverable${ref ? `: ${ref}` : ''}`,
-      amount: formatCurrency(amt),
-      details: 'Completed Milestone Payment'
-    });
-  } else if (compType === 'retainer') {
-    const amt = earnings.totalEarnings || earnings.basic || 0;
-    lineItems.push({
-      name: 'Monthly Retainer Fee',
-      amount: formatCurrency(amt),
-      details: 'Fixed Service Retainer Contract'
-    });
+  } else if (NON_COMPONENT_TYPES.has(compType)) {
+    if (compType !== 'commission_only' || !Array.isArray(earnings.variableCompensation) || earnings.variableCompensation.length === 0) {
+      const spec = resolveNonComponentRowSpec(compType, payroll);
+      lineItems.push({
+        name: spec.name,
+        amount: formatCurrency(spec.amount),
+        details: spec.details
+      });
+    }
   }
 
   if (compType === 'commission_only' || compType === 'salary_plus_commission' || Array.isArray(earnings.variableCompensation)) {
