@@ -20,7 +20,12 @@ const strategies = {
   monthly_salary:         require('./monthlySalaryStrategy'),
   hourly:                 require('./hourlyStrategy'),
   daily_wage:             require('./dailyWageStrategy'),
-  weekly_salary:          require('./monthlySalaryStrategy'), // same compute, payFrequency handled upstream
+  // IMPORTANT: 'weekly_salary' does NOT create a weekly pay cycle. It only converts
+  // a weeklyRate to a monthly-equivalent CTC (weeklyRate × 52 / 12) and then runs
+  // through the same monthly salary strategy as everyone else. If true weekly payroll
+  // runs are needed in the future, that requires a separate feature (new Payroll.frequency
+  // field, new run-scheduling logic, etc.) — raise it as a separate request.
+  weekly_salary:          require('./monthlySalaryStrategy'),
   piece_rate:             require('./pieceRateStrategy'),
   project_based:          require('./projectBasedStrategy'),
   milestone_based:        require('./milestoneBasedStrategy'),
@@ -78,7 +83,7 @@ function listCompensationTypes() {
     monthly_salary:        'Monthly Salary',
     hourly:                'Hourly Rate',
     daily_wage:            'Daily Wage',
-    weekly_salary:         'Weekly Salary',
+    weekly_salary:         'Weekly Rate (paid monthly)',
     piece_rate:            'Piece Rate',
     project_based:         'Project Based',
     milestone_based:       'Milestone Based',
