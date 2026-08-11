@@ -74,7 +74,7 @@ const EmployeeSchema = new mongoose.Schema({
       'monthly_salary',        // Standard CTC-based monthly salary (existing salaried path)
       'hourly',                // Hours × hourly rate (existing hourly path)
       'daily_wage',            // Days worked × daily rate
-      'weekly_salary',         // Weekly salary (pay-frequency future)
+      'weekly_salary',         // Weekly rate (converted to monthly-equivalent CTC via weeklyRate × 52/12). Does NOT create a weekly pay cycle — pay is still disbursed monthly. See payrollStrategies/index.js.
       'piece_rate',            // Units produced × rate per unit
       'project_based',         // Flat project fee
       'milestone_based',       // Payment on milestone completion

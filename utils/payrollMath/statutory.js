@@ -59,8 +59,9 @@ const computeStatutoryAndTax = ({
     : (monthlyCTC || gross);
 
   const esiApplicable = esiEnabled && (projectedMonthlyGross <= config.esiBasicThreshold);
-  const esiEmployer = roundAmount(esiApplicable ? basicMaster * config.esiEmployerRate : 0);
-  const esiEmployee = roundAmount(esiApplicable ? basicMaster * config.esiEmployeeRate : 0);
+  // ESI is on gross wages (ESI Act, 1948 — Section 2(22), "wages" = all remuneration).
+  const esiEmployer = roundAmount(esiApplicable ? gross * config.esiEmployerRate : 0);
+  const esiEmployee = roundAmount(esiApplicable ? gross * config.esiEmployeeRate : 0);
 
   // 5. Dynamic Tax Engine Calculations (TDS)
   const taxRegime = src.taxRegime || 'new';

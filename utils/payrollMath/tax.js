@@ -50,6 +50,12 @@ const calculateTaxForRegime = (regime, annualTaxableIncome) => {
 
     if (income <= 1200000) {
       tax = 0;
+    } else {
+      // Section 87A Marginal Relief for New Regime
+      const excessIncome = income - 1200000;
+      if (tax > excessIncome) {
+        tax = excessIncome;
+      }
     }
   } else {
     // Old Regime
@@ -66,6 +72,12 @@ const calculateTaxForRegime = (regime, annualTaxableIncome) => {
 
     if (income <= 500000) {
       tax = 0;
+    } else {
+      // Section 87A Marginal Relief for Old Regime
+      const excessIncome = income - 500000;
+      if (tax > excessIncome) {
+        tax = excessIncome;
+      }
     }
   }
 

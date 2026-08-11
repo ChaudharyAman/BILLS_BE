@@ -13,6 +13,10 @@ const getSegmentLops = (totalLop, workingDays, totalDays, strategy = 'proportion
   if (totalLop <= 0 || segments.length === 0) return segmentLops;
 
   if (strategy === 'custom') {
+    // INVARIANT: callers must ensure sum(customLops) == totalLop (workingDays - paidDays)
+    // before reaching here. The payrollWorker validates this and rejects mismatches with a
+    // clear error. This utility only clamps each value to its own segment's working-day cap;
+    // it does NOT re-verify the total, so unvalidated input will silently produce wrong results.
     let sum = 0;
     for (let i = 0; i < segments.length; i++) {
       segmentLops[i] = Number(customLops[i]) || 0;
@@ -93,16 +97,25 @@ const getEmployeeParamsForDate = (employee, dateStr) => {
   if (dateStr >= latestRevDateStr) {
     return employee;
   }
+
+  // Walk backwards to find the revision whose effectiveDate is the greatest date <= dateStr.
+  // matchedViaLoop = true  → dateStr is on/after that revision's effectiveDate → use newCTC.
+  // matchedViaLoop = false → dateStr is before every revision's effectiveDate    → use previousCTC.
   let activeRevision = null;
+  let matchedViaLoop = false;
   for (let i = revisions.length - 1; i >= 0; i--) {
     const revDateStr = getYYYYMMDD(revisions[i].effectiveDate);
     if (revDateStr && revDateStr <= dateStr) {
       activeRevision = revisions[i];
+      matchedViaLoop = true;
       break;
     }
   }
   if (!activeRevision) {
+    // dateStr predates all revisions. The raise / change in revisions[0] has not
+    // happened yet for this day, so we must use the pre-revision CTC.
     activeRevision = revisions[0];
+    matchedViaLoop = false;
   }
 
   const getVal = (field, def) => {
@@ -135,10 +148,32 @@ const getEmployeeParamsForDate = (employee, dateStr) => {
     return def;
   };
 
-  let monthlyCTC = Number(activeRevision.newCTC) || Number(activeRevision.monthlyCTC) || 0;
-  if (!monthlyCTC && activeRevision === revisions[0]) {
+  // CTC resolution: must branch on matchedViaLoop, NOT on whether newCTC is falsy.
+  // When matchedViaLoop is false, dateStr is before revisions[0].effectiveDate, so the
+  // revision's raise has not taken effect yet — use previousCTC (the CTC before the raise).
+  // Legacy/malformed revision records that have neither newCTC nor previousCTC fall back
+  // to employee.monthlyCTC as a last resort.
+  let monthlyCTC;
+  if (!matchedViaLoop) {
+    // dateStr predates activeRevision (which is revisions[0]). Use the pre-revision CTC.
     monthlyCTC = Number(revisions[0].previousCTC) || Number(employee.monthlyCTC) || 0;
+  } else {
+    monthlyCTC = Number(activeRevision.newCTC) || Number(activeRevision.monthlyCTC) || 0;
+    if (!monthlyCTC) {
+      // Defensive: malformed revision with no newCTC or monthlyCTC field.
+      monthlyCTC = Number(employee.monthlyCTC) || 0;
+    }
   }
+
+  // NOTE on other fields (compensationType, pfEnabled, basicPercent, etc.):
+  // salaryRevisions subdocuments only store previousCTC/newCTC as explicit "before/after"
+  // pairs. All other fields (pfEnabled, esiEnabled, compensationType, basicPercent, etc.)
+  // are stored only as the *new* value in the revision record — there is no "previousPfEnabled"
+  // or similar. For the "before first revision" case (matchedViaLoop = false), getVal() will
+  // read from activeRevision (= revisions[0]) and fall through to employee[field] when the
+  // revision doesn't store a value — which is the best we can do without a schema change.
+  // If per-field before/after tracking is ever needed, add explicit previousXxx fields to
+  // the salaryRevisions subdocument in Employee.js, following the existing previousCTC pattern.
 
   return {
     monthlyCTC,

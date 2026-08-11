@@ -137,6 +137,24 @@ async function processBatchJob({ jobId, userId, month, year, employeePayloads = 
         const attendance = buildAttendancePayload(payload, config.defaultWorkingDays);
         const adjustments = buildAdjustmentsPayload(employee, payload, month, year);
 
+        // Bug 3 guard: validate custom LOP segmentLops before they reach getSegmentLops().
+        // getSegmentLops() clamps each value independently but never checks the total, so a
+        // mismatch silently produces wrong per-segment LOP without any error signal.
+        if (adjustments.lopStrategy === 'custom' && Array.isArray(adjustments.segmentLops) && adjustments.segmentLops.length > 0) {
+          const submittedSum = adjustments.segmentLops.reduce((s, v) => s + (Number(v) || 0), 0);
+          const expectedTotal = Math.max(0, attendance.workingDays - attendance.paidDays);
+          // Round to 2 decimal places to avoid floating-point noise when comparing.
+          const diff = Math.abs(Math.round((submittedSum - expectedTotal) * 100) / 100);
+          if (diff > 0) {
+            errors.push({
+              employeeId,
+              employeeName,
+              error: `Custom LOP split total (${submittedSum} days) does not match expected LOP (${expectedTotal} days = workingDays ${attendance.workingDays} - paidDays ${attendance.paidDays}). Correct the segmentLops values and resubmit.`,
+            });
+            return;
+          }
+        }
+
         const startDate = new Date(year, month - 1, 1);
         const endDate = new Date(year, month, 1);
 

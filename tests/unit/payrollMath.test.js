@@ -12,6 +12,10 @@ const {
   buildPayrollSnapshot,
   DEFAULT_PAYROLL_CONFIG,
   getConfigForDate,
+  buildTaxWorksheet,
+  calculateTaxForRegime,
+  computeStatutoryAndTax,
+  getSalarySplits,
 } = require('../../utils/payrollMath');
 
 describe('Payroll Strategy Engine & Statutory Math Tests', () => {
@@ -547,4 +551,257 @@ describe('Payroll Strategy Engine & Statutory Math Tests', () => {
       expect(workbook.SheetNames).toContain('Payroll Inputs');
     });
   });
+
+  describe('buildTaxWorksheet & Tax Slab / Rebate Acceptance Criteria', () => {
+    test('New Regime ₹22,00,000 annual taxable income correctly applies 25% slab (tax = ₹2,50,000)', () => {
+      const tax = calculateTaxForRegime('new', 2200000);
+      expect(tax).toBe(250000);
+    });
+
+    test('New Regime ₹9,50,000 annual taxable income (within 12L rebate band) shows totalTax = 0', () => {
+      const tax = calculateTaxForRegime('new', 950000);
+      expect(tax).toBe(0);
+    });
+
+    test('buildTaxWorksheet calculates identical structure and genuine FY-to-date TDS sum', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: { basic: 20000, hra: 10000 },
+        deductions: { tds: 1000 },
+        employeeSnapshot: { taxRegime: 'new' }
+      };
+      const fyPayrolls = [
+        { month: 4, deductions: { tds: 1000 } },
+        { month: 5, deductions: { tds: 1000 } },
+        { month: 6, deductions: { tds: 1000 } },
+        { month: 7, deductions: { tds: 1000 } }
+      ];
+      const worksheet = buildTaxWorksheet({ payroll, fyPayrolls });
+      expect(worksheet.regime).toBe('new');
+      expect(worksheet.taxDeductionThisMonth).toBe(1000);
+      expect(worksheet.taxDeductedTillDate).toBe(4000);
+      expect(worksheet.hra.from).toBe('April');
+      expect(worksheet.hra.to).toBe('March');
+    });
+
+    // Acceptance criteria 7 — non-component pay types show single correct label, not "Basic"
+    test('AC-7: hourly employee shows "Hourly Wages" row, not 9-row salary structure', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: { basic: 32000, totalEarnings: 32000 },
+        deductions: { tds: 0 },
+        employeeSnapshot: { taxRegime: 'new', compensationType: 'hourly' }
+      };
+      const worksheet = buildTaxWorksheet({ payroll });
+      expect(worksheet.componentBreakdown).toHaveLength(1);
+      expect(worksheet.componentBreakdown[0].name).toBe('Hourly Wages');
+      expect(worksheet.componentBreakdown[0].gross).toBe(384000); // 32000 × 12
+      expect(worksheet.grossSalary).toBe(384000);
+    });
+
+    test('AC-7: daily_wage employee shows "Daily Wage Earnings" row', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: { basic: 15000, totalEarnings: 15000 },
+        deductions: { tds: 0 },
+        employeeSnapshot: { taxRegime: 'new', compensationType: 'daily_wage' }
+      };
+      const worksheet = buildTaxWorksheet({ payroll });
+      expect(worksheet.componentBreakdown).toHaveLength(1);
+      expect(worksheet.componentBreakdown[0].name).toBe('Daily Wage Earnings');
+    });
+
+    test('AC-7: retainer employee shows "Monthly Retainer Fee" row', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: { basic: 50000, totalEarnings: 50000 },
+        deductions: { tds: 0 },
+        employeeSnapshot: { taxRegime: 'new', compensationType: 'retainer' }
+      };
+      const worksheet = buildTaxWorksheet({ payroll });
+      expect(worksheet.componentBreakdown).toHaveLength(1);
+      expect(worksheet.componentBreakdown[0].name).toBe('Monthly Retainer Fee');
+    });
+
+    // Acceptance criteria 8 — salary_plus_commission includes Commission row
+    test('AC-8: salary_plus_commission worksheet includes Commission row reflecting variable compensation', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: {
+          basic: 30000,
+          hra: 15000,
+          variableCompensation: [
+            { amount: 10000, paymentType: 'Sales', reference: 'July deals' }
+          ]
+        },
+        deductions: { tds: 0 },
+        employeeSnapshot: { taxRegime: 'new', compensationType: 'salary_plus_commission' }
+      };
+      const worksheet = buildTaxWorksheet({ payroll });
+      const commissionRow = worksheet.componentBreakdown.find(r => r.name === 'Commission');
+      expect(commissionRow).toBeDefined();
+      expect(commissionRow.gross).toBe(120000); // 10000 × 12
+      expect(commissionRow.taxable).toBe(120000);
+      // grossSalary must include commission
+      expect(worksheet.grossSalary).toBeGreaterThan((30000 + 15000) * 12);
+    });
+
+    // hra block is always present in returned shape, even for non-component types
+    test('hra block present with correct shape for non-component pay type', () => {
+      const payroll = {
+        month: 7,
+        year: 2026,
+        earnings: { basic: 20000, totalEarnings: 20000 },
+        deductions: { tds: 0 },
+        employeeSnapshot: { taxRegime: 'new', compensationType: 'piece_rate' }
+      };
+      const worksheet = buildTaxWorksheet({ payroll });
+      expect(worksheet.hra).toMatchObject({
+        from: 'April',
+        to: 'March',
+        rentPaid: 0,
+        actualHRA: 0,
+        exemptHRA: 0
+      });
+    });
+  });
+
+  // ─── Bug 2: ESI gross-wage consistency ──────────────────────────────────────
+  describe('ESI Gross-Wage Consistency (Bug 2)', () => {
+    const ESI_EMPLOYEE_RATE = DEFAULT_PAYROLL_CONFIG.esiEmployeeRate; // 0.0075
+    const ESI_EMPLOYER_RATE = DEFAULT_PAYROLL_CONFIG.esiEmployerRate; // 0.0325
+
+    // Fixture: basic=15000, HRA=5000, other allowances=2000 → gross=22000, under ESI threshold.
+    // ESI threshold default is 21000; we override to 25000 so this gross qualifies.
+    const esiConfig = {
+      ...DEFAULT_PAYROLL_CONFIG,
+      esiBasicThreshold: 25000,
+    };
+
+    const esiEmployee = {
+      monthlyCTC: 24000,
+      compensationType: 'monthly_salary',
+      pfEnabled: false,
+      esiEnabled: true,
+      ptEnabled: false,
+      gratuityEnabled: false,
+      lwfEnabled: false,
+      tdsEnabled: false,
+      taxRegime: 'new',
+      // Hardcode component split so gross is deterministic
+      basic: 15000,
+      hra:   5000,
+      specialAllowance: 2000,
+    };
+
+    test('computeStatutoryAndTax: ESI based on gross (22000), not basicMaster (15000)', () => {
+      const gross = 22000;       // basic + hra + specialAllowance
+      const basicMaster = 15000;
+      const { esiEmployee: esiEmpDeduction, esiEmployer: esiEmpContrib } = computeStatutoryAndTax({
+        gross,
+        basicMaster,
+        hraMaster: 5000,
+        monthlyCTC: 22000,
+        flags: {
+          pfEnabled: false,
+          esiEnabled: true,
+          ptEnabled: false,
+          lwfEnabled: false,
+          tdsEnabled: false,
+          gratuityEnabled: false,
+        },
+        config: esiConfig,
+        src: { _paidDays: 30, _workingDays: 30, taxRegime: 'new', declarations: {} },
+      });
+      // Must be on gross, not basic
+      expect(esiEmpDeduction).toBe(roundAmount(gross * ESI_EMPLOYEE_RATE));
+      expect(esiEmpContrib).toBe(roundAmount(gross * ESI_EMPLOYER_RATE));
+      // Confirm it differs from the old (wrong) basic-based value
+      expect(esiEmpDeduction).not.toBe(roundAmount(basicMaster * ESI_EMPLOYEE_RATE));
+    });
+
+    test('buildMasterSalaryStructure: ESI based on gross earnings, not basicMaster', () => {
+      const result = buildMasterSalaryStructure(esiEmployee, esiConfig);
+      const gross = result.totalEarnings; // whatever the engine computed
+      // totalEarnings includes basic+hra+special at minimum, so esiEmployee should be gross × rate
+      expect(result.esiEmployee).toBe(roundAmount(gross * ESI_EMPLOYEE_RATE));
+      expect(result.esiEmployer).toBe(roundAmount(gross * ESI_EMPLOYER_RATE));
+    });
+
+    test('getSalarySplits ESI matches buildMasterSalaryStructure ESI for a full calendar month (no revision)', () => {
+      // Full month: paidDays = workingDays = 30 (no mid-month revision, so single segment)
+      const month = 7;
+      const year  = 2026;
+      const paidDays = 30;
+      const workingDays = 30;
+
+      const master = buildMasterSalaryStructure(esiEmployee, esiConfig);
+      const splits = getSalarySplits(esiEmployee, esiConfig, month, year, paidDays, workingDays);
+
+      // getSalarySplits returns an array of segments; sum esiEmployee across all segments
+      const splitEsiSum = splits.reduce((s, seg) => s + (seg.esiEmployee || 0), 0);
+
+      // Within ₹1 rounding tolerance (daily-accumulation vs monthly round)
+      expect(Math.abs(splitEsiSum - master.esiEmployee)).toBeLessThanOrEqual(1);
+    });
+
+    test('ESI is zero when gross exceeds esiBasicThreshold', () => {
+      const { esiEmployee: esiEmpDeduction } = computeStatutoryAndTax({
+        gross: 30000, // above threshold 25000
+        basicMaster: 15000,
+        monthlyCTC: 30000,
+        flags: { pfEnabled: false, esiEnabled: true, ptEnabled: false, lwfEnabled: false, tdsEnabled: false, gratuityEnabled: false },
+        config: esiConfig,
+        src: { taxRegime: 'new', declarations: {} },
+      });
+      expect(esiEmpDeduction).toBe(0);
+    });
+  });
+
+  // ─── Bug 3: Statutory-Only Shortfall Accounting Invariant ──────────────────
+  describe('Statutory-Only Shortfall Accounting Invariant (Bug 3)', () => {
+    test('when statutory deductions exceed gross earnings with zero non-statutory deductions, the accounting identity holds', () => {
+      const employee = {
+        monthlyCTC: 10000,
+        compensationType: 'monthly_salary',
+        pfEnabled: true,
+        esiEnabled: false,
+        ptEnabled: true,
+        ptState: 'MH',
+        tdsEnabled: true,
+        deductions: {
+          tds: 5000, // High manual TDS deduction exceeding gross
+        },
+      };
+
+      const snapshot = buildPayrollSnapshot(
+        employee,
+        DEFAULT_PAYROLL_CONFIG,
+        { paidDays: 5, workingDays: 30 }, // LOP reduces gross significantly below deductions
+        {},
+        4,
+        2026
+      );
+
+      const totalIncome = roundAmount(
+        snapshot.earnings.totalEarnings +
+        snapshot.variablePay.totalVariablePay +
+        snapshot.totalReimbursementApproved
+      );
+
+      // Accounting identity invariant: earnings + variablePay + reimbursements - totalDeductions === netSalary
+      const netSalaryInvariant = roundAmount(totalIncome - snapshot.deductions.totalDeductions);
+      expect(snapshot.netSalary).toBe(netSalaryInvariant);
+
+      // Verify payrollShortfall flags statutory-only case
+      expect(snapshot.payrollShortfall).toBeDefined();
+      expect(snapshot.payrollShortfall.statutoryOnly).toBe(true);
+    });
+  });
+
 });

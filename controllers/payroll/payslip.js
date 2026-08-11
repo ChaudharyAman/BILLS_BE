@@ -6,15 +6,19 @@
 
 const mongoose = require('mongoose');
 const nodemailer = require('nodemailer');
+const axios = require('axios');
 const Payroll = require('../../models/Payroll');
 const Settings = require('../../models/Settings');
-const { getSalarySplits, buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems } = require('../../utils/payrollMath');
+const LeaveBalance = require('../../models/LeaveBalance');
+const { getSalarySplits, buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems, calculateTaxForRegime } = require('../../utils/payrollMath');
 const { monthName, getOrCreateConfig } = require('./common');
 
 const {
   generateSinglePayslipPdf,
   createBulkPayslipsZip,
   getStoredPayslipPath,
+  buildPayslipHtml,
+  computeTaxWorksheet,
 } = require('../../services/pdfGeneratorService');
 const fs = require('fs');
 
@@ -40,24 +44,37 @@ const generatePayslip = async (req, res) => {
       return res.status(404).json({ message: 'Employee record no longer exists for this payroll' });
     }
 
+    const snap = payroll.employeeSnapshot || {};
+    const emp = payroll.employee;
+    const empObj = (typeof emp === 'object' && emp !== null) ? (emp.toObject ? emp.toObject() : emp) : {};
+
+    const employeeData = (Object.keys(snap).length > 0)
+      ? {
+          ...empObj,
+          ...snap,
+          payType: payroll.payType || snap.payType,
+          hourlyRate: payroll.hourlyRate || snap.hourlyRate,
+          _id: snap._id || empObj._id || emp
+        }
+      : {
+          ...empObj,
+          payType: payroll.payType,
+          hourlyRate: payroll.hourlyRate,
+          _id: empObj._id || emp
+        };
+
     const config = await getOrCreateConfig(req.user._id);
     const adjustments = {
-      pfEnabled: payroll.employeeSnapshot?.pfEnabled,
-      esiEnabled: payroll.employeeSnapshot?.esiEnabled,
-      ptEnabled: payroll.employeeSnapshot?.ptEnabled,
-      ptState: payroll.employeeSnapshot?.ptState || '',
-      lwfEnabled: payroll.employeeSnapshot?.lwfEnabled,
-      gratuityEnabled: payroll.employeeSnapshot?.gratuityEnabled,
-      includePfInCTC: payroll.employeeSnapshot?.includePfInCTC,
-      includeGratuityInCTC: payroll.employeeSnapshot?.includeGratuityInCTC,
+      pfEnabled: employeeData.pfEnabled,
+      esiEnabled: employeeData.esiEnabled,
+      ptEnabled: employeeData.ptEnabled,
+      ptState: employeeData.ptState || '',
+      lwfEnabled: employeeData.lwfEnabled,
+      gratuityEnabled: employeeData.gratuityEnabled,
+      includePfInCTC: employeeData.includePfInCTC,
+      includeGratuityInCTC: employeeData.includeGratuityInCTC,
       lopStrategy: payroll.lopStrategy || 'proportional',
       segmentLops: payroll.segmentLops || [],
-    };
-    const employeeData = payroll.employee || {
-      ...payroll.employeeSnapshot,
-      payType: payroll.payType,
-      hourlyRate: payroll.hourlyRate,
-      _id: payroll.populated('employee') || payroll.employee
     };
     const splits = getSalarySplits(
       employeeData,
@@ -135,116 +152,34 @@ const generatePayslip = async (req, res) => {
       }
     }
 
-    const regime = employeeData.taxRegime || 'new';
-    const isOld = regime === 'old';
-    const standardDeduction = isOld ? 50000 : 75000;
-
-    const rentPaidMonthly = employeeData.declarations?.rentPaidMonthly || 0;
-    const monthsCount = fyPayrolls.length || 1;
-    const rentPaidTotal = rentPaidMonthly * monthsCount;
-    const basic_10 = basicGross * 0.1;
-    const rentMinusBasic10 = Math.max(0, rentPaidTotal - basic_10);
-    const isMetro = employeeData.declarations?.isMetroCity || false;
-    const basicPercent = basicGross * (isMetro ? 0.5 : 0.4);
-    const exemptHra = isOld ? Math.round(Math.min(hraGross, rentMinusBasic10, basicPercent)) : 0;
-
-    const componentBreakdown = [
-      { name: 'Basic', gross: basicGross, exempt: 0, taxable: basicGross },
-      { name: 'HRA', gross: hraGross, exempt: exemptHra, taxable: hraGross - exemptHra },
-      { name: 'Flexi Allowance', gross: flexiGross, exempt: 0, taxable: flexiGross },
-      { name: 'Special Allowance', gross: specialGross, exempt: 0, taxable: specialGross },
-      { name: 'Meal', gross: mealGross, exempt: 0, taxable: mealGross },
-      { name: 'Broadband', gross: broadbandGross, exempt: 0, taxable: broadbandGross },
-      { name: 'Other', gross: otherGross, exempt: 0, taxable: otherGross },
-      { name: 'Bonus', gross: bonusGross, exempt: 0, taxable: bonusGross },
-      { name: 'Arrear', gross: arrearGross, exempt: 0, taxable: arrearGross }
-    ];
-
-    const grossSalary = basicGross + hraGross + flexiGross + specialGross + mealGross + broadbandGross + otherGross + bonusGross + arrearGross;
-    const taxableIncome = Math.max(0, grossSalary - exemptHra - standardDeduction);
-
-    let totalTax = 0;
-    if (regime === 'new') {
-      let temp = taxableIncome;
-      if (temp > 2000000) {
-        totalTax += (temp - 2000000) * 0.3;
-        temp = 2000000;
+    let leaveBalance = 0;
+    try {
+      const targetEmpId = payroll.employee || (payroll.employeeSnapshot && payroll.employeeSnapshot._id);
+      if (targetEmpId) {
+        const balances = await LeaveBalance.find({
+          user: req.user._id,
+          employee: targetEmpId,
+          year: payroll.year || new Date().getFullYear(),
+        });
+        if (balances && balances.length > 0) {
+          leaveBalance = balances.reduce((sum, b) => sum + (Number(b.closing) || 0), 0);
+        }
       }
-      if (temp > 1600000) {
-        totalTax += (temp - 1600000) * 0.2;
-        temp = 1600000;
-      }
-      if (temp > 1200000) {
-        totalTax += (temp - 1200000) * 0.15;
-        temp = 1200000;
-      }
-      if (temp > 800000) {
-        totalTax += (temp - 800000) * 0.1;
-        temp = 800000;
-      }
-      if (temp > 400000) {
-        totalTax += (temp - 400000) * 0.05;
-      }
-      if (taxableIncome <= 700000) {
-        totalTax = 0;
-      }
-    } else {
-      let temp = taxableIncome;
-      if (temp > 1000000) {
-        totalTax += (temp - 1000000) * 0.3;
-        temp = 1000000;
-      }
-      if (temp > 500000) {
-        totalTax += (temp - 500000) * 0.2;
-        temp = 500000;
-      }
-      if (temp > 250000) {
-        totalTax += (temp - 250000) * 0.05;
-      }
-      if (taxableIncome <= 500000) {
-        totalTax = 0;
-      }
+    } catch (e) {
+      console.warn('[Payslip] Could not fetch leave balance:', e.message);
     }
 
-    const cess = Math.round(totalTax * 0.04 * 100) / 100;
-    const netTax = Math.round((totalTax + cess) * 100) / 100;
-
-    const taxDeductedTillDate = Object.values(tdsMonths).reduce((s, v) => s + v, 0);
-    const taxToDeducted = Math.max(0, netTax - taxDeductedTillDate);
-    const taxDeductionThisMonth = Number(payroll.deductions?.tds || 0);
-
-    const taxWorksheet = {
-      regime,
-      componentBreakdown,
-      grossSalary,
-      standardDeduction,
-      taxableIncome,
-      totalTax,
-      cess,
-      netTax,
-      taxDeductedTillDate,
-      taxToDeducted,
-      taxDeductionThisMonth,
-      tdsMonths,
-      hra: {
-        from: 'April',
-        to: 'March',
-        rentPaid: rentPaidTotal,
-        actualHRA: hraGross,
-        basicPercent,
-        rentMinusBasic10,
-        exemptHRA: exemptHra
-      }
-    };
+    const taxWorksheet = computeTaxWorksheet(payroll, employeeData, { fyPayrolls, tdsMonths });
 
     res.json({
       payslip: {
-        employee: payroll.employee || employeeData,
+        employee: employeeData,
         period: {
           month: payroll.month,
           year: payroll.year,
           monthName: monthName(payroll.month),
         },
+        leaveBalance: Number(leaveBalance) || 0,
         salarySplits: (payroll.salarySplits && payroll.salarySplits.length > 0) ? payroll.salarySplits : splits,
         earningsLineItems: buildPayslipEarningsLineItems(payroll),
         deductionsLineItems: buildPayslipDeductionsLineItems(payroll),
@@ -254,11 +189,17 @@ const generatePayslip = async (req, res) => {
         fnfDetails: payroll.fnfDetails || null,
         complianceNotes: (() => {
           const notes = [];
-          if (payroll.netSalary === 0 && payroll.deductions?.totalDeductions > payroll.earnings?.totalEarnings) {
+          if (payroll.payrollShortfall?.statutoryOnly) {
+            notes.push('Note: Statutory deductions (PF/ESI/PT/TDS) exceed gross earnings. Deductions have been capped to available earnings. Please review with your payroll manager.');
+          } else if (payroll.netSalary === 0 && payroll.deductions?.totalDeductions > payroll.earnings?.totalEarnings) {
             notes.push('Note: Net salary was clamped to ₹0 due to non-statutory deduction shortfall.');
+          }
+          if (!settings?.companyName) {
+            notes.push('Note: Company details are not fully configured in Settings. Complete your company profile to show correct letterhead.');
           }
           return notes;
         })(),
+        company: settings || {},
         earnings: payroll.earnings,
         employerContributions: payroll.employerContributions,
         variablePay: payroll.variablePay,
@@ -427,184 +368,120 @@ const emailPayslip = async (req, res) => {
     const smtpPass = process.env.SMTP_PASS || '';
     const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
 
-    const transporter = nodemailer.createTransport({
+    const transportOptions = {
       host: smtpHost,
       port: smtpPort,
       secure: smtpSecure,
-      auth: {
-        user: smtpUser,
-        pass: smtpPass
-      },
       tls: {
         rejectUnauthorized: false
       }
-    });
+    };
+    if (smtpUser) {
+      transportOptions.auth = {
+        user: smtpUser,
+        pass: smtpPass
+      };
+    }
+
+    const transporter = nodemailer.createTransport(transportOptions);
 
     const monthLabel = monthName(payroll.month);
     const payPeriodLabel = `${monthLabel} ${payroll.year}`;
     const employeeName = `${payroll.employeeSnapshot?.firstName || ''} ${payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Employee';
 
-    const fmt = (val) => `INR ${(Number(val) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-    let earningsRows = '';
-    const lineItems = buildPayslipEarningsLineItems(payroll);
-    lineItems.forEach((item) => {
-      earningsRows += `
-        <tr>
-          <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; color: #475569;">
-            <div style="font-weight: 500;">${item.name}</div>
-            ${item.details ? `<div style="font-size: 11px; color: #94a3b8;">${item.details}</div>` : ''}
-          </td>
-          <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; text-align: right; font-weight: 500; color: #1e293b;">${fmt(item.amount)}</td>
-        </tr>`;
-    });
-
-    let deductionsRows = '';
-    const deductionItems = buildPayslipDeductionsLineItems(payroll);
-    deductionItems.forEach((item) => {
-      deductionsRows += `
-        <tr>
-          <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; color: #475569;">
-            <div style="font-weight: 500;">${item.name}</div>
-            ${item.details ? `<div style="font-size: 11px; color: #94a3b8;">${item.details}</div>` : ''}
-          </td>
-          <td style="padding: 10px; border-bottom: 1px solid #f1f5f9; text-align: right; font-weight: 500; color: #e11d48;">-${fmt(item.amount)}</td>
-        </tr>`;
-    });
-
-    const emailHtmlBody = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <title>Payslip for ${payPeriodLabel}</title>
-      </head>
-      <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-        <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="margin: 40px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); border: 1px solid #e2e8f0;">
-          <tr>
-            <td bgcolor="#0f172a" style="padding: 30px 40px; color: #ffffff;">
-              <table width="100%" border="0" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td>
-                    <h1 style="margin: 0; font-size: 24px; font-weight: 700; tracking-tight: -0.025em;">${companyName}</h1>
-                    <p style="margin: 5px 0 0 0; font-size: 14px; color: #94a3b8;">Salary Statement / Pay Slip</p>
-                  </td>
-                  <td align="right" style="vertical-align: top;">
-                    <span style="background-color: rgba(255,255,255,0.1); padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; text-transform: uppercase;">${payroll.status}</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          
-          <tr>
-            <td style="padding: 30px 40px;">
-              <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
-                <tr>
-                  <td width="50%" style="vertical-align: top;">
-                    <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.1em; margin-bottom: 5px;">Employee Details</div>
-                    <div style="font-size: 15px; font-weight: 600; color: #0f172a;">${employeeName}</div>
-                    <div style="font-size: 13px; color: #475569; margin-top: 2px;">ID: ${payroll.employeeSnapshot?.employeeId || '-'}</div>
-                    <div style="font-size: 13px; color: #475569;">Designation: ${payroll.employeeSnapshot?.designation || '-'}</div>
-                  </td>
-                  <td width="50%" style="vertical-align: top; padding-left: 20px; border-left: 1px solid #e2e8f0;">
-                    <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.1em; margin-bottom: 5px;">Payroll Cycle</div>
-                    <div style="font-size: 15px; font-weight: 600; color: #0f172a;">${payPeriodLabel}</div>
-                    <div style="font-size: 13px; color: #475569; margin-top: 2px;">Working Days: ${payroll.workingDays}</div>
-                    <div style="font-size: 13px; color: #475569;">Paid Days: ${payroll.paidDays} (LOP: ${payroll.lop})</div>
-                  </td>
-                </tr>
-              </table>
-              
-              <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
-                <tr>
-                  <td width="50%" style="vertical-align: top; padding-right: 15px;">
-                    <table width="100%" border="0" cellpadding="0" cellspacing="0" style="border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; font-size: 13px;">
-                      <tr bgcolor="#f8fafc">
-                        <td style="padding: 10px 12px; font-weight: 700; color: #475569; border-bottom: 1px solid #e2e8f0;">Earnings</td>
-                        <td style="padding: 10px 12px; font-weight: 700; color: #475569; border-bottom: 1px solid #e2e8f0; text-align: right;">Amount</td>
-                      </tr>
-                      ${earningsRows}
-                      <tr bgcolor="#f8fafc" style="font-weight: 700;">
-                        <td style="padding: 12px 10px; color: #0f172a;">Total Earnings</td>
-                        <td style="padding: 12px 10px; text-align: right; color: #0f172a;">${fmt(payroll.earnings?.totalEarnings)}</td>
-                      </tr>
-                    </table>
-                  </td>
-                  
-                  <td width="50%" style="vertical-align: top; padding-left: 15px;">
-                    <table width="100%" border="0" cellpadding="0" cellspacing="0" style="border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; font-size: 13px;">
-                      <tr bgcolor="#f8fafc">
-                        <td style="padding: 10px 12px; font-weight: 700; color: #475569; border-bottom: 1px solid #e2e8f0;">Deductions</td>
-                        <td style="padding: 10px 12px; font-weight: 700; color: #475569; border-bottom: 1px solid #e2e8f0; text-align: right;">Amount</td>
-                      </tr>
-                      ${deductionsRows}
-                      <tr bgcolor="#f8fafc" style="font-weight: 700;">
-                        <td style="padding: 12px 10px; color: #0f172a;">Total Deductions</td>
-                        <td style="padding: 12px 10px; text-align: right; color: #0f172a;">${fmt(payroll.deductions?.totalDeductions)}</td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-              
-              <table width="100%" border="0" cellpadding="0" cellspacing="0" style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; margin-bottom: 25px;">
-                <tr>
-                  <td style="padding: 20px 24px;">
-                    <div style="font-size: 12px; font-weight: 700; text-transform: uppercase; color: #166534; letter-spacing: 0.1em;">Net Take Home Salary</div>
-                    <div style="font-size: 28px; font-weight: 800; color: #166534; margin-top: 5px;">${fmt(payroll.netSalary)}</div>
-                    <div style="font-size: 12px; color: #15803d; margin-top: 4px;">Payment Method: ${payroll.paymentMethod || 'Bank Transfer'} ${payroll.transactionId ? `(Txn: ${payroll.transactionId})` : ''}</div>
-                  </td>
-                </tr>
-              </table>
-              
-              <table width="100%" border="0" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="font-size: 12px; line-height: 18px; color: #64748b;">
-                    <strong>Notes:</strong> ${payroll.remarks || payroll.notes || 'This is a system-generated statement. Please login to the employee portal to download/print your official PDF document.'}
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          
-          <tr>
-            <td bgcolor="#f8fafc" style="padding: 20px 40px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #94a3b8;">
-              &copy; ${new Date().getFullYear()} ${companyName}. All rights reserved.
-            </td>
-          </tr>
-        </table>
-      </body>
-      </html>
-    `;
+    const emailHtmlBody = buildPayslipHtml(payroll, payroll.employee, settings);
 
     // Generate real PDF attachment
     const pdfBuffer = await generateSinglePayslipPdf({ payroll, settings });
     const attachmentFilename = `Payslip_${payroll.employeeSnapshot?.employeeId || 'EMP'}_${monthLabel}_${payroll.year}.pdf`;
 
-    await transporter.sendMail({
-      from: `"${companyName} HR & Payroll" <${process.env.SMTP_SENDER || 'payroll@flance.local'}>`,
-      to: employeeEmail,
-      subject: `Payslip Statement for ${payPeriodLabel} - ${employeeName}`,
-      html: emailHtmlBody,
-      attachments: [
-        {
-          filename: attachmentFilename,
-          content: pdfBuffer,
-          contentType: 'application/pdf',
-        },
-      ],
-    });
+    const brevoApiKey = process.env.BREVO_API_KEY || process.env.SMTP_PASS;
+    const senderEmail = process.env.EMAIL_FROM || process.env.SMTP_SENDER || 'ilumaaventures@gmail.com';
+    const senderName = `${companyName} HR & Payroll`;
+    const subjectStr = `Payslip Statement for ${payPeriodLabel} - ${employeeName}`;
 
-    payroll.auditLog.push({
-      status: payroll.status,
-      changedBy: 'System Auto-Email',
-      changedById: req.user._id,
-      changedAt: new Date(),
-      netSalary: payroll.netSalary,
-      notes: `Payslip email with PDF attachment successfully sent to ${employeeEmail}`
-    });
-    await payroll.save();
+    let emailSent = false;
+
+    // 1. Try Brevo HTTP API first (High reliability)
+    if (brevoApiKey && brevoApiKey.startsWith('xkeysib-')) {
+      try {
+        console.log(`[EMAIL] Dispatching payslip via Brevo API to ${employeeEmail}`);
+        const brevoPayload = {
+          sender: { name: senderName, email: senderEmail },
+          to: [{ email: employeeEmail }],
+          subject: subjectStr,
+          htmlContent: emailHtmlBody,
+          attachment: [
+            {
+              name: attachmentFilename,
+              content: pdfBuffer.toString('base64'),
+            }
+          ]
+        };
+
+        const apiRes = await axios.post('https://api.brevo.com/v3/smtp/email', brevoPayload, {
+          headers: {
+            'api-key': brevoApiKey,
+            'Content-Type': 'application/json'
+          },
+          timeout: 15000
+        });
+        console.log(`[EMAIL] Brevo API Success messageId: ${apiRes.data?.messageId}`);
+        emailSent = true;
+      } catch (apiErr) {
+        console.error('[EMAIL] Brevo API failed, falling back to SMTP:', apiErr.response?.data || apiErr.message);
+      }
+    }
+
+    // 2. Fallback to Nodemailer SMTP
+    if (!emailSent) {
+      const smtpHost = process.env.SMTP_HOST || process.env.EMAIL_HOST || 'smtp-relay.brevo.com';
+      const smtpPort = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT) || 587;
+      const smtpUser = process.env.SMTP_USER || process.env.EMAIL_USER || '';
+      const smtpPass = process.env.SMTP_PASS || brevoApiKey || '';
+      const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+
+      const transportOptions = {
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpSecure,
+        tls: { rejectUnauthorized: false }
+      };
+      if (smtpUser) {
+        transportOptions.auth = { user: smtpUser, pass: smtpPass };
+      }
+
+      const transporter = nodemailer.createTransport(transportOptions);
+      await transporter.sendMail({
+        from: `"${senderName}" <${senderEmail}>`,
+        to: employeeEmail,
+        subject: subjectStr,
+        html: emailHtmlBody,
+        attachments: [
+          {
+            filename: attachmentFilename,
+            content: pdfBuffer,
+            contentType: 'application/pdf',
+          },
+        ],
+      });
+    }
+
+    await Payroll.updateOne(
+      { _id: payroll._id },
+      {
+        $push: {
+          auditLog: {
+            status: payroll.status,
+            changedBy: 'System Auto-Email',
+            changedById: req.user._id,
+            changedAt: new Date(),
+            netSalary: payroll.netSalary,
+            notes: `Payslip email with PDF attachment successfully sent to ${employeeEmail}`
+          }
+        }
+      }
+    );
 
     res.json({ message: `Payslip email with PDF attachment successfully sent to ${employeeEmail}.` });
   } catch (error) {
