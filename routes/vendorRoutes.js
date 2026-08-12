@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const clientController = require('../controllers/clientController');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 
 // Middleware to enforce isVendor: true for all vendor routes
 const enforceVendor = (req, res, next) => {
@@ -17,11 +17,11 @@ const enforceVendor = (req, res, next) => {
   next();
 };
 
-router.get('/', protect, clientController.getVendors);
-router.post('/', protect, enforceVendor, clientController.createClient);
-router.post('/bulk', protect, enforceVendor, clientController.bulkCreateClients);
-router.get('/:id', protect, clientController.getClientById);
-router.put('/:id', protect, clientController.updateClient);
-router.delete('/:id', protect, clientController.deleteClient);
+router.get('/', protect, authorize('vendors', 'view'), clientController.getVendors);
+router.post('/', protect, authorize('vendors', 'create'), enforceVendor, clientController.createClient);
+router.post('/bulk', protect, authorize('vendors', 'create'), enforceVendor, clientController.bulkCreateClients);
+router.get('/:id', protect, authorize('vendors', 'view'), clientController.getClientById);
+router.put('/:id', protect, authorize('vendors', 'edit'), clientController.updateClient);
+router.delete('/:id', protect, authorize('vendors', 'delete'), clientController.deleteClient);
 
 module.exports = router;

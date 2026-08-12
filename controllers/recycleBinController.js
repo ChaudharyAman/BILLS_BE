@@ -109,9 +109,9 @@ function getDisplayAmount(doc, type) {
 
 const getRecycleBinItems = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const companyId = req.companyId || req.user._id;
     const promises = Object.entries(MODELS_MAP).map(async ([type, Model]) => {
-      const items = await Model.find({ user: userId, isDeleted: true })
+      const items = await Model.find({ user: companyId, isDeleted: true })
         .setOptions({ withDeleted: true })
         .lean();
       
@@ -136,6 +136,7 @@ const getRecycleBinItems = async (req, res) => {
 
 const restoreItem = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { id, type, forceRestore } = req.body;
     if (!id || !type) {
       return res.status(400).json({ message: 'ID and Type are required' });
@@ -147,7 +148,7 @@ const restoreItem = async (req, res) => {
     }
 
     const item = await Model.findOneAndUpdate(
-      { _id: id, user: req.user._id },
+      { _id: id, user: companyId },
       { $set: { isDeleted: false }, $unset: { deletedAt: 1 } },
       { new: true }
     ).setOptions({ withDeleted: true, forceRestore: !!forceRestore });
@@ -176,6 +177,7 @@ const restoreItem = async (req, res) => {
 
 const permanentlyDeleteItem = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { id, type } = req.query;
     if (!id || !type) {
       return res.status(400).json({ message: 'ID and Type are required' });
@@ -186,7 +188,7 @@ const permanentlyDeleteItem = async (req, res) => {
       return res.status(400).json({ message: `Invalid type: ${type}` });
     }
 
-    const result = await Model.deleteOne({ _id: id, user: req.user._id }).setOptions({ hardDelete: true });
+    const result = await Model.deleteOne({ _id: id, user: companyId }).setOptions({ hardDelete: true });
 
     if (result.deletedCount === 0) {
       return res.status(404).json({ message: 'Item not found' });
@@ -201,6 +203,7 @@ const permanentlyDeleteItem = async (req, res) => {
 
 const bulkRestoreItems = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { items, forceRestore } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Items array is required' });
@@ -215,7 +218,7 @@ const bulkRestoreItems = async (req, res) => {
 
       try {
         const item = await Model.findOneAndUpdate(
-          { _id: id, user: req.user._id },
+          { _id: id, user: companyId },
           { $set: { isDeleted: false }, $unset: { deletedAt: 1 } },
           { new: true }
         ).setOptions({ withDeleted: true, forceRestore: !!forceRestore });
@@ -235,6 +238,7 @@ const bulkRestoreItems = async (req, res) => {
 
 const bulkPermanentlyDeleteItems = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { items } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Items array is required' });
@@ -251,7 +255,7 @@ const bulkPermanentlyDeleteItems = async (req, res) => {
     let totalDeleted = 0;
     for (const [type, ids] of Object.entries(grouped)) {
       const Model = MODELS_MAP[type];
-      const result = await Model.deleteMany({ _id: { $in: ids }, user: req.user._id }).setOptions({ hardDelete: true });
+      const result = await Model.deleteMany({ _id: { $in: ids }, user: companyId }).setOptions({ hardDelete: true });
       totalDeleted += result.deletedCount || 0;
     }
 
@@ -264,10 +268,10 @@ const bulkPermanentlyDeleteItems = async (req, res) => {
 
 const emptyRecycleBin = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const companyId = req.companyId || req.user._id;
     let totalPurged = 0;
     const promises = Object.values(MODELS_MAP).map(async (Model) => {
-      const result = await Model.deleteMany({ user: userId, isDeleted: true }).setOptions({ hardDelete: true });
+      const result = await Model.deleteMany({ user: companyId, isDeleted: true }).setOptions({ hardDelete: true });
       totalPurged += result.deletedCount || 0;
     });
 
@@ -287,4 +291,3 @@ module.exports = {
   bulkPermanentlyDeleteItems,
   emptyRecycleBin
 };
-

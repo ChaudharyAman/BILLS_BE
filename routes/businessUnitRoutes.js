@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
   getBusinessUnits,
   createBusinessUnit,
@@ -13,14 +13,14 @@ const {
 router.use(protect);
 
 router.route('/')
-  .get(getBusinessUnits)
-  .post(createBusinessUnit);
+  .get(authorize('businessUnits', 'view'), getBusinessUnits)
+  .post(authorize('businessUnits', 'create'), createBusinessUnit);
 
-router.get('/rollup', getBusinessUnitRollup);
-router.get('/summary/:id', getBusinessUnitSummary);
+router.get('/rollup', authorize('businessUnits', 'view'), getBusinessUnitRollup);
+router.get('/summary/:id', authorize('businessUnits', 'view'), getBusinessUnitSummary);
 
 router.route('/:id')
-  .put(updateBusinessUnit)
-  .delete(deleteBusinessUnit);
+  .put(authorize('businessUnits', 'edit'), updateBusinessUnit)
+  .delete(authorize('businessUnits', 'delete'), deleteBusinessUnit);
 
 module.exports = router;

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
   getClaims,
   getClaimById,
@@ -13,14 +13,14 @@ const {
 router.use(protect);
 
 router.route('/')
-  .get(getClaims)
-  .post(createClaim);
+  .get(authorize('reimbursements', 'view'), getClaims)
+  .post(authorize('reimbursements', 'create'), createClaim);
 
 router.route('/:id')
-  .get(getClaimById)
-  .put(updateClaim)
-  .delete(deleteClaim);
+  .get(authorize('reimbursements', 'view'), getClaimById)
+  .put(authorize('reimbursements', 'edit'), updateClaim)
+  .delete(authorize('reimbursements', 'delete'), deleteClaim);
 
-router.put('/:id/status', updateClaimStatus);
+router.put('/:id/status', authorize('reimbursements', 'approve'), updateClaimStatus);
 
 module.exports = router;

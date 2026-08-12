@@ -104,7 +104,8 @@ const mergeClientFields = (existing, incoming) => {
 // Get all clients
 exports.getClients = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) { return res.status(401).json({ message: 'Not authorized' }); }
+    const companyId = req.companyId || req.user?._id;
+    if (!companyId) { return res.status(401).json({ message: 'Not authorized' }); }
 
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
@@ -112,7 +113,7 @@ exports.getClients = async (req, res) => {
     const skip = (page - 1) * limit;
 
     let query = { 
-      user: req.user._id, 
+      user: companyId, 
       $or: [{ isClient: true }, { isClient: { $exists: false } }] 
     };
 
@@ -141,14 +142,15 @@ exports.getClients = async (req, res) => {
 // Get all vendors
 exports.getVendors = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) { return res.status(401).json({ message: 'Not authorized' }); }
+    const companyId = req.companyId || req.user?._id;
+    if (!companyId) { return res.status(401).json({ message: 'Not authorized' }); }
 
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    let query = { user: req.user._id, isVendor: true };
+    let query = { user: companyId, isVendor: true };
     if (search) { 
       const safeSearch = escapeRegex(search);
       query.name = { $regex: safeSearch, $options: 'i' }; 
@@ -174,6 +176,7 @@ exports.getVendors = async (req, res) => {
 // Create a new client
 exports.createClient = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { 
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
@@ -185,7 +188,7 @@ exports.createClient = async (req, res) => {
 
     if (name && typeof name === 'string') {
       const existingClient = await Client.findOne({
-        user: req.user._id,
+        user: companyId,
         name: { $regex: new RegExp("^" + escapeRegex(name.trim()) + "$", "i") }
       });
 
@@ -203,7 +206,7 @@ exports.createClient = async (req, res) => {
       useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
       facebook, lst, cst, dlNo, openingBalance,
       tds_applicable, default_tds_section, default_tds_rate,
-      user: req.user._id
+      user: companyId
     });
 
     const newClient = await client.save();
@@ -216,6 +219,7 @@ exports.createClient = async (req, res) => {
 // Bulk create clients/vendors
 exports.bulkCreateClients = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const clients = req.body.clients;
     if (!Array.isArray(clients) || clients.length === 0) {
       return res.status(400).json({ message: 'No clients provided for bulk creation.' });
@@ -231,7 +235,7 @@ exports.bulkCreateClients = async (req, res) => {
         }
 
         const existingClient = await Client.findOne({
-          user: req.user._id,
+          user: companyId,
           name: { $regex: new RegExp("^" + escapeRegex(clientData.name.trim()) + "$", "i") }
         });
 
@@ -253,7 +257,7 @@ exports.bulkCreateClients = async (req, res) => {
             isVendor: clientData.isVendor,
             notes: clientData.notes,
             placeOfSupply: clientData.placeOfSupply,
-            user: req.user._id
+            user: companyId
           });
           
           const savedClient = await client.save();
@@ -282,7 +286,8 @@ exports.bulkCreateClients = async (req, res) => {
 // Get client by ID
 exports.getClientById = async (req, res) => {
   try {
-    const client = await Client.findOne({ _id: req.params.id, user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    const client = await Client.findOne({ _id: req.params.id, user: companyId });
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
     }
@@ -295,6 +300,7 @@ exports.getClientById = async (req, res) => {
 // Update client
 exports.updateClient = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { 
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
@@ -317,7 +323,7 @@ exports.updateClient = async (req, res) => {
     Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
 
     const client = await Client.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
+      { _id: req.params.id, user: companyId },
       updateData,
       { returnDocument: 'after', runValidators: true }
     );
@@ -333,7 +339,8 @@ exports.updateClient = async (req, res) => {
 // Delete client
 exports.deleteClient = async (req, res) => {
   try {
-    const client = await Client.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const companyId = req.companyId || req.user._id;
+    const client = await Client.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
     }

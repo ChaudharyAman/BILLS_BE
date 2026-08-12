@@ -134,8 +134,9 @@ exports.initializeDefaultsForUser = initializeDefaultsForUser;
 
 exports.getCategories = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { type, parent } = req.query;
-    const query = { user: req.user._id };
+    const query = { user: companyId };
 
     if (type) query.type = type;
     if (parent === 'root') query.parent = null;
@@ -155,6 +156,7 @@ exports.getCategories = async (req, res) => {
 
 exports.createCategory = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const name = normalizeName(req.body.name);
     const { type, icon, color, budgetLimit, description } = req.body;
 
@@ -163,13 +165,13 @@ exports.createCategory = async (req, res) => {
     }
 
     const parent = await validateParent({
-      userId: req.user._id,
+      userId: companyId,
       parent: req.body.parent || null,
       type,
     });
 
     const category = await Category.create({
-      user: req.user._id,
+      user: companyId,
       name,
       type,
       icon,
@@ -192,11 +194,12 @@ exports.createCategory = async (req, res) => {
 
 exports.updateCategory = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    const category = await Category.findOne({ _id: req.params.id, user: req.user._id });
+    const category = await Category.findOne({ _id: req.params.id, user: companyId });
     if (!category) {
       return res.status(404).json({ message: 'Category not found' });
     }
@@ -226,14 +229,14 @@ exports.updateCategory = async (req, res) => {
 
     if (Object.prototype.hasOwnProperty.call(req.body, 'parent')) {
       updateData.parent = await validateParent({
-        userId: req.user._id,
+        userId: companyId,
         parent: req.body.parent || null,
         type: updateData.type || category.type,
         categoryId: category._id,
       });
     } else if (req.body.type !== undefined && req.body.type !== category.type && category.parent) {
       updateData.parent = await validateParent({
-        userId: req.user._id,
+        userId: companyId,
         parent: req.body.parent || null,
         type: updateData.type || category.type,
         categoryId: category._id,
@@ -241,7 +244,7 @@ exports.updateCategory = async (req, res) => {
     }
 
     const updated = await Category.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
+      { _id: req.params.id, user: companyId },
       { $set: updateData },
       { returnDocument: 'after', runValidators: true }
     ).populate('parent', 'name type color icon');
@@ -258,17 +261,18 @@ exports.updateCategory = async (req, res) => {
 
 exports.deleteCategory = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    const category = await Category.findOne({ _id: req.params.id, user: req.user._id });
+    const category = await Category.findOne({ _id: req.params.id, user: companyId });
     if (!category) {
       return res.status(404).json({ message: 'Category not found' });
     }
 
     // Find all child sub-categories (if any)
-    const children = await Category.find({ user: req.user._id, parent: category._id });
+    const children = await Category.find({ user: companyId, parent: category._id });
     const categoryIdsToCheck = [category._id, ...children.map(c => c._id)];
 
     const isSubCategory = !!category.parent;
@@ -277,25 +281,25 @@ exports.deleteCategory = async (req, res) => {
     // Check if any Expenses, Incomes, Budgets, or Recurring Transactions are assigned
     const [expenseCount, incomeCount, budgetCount, recurringCount] = await Promise.all([
       Expense.countDocuments({
-        user: req.user._id,
+        user: companyId,
         $or: [
           { category: { $in: categoryIdsToCheck } },
           { subCategory: { $in: categoryIdsToCheck } }
         ]
       }),
       Income.countDocuments({
-        user: req.user._id,
+        user: companyId,
         $or: [
           { category: { $in: categoryIdsToCheck } },
           { subCategory: { $in: categoryIdsToCheck } }
         ]
       }),
       Budget.countDocuments({
-        user: req.user._id,
+        user: companyId,
         category: { $in: categoryIdsToCheck }
       }).catch(() => 0),
       RecurringTransaction.countDocuments({
-        user: req.user._id,
+        user: companyId,
         $or: [
           { category: { $in: categoryIdsToCheck } },
           { subCategory: { $in: categoryIdsToCheck } }
@@ -313,14 +317,14 @@ exports.deleteCategory = async (req, res) => {
     // Soft-delete any child sub-categories
     for (const child of children) {
       await Category.findOneAndUpdate(
-        { _id: child._id, user: req.user._id },
+        { _id: child._id, user: companyId },
         { $set: { isDeleted: true, deletedAt: new Date() } }
       );
     }
 
     // Soft-delete the target category
     await Category.findOneAndUpdate(
-      { _id: category._id, user: req.user._id },
+      { _id: category._id, user: companyId },
       { $set: { isDeleted: true, deletedAt: new Date() } }
     );
 
@@ -333,8 +337,9 @@ exports.deleteCategory = async (req, res) => {
 
 exports.initializeDefaultCategories = async (req, res) => {
   try {
-    await initializeDefaultsForUser(req.user._id);
-    const categories = await Category.find({ user: req.user._id })
+    const companyId = req.companyId || req.user._id;
+    await initializeDefaultsForUser(companyId);
+    const categories = await Category.find({ user: companyId })
       .sort({ type: 1, parent: 1, name: 1 })
       .lean();
     res.status(201).json({ message: 'Default categories initialized', categories });

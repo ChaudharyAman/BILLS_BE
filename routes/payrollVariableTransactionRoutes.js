@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
   getTransactions,
   getTransactionById,
@@ -12,12 +12,12 @@ const {
 router.use(protect);
 
 router.route('/')
-  .get(getTransactions)
-  .post(createTransaction);
+  .get(authorize('payroll', 'view'), getTransactions)
+  .post(authorize('payroll', 'create'), createTransaction);
 
 router.route('/:id')
-  .get(getTransactionById)
-  .put(updateTransaction)
-  .delete(deleteTransaction);
+  .get(authorize('payroll', 'view'), getTransactionById)
+  .put(authorize('payroll', 'edit'), updateTransaction)
+  .delete(authorize('payroll', 'delete'), deleteTransaction);
 
 module.exports = router;

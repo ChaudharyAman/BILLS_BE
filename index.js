@@ -99,6 +99,7 @@ app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/pdf', require('./routes/pdfRoutes'));
 app.use('/api/bank-statements', require('./routes/bankStatementRoutes'));
 app.use('/api/recycle-bin', require('./routes/recycleBinRoutes'));
+app.use('/api/team-members', require('./routes/teamMemberRoutes'));
 
 // ── Public Submission Portal (no auth — token-scoped) ────────────────────────
 app.use('/api/public', require('./routes/publicSubmissionRoutes'));

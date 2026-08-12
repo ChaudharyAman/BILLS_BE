@@ -72,8 +72,9 @@ const buildPayload = async (body, userId) => {
 
 exports.createRecurringTransaction = async (req, res) => {
   try {
-    const payload = await buildPayload(req.body, req.user._id);
-    const rt = new RecurringTransaction({ ...payload, user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    const payload = await buildPayload(req.body, companyId);
+    const rt = new RecurringTransaction({ ...payload, user: companyId });
     rt.nextProcessDate = initialNextProcessDate(rt);
     await rt.save();
     res.status(201).json(rt);
@@ -85,12 +86,13 @@ exports.createRecurringTransaction = async (req, res) => {
 
 exports.getRecurringTransactions = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const parsedPage = Number.parseInt(req.query.page, 10);
     const parsedLimit = Number.parseInt(req.query.limit, 10);
     const page = Number.isInteger(parsedPage) ? Math.max(1, parsedPage) : 1;
     const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(parsedLimit, 100)) : 20;
     const skip = (page - 1) * limit;
-    const query = { user: req.user._id };
+    const query = { user: companyId };
     if (req.query.type) query.type = req.query.type;
     if (req.query.businessUnit) query.businessUnit = req.query.businessUnit;
     if (req.query.isActive !== undefined) query.isActive = req.query.isActive === 'true';
@@ -114,11 +116,12 @@ exports.getRecurringTransactions = async (req, res) => {
 
 exports.updateRecurringTransaction = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Recurring transaction not found' });
-    const existing = await RecurringTransaction.findOne({ _id: req.params.id, user: req.user._id });
+    const existing = await RecurringTransaction.findOne({ _id: req.params.id, user: companyId });
     if (!existing) return res.status(404).json({ message: 'Recurring transaction not found' });
 
-    const payload = await buildPayload({ ...existing.toObject(), ...req.body }, req.user._id);
+    const payload = await buildPayload({ ...existing.toObject(), ...req.body }, companyId);
     Object.assign(existing, payload);
     existing.nextProcessDate = initialNextProcessDate(existing);
     await existing.save();
@@ -131,8 +134,9 @@ exports.updateRecurringTransaction = async (req, res) => {
 
 exports.deleteRecurringTransaction = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Recurring transaction not found' });
-    const rt = await RecurringTransaction.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const rt = await RecurringTransaction.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!rt) return res.status(404).json({ message: 'Recurring transaction not found' });
     res.json({ message: 'Recurring transaction deleted successfully' });
   } catch (error) {
@@ -142,9 +146,10 @@ exports.deleteRecurringTransaction = async (req, res) => {
 
 exports.pauseRecurringTransaction = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Recurring transaction not found' });
     const rt = await RecurringTransaction.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
+      { _id: req.params.id, user: companyId },
       { $set: { isActive: false } },
       { new: true }
     );
@@ -157,8 +162,9 @@ exports.pauseRecurringTransaction = async (req, res) => {
 
 exports.resumeRecurringTransaction = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Recurring transaction not found' });
-    const rt = await RecurringTransaction.findOne({ _id: req.params.id, user: req.user._id });
+    const rt = await RecurringTransaction.findOne({ _id: req.params.id, user: companyId });
     if (!rt) return res.status(404).json({ message: 'Recurring transaction not found' });
     rt.isActive = true;
     rt.nextProcessDate = initialNextProcessDate(rt);

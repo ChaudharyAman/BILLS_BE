@@ -17,15 +17,33 @@ const generateToken = (user) => {
   });
 };
 
-const buildAuthResponse = (user) => ({
-  user: {
-    _id: user._id,
-    username: user.username,
-    email: user.email,
-    role: user.role,
-    subscription: user.subscription
+const buildAuthResponse = (req) => {
+  const user = req.user || {};
+  let permissionsObj = {};
+  if (req.permissions) {
+    if (req.permissions instanceof Map) {
+      permissionsObj = Object.fromEntries(req.permissions);
+    } else {
+      permissionsObj = req.permissions;
+    }
   }
-});
+
+  return {
+    user: {
+      _id: user._id,
+      username: user.username,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      subscription: req.ownerUser?.subscription || user.subscription,
+      isOwner: user.isOwner !== false,
+      companyId: user.isOwner ? user._id : user.companyId,
+      accessRole: user.accessRole,
+      status: user.status || 'active',
+      permissions: permissionsObj,
+    }
+  };
+};
 
 // Safari/Chrome Cookie Helper
 const getCookieOptions = (req) => {
@@ -73,11 +91,12 @@ exports.login = async (req, res) => {
       // Ensure users whose Pro end date has passed are downgraded at login.
       await syncExpiredSubscription(user);
 
+      req.user = user;
       const token = generateToken(user);
       res.cookie('token', token, getCookieOptions(req));
 
       res.json({
-        ...buildAuthResponse(user),
+        ...buildAuthResponse(req),
         token
       });
     } else {
@@ -93,7 +112,7 @@ exports.me = async (req, res) => {
   const token = generateToken(req.user);
   res.cookie('token', token, getCookieOptions(req));
   res.json({
-    ...buildAuthResponse(req.user),
+    ...buildAuthResponse(req),
     token
   });
 };

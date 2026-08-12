@@ -28,8 +28,26 @@ const processPayroll = async (req, res) => {
       return res.status(400).json({ message: 'Select at least one employee to process payroll' });
     }
 
+    const tenantUserId = req.companyId || req.user._id;
+    const isAsync = req.query.async === 'true' || req.body.async === true;
+
+    if (!isAsync) {
+      const { processBatchJob } = require('../../workers/payrollWorker');
+      const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const batchResult = await processBatchJob({
+        jobId,
+        userId: tenantUserId,
+        month,
+        year,
+        employeePayloads,
+        saveAsDraft,
+      });
+
+      return res.status(201).json(batchResult);
+    }
+
     const queueResult = await enqueueBatchJob({
-      userId: req.user._id,
+      userId: tenantUserId,
       month,
       year,
       employeePayloads,

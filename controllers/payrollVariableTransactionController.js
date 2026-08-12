@@ -5,8 +5,9 @@ const Employee = require('../models/Employee');
 // Fetch all transactions scoped to current user/company
 exports.getTransactions = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { employee, status, month, year, payroll } = req.query;
-    const filter = { user: req.user._id };
+    const filter = { user: companyId };
 
     if (employee && mongoose.Types.ObjectId.isValid(employee)) {
       filter.employee = employee;
@@ -43,12 +44,13 @@ exports.getTransactions = async (req, res) => {
 // Get single transaction
 exports.getTransactionById = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Transaction not found' });
     }
     const transaction = await PayrollVariableTransaction.findOne({
       _id: req.params.id,
-      user: req.user._id,
+      user: companyId,
     }).populate('employee', 'firstName lastName employeeId');
 
     if (!transaction) {
@@ -64,6 +66,7 @@ exports.getTransactionById = async (req, res) => {
 // Create a transaction
 exports.createTransaction = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { employee, paymentType, reference, client, quantity, rate, amount, remarks, status, date } = req.body;
 
     if (!employee || !mongoose.Types.ObjectId.isValid(employee)) {
@@ -73,14 +76,14 @@ exports.createTransaction = async (req, res) => {
       return res.status(400).json({ message: 'paymentType and amount are required' });
     }
 
-    // Verify employee belongs to user
-    const empDoc = await Employee.findOne({ _id: employee, user: req.user._id });
+    // Verify employee belongs to company
+    const empDoc = await Employee.findOne({ _id: employee, user: companyId });
     if (!empDoc) {
       return res.status(404).json({ message: 'Employee not found' });
     }
 
     const transaction = await PayrollVariableTransaction.create({
-      user: req.user._id,
+      user: companyId,
       employee,
       paymentType,
       reference,
@@ -103,12 +106,13 @@ exports.createTransaction = async (req, res) => {
 // Update a transaction
 exports.updateTransaction = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(404).json({ message: 'Transaction not found' });
     }
 
-    const tx = await PayrollVariableTransaction.findOne({ _id: id, user: req.user._id });
+    const tx = await PayrollVariableTransaction.findOne({ _id: id, user: companyId });
     if (!tx) {
       return res.status(404).json({ message: 'Transaction not found' });
     }
@@ -141,12 +145,13 @@ exports.updateTransaction = async (req, res) => {
 // Delete a transaction
 exports.deleteTransaction = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(404).json({ message: 'Transaction not found' });
     }
 
-    const tx = await PayrollVariableTransaction.findOne({ _id: id, user: req.user._id });
+    const tx = await PayrollVariableTransaction.findOne({ _id: id, user: companyId });
     if (!tx) {
       return res.status(404).json({ message: 'Transaction not found' });
     }

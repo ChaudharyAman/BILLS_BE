@@ -9,7 +9,8 @@ const roundTwo = (num) => Math.round((Number(num) || 0) * 100) / 100;
 
 exports.getBalanceSheet = async (req, res) => {
   try {
-    const userId = new mongoose.Types.ObjectId(String(req.user._id));
+    const companyId = req.companyId || req.user._id;
+    const userId = new mongoose.Types.ObjectId(String(companyId));
     const now = new Date();
     const currentYearNum = now.getFullYear();
     const priorYearNum = currentYearNum - 1;

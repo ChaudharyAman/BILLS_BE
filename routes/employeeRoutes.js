@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
   getEmployees,
   createEmployee,
@@ -25,25 +25,25 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 *
 router.use(protect);
 
 router.route('/')
-  .get(getEmployees)
-  .post(createEmployee);
+  .get(authorize('employees', 'view'), getEmployees)
+  .post(authorize('employees', 'create'), createEmployee);
 
-router.get('/active', getActiveEmployees);
-router.get('/import-template', downloadImportTemplateExcel);
-router.post('/import', upload.single('file'), importEmployees);
-router.get('/export', exportEmployeesExcel);
+router.get('/active', authorize('employees', 'view'), getActiveEmployees);
+router.get('/import-template', authorize('employees', 'view'), downloadImportTemplateExcel);
+router.post('/import', authorize('employees', 'create'), upload.single('file'), importEmployees);
+router.get('/export', authorize('employees', 'view'), exportEmployeesExcel);
 
-router.post('/bulk-delete', bulkDeleteEmployees);
-router.post('/bulk-salary-revision', bulkSalaryRevision);
+router.post('/bulk-delete', authorize('employees', 'delete'), bulkDeleteEmployees);
+router.post('/bulk-salary-revision', authorize('employees', 'edit'), bulkSalaryRevision);
 
 router.route('/:id')
-  .get(getEmployeeById)
-  .put(updateEmployee)
-  .delete(deleteEmployee);
-router.put('/:id/declarations', updateEmployeeDeclarations);
-router.post('/:id/salary-revision', addSalaryRevision);
+  .get(authorize('employees', 'view'), getEmployeeById)
+  .put(authorize('employees', 'edit'), updateEmployee)
+  .delete(authorize('employees', 'delete'), deleteEmployee);
+router.put('/:id/declarations', authorize('employees', 'edit'), updateEmployeeDeclarations);
+router.post('/:id/salary-revision', authorize('employees', 'edit'), addSalaryRevision);
 router.route('/:id/salary-revision/:revisionId')
-  .put(updateSalaryRevision)
-  .delete(deleteSalaryRevision);
+  .put(authorize('employees', 'edit'), updateSalaryRevision)
+  .delete(authorize('employees', 'delete'), deleteSalaryRevision);
 
 module.exports = router;

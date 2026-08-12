@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
   getRoles,
   getRoleById,
@@ -12,12 +12,12 @@ const {
 router.use(protect);
 
 router.route('/')
-  .get(getRoles)
-  .post(createRole);
+  .get(authorize('jobRoles', 'view'), getRoles)
+  .post(authorize('jobRoles', 'create'), createRole);
 
 router.route('/:id')
-  .get(getRoleById)
-  .put(updateRole)
-  .delete(deleteRole);
+  .get(authorize('jobRoles', 'view'), getRoleById)
+  .put(authorize('jobRoles', 'edit'), updateRole)
+  .delete(authorize('jobRoles', 'delete'), deleteRole);
 
 module.exports = router;

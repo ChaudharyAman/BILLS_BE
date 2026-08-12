@@ -7,15 +7,15 @@ const {
   updateIncome,
   deleteIncome
 } = require('../controllers/incomeController');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 
 router.route('/')
-  .get(protect, getIncomes)
-  .post(protect, createIncome);
+  .get(protect, authorize('income', 'view'), getIncomes)
+  .post(protect, authorize('income', 'create'), createIncome);
 
 router.route('/:id')
-  .get(protect, getIncomeById)
-  .put(protect, updateIncome)
-  .delete(protect, deleteIncome);
+  .get(protect, authorize('income', 'view'), getIncomeById)
+  .put(protect, authorize('income', 'edit'), updateIncome)
+  .delete(protect, authorize('income', 'delete'), deleteIncome);
 
 module.exports = router;

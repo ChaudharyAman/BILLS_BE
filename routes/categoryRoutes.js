@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
   getCategories,
   createCategory,
@@ -12,13 +12,13 @@ const {
 router.use(protect);
 
 router.route('/')
-  .get(getCategories)
-  .post(createCategory);
+  .get(authorize('categories', 'view'), getCategories)
+  .post(authorize('categories', 'create'), createCategory);
 
-router.post('/initialize-defaults', initializeDefaultCategories);
+router.post('/initialize-defaults', authorize('categories', 'create'), initializeDefaultCategories);
 
 router.route('/:id')
-  .put(updateCategory)
-  .delete(deleteCategory);
+  .put(authorize('categories', 'edit'), updateCategory)
+  .delete(authorize('categories', 'delete'), deleteCategory);
 
 module.exports = router;

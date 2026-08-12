@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
   getPayrollComponents,
   getPayrollComponentById,
@@ -12,12 +12,12 @@ const {
 router.use(protect);
 
 router.route('/')
-  .get(getPayrollComponents)
-  .post(createPayrollComponent);
+  .get(authorize('payroll', 'view'), getPayrollComponents)
+  .post(authorize('payroll', 'create'), createPayrollComponent);
 
 router.route('/:id')
-  .get(getPayrollComponentById)
-  .put(updatePayrollComponent)
-  .delete(deletePayrollComponent);
+  .get(authorize('payroll', 'view'), getPayrollComponentById)
+  .put(authorize('payroll', 'edit'), updatePayrollComponent)
+  .delete(authorize('payroll', 'delete'), deletePayrollComponent);
 
 module.exports = router;

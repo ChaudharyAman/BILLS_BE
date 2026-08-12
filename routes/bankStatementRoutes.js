@@ -6,14 +6,14 @@ const {
   createBankStatement,
   deleteBankStatement,
 } = require('../controllers/bankStatementController');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 
 router.route('/')
-  .get(protect, getBankStatements)
-  .post(protect, createBankStatement);
+  .get(protect, authorize('bankStatements', 'view'), getBankStatements)
+  .post(protect, authorize('bankStatements', 'create'), createBankStatement);
 
 router.route('/:id')
-  .get(protect, getBankStatementById)
-  .delete(protect, deleteBankStatement);
+  .get(protect, authorize('bankStatements', 'view'), getBankStatementById)
+  .delete(protect, authorize('bankStatements', 'delete'), deleteBankStatement);
 
 module.exports = router;

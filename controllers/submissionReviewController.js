@@ -2,7 +2,7 @@
  * submissionReviewController.js
  *
  * Authenticated review actions for the business owner's inbox.
- * All handlers are scoped to req.user._id — a user can never see or modify
+ * All handlers are scoped to companyId = req.companyId || req.user._id — a user can never see or modify
  * another user's submissions (mismatch → 404, not 403, to avoid leaking existence).
  *
  * Approve flow calls internal create-helpers that reuse the same
@@ -140,7 +140,6 @@ function formatSubmission(sub) {
 
 async function createExpenseFromSubmission(userId, parsedData, overrides, settings) {
   const Expense    = getExpense();
-  const CategoryModel = getCategory();
 
   const vendor = await resolveParty({
     userId,
@@ -294,17 +293,18 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/submissions
-// Paginated list filtered by req.user._id.
+// Paginated list filtered by companyId.
 // File buffers are excluded. Pending count included in response.
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getSubmissions = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const page   = Math.max(parseInt(req.query.page,  10) || 1, 1);
     const limit  = Math.min(parseInt(req.query.limit, 10) || 20, 100);
     const skip   = (page - 1) * limit;
     const status = req.query.status || undefined;
 
-    const query = { user: req.user._id };
+    const query = { user: companyId };
     if (status) query.status = status;
 
     const [submissions, total, pendingCount] = await Promise.all([
@@ -315,7 +315,7 @@ exports.getSubmissions = async (req, res) => {
         .limit(limit)
         .lean({ virtuals: true }),
       PublicSubmission.countDocuments(query),
-      status ? PublicSubmission.countDocuments({ user: req.user._id, status: 'pending' }) : Promise.resolve(null),
+      status ? PublicSubmission.countDocuments({ user: companyId, status: 'pending' }) : Promise.resolve(null),
     ]);
 
     return res.json({
@@ -334,18 +334,19 @@ exports.getSubmissions = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/submissions/:id
-// Full detail. If submission doesn't belong to req.user → 404 (not 403).
+// Full detail. If submission doesn't belong to companyId → 404 (not 403).
 // Files returned without buffer; download via /api/submissions/:id/files/:fileIndex
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getSubmissionById = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Submission not found' });
     }
 
     const submission = await PublicSubmission.findOne({
       _id:  req.params.id,
-      user: req.user._id,
+      user: companyId,
     }).select('-files.buffer -ipAddress').lean({ virtuals: true });
 
     if (!submission) {
@@ -361,17 +362,18 @@ exports.getSubmissionById = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/submissions/:id/files/:fileIndex
-// Serves a single file buffer as a download. Scoped to req.user._id.
+// Serves a single file buffer as a download. Scoped to companyId.
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getSubmissionFile = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Submission not found' });
     }
 
     const submission = await PublicSubmission.findOne({
       _id:  req.params.id,
-      user: req.user._id,
+      user: companyId,
     }).select('files');
 
     if (!submission) {
@@ -402,13 +404,14 @@ exports.getSubmissionFile = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.editParsedData = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Submission not found' });
     }
 
     const submission = await PublicSubmission.findOne({
       _id:  req.params.id,
-      user: req.user._id,
+      user: companyId,
     });
     if (!submission) return res.status(404).json({ message: 'Submission not found' });
 
@@ -456,13 +459,14 @@ exports.editParsedData = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.approveSubmission = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Submission not found' });
     }
 
     const submission = await PublicSubmission.findOne({
       _id:  req.params.id,
-      user: req.user._id,
+      user: companyId,
     });
     if (!submission) return res.status(404).json({ message: 'Submission not found' });
 
@@ -477,7 +481,7 @@ exports.approveSubmission = async (req, res) => {
     }
 
     // Load user settings for document numbering prefixes
-    const settings = await Settings.findOne({ user: req.user._id }).lean();
+    const settings = await Settings.findOne({ user: companyId }).lean();
     const parsedData = submission.parsedData || {};
     const overrides  = req.body.overrides   || {};
 
@@ -486,19 +490,19 @@ exports.approveSubmission = async (req, res) => {
 
     switch (category) {
       case 'expense':
-        record = await createExpenseFromSubmission(req.user._id, parsedData, overrides, settings);
+        record = await createExpenseFromSubmission(companyId, parsedData, overrides, settings);
         collectionName = 'expenses';
         break;
       case 'invoice':
-        record = await createInvoiceFromSubmission(req.user._id, parsedData, overrides, settings);
+        record = await createInvoiceFromSubmission(companyId, parsedData, overrides, settings);
         collectionName = 'invoices';
         break;
       case 'income':
-        record = await createIncomeFromSubmission(req.user._id, parsedData, overrides, settings);
+        record = await createIncomeFromSubmission(companyId, parsedData, overrides, settings);
         collectionName = 'incomes';
         break;
       case 'purchaseorder':
-        record = await createPurchaseOrderFromSubmission(req.user._id, parsedData, overrides, settings);
+        record = await createPurchaseOrderFromSubmission(companyId, parsedData, overrides, settings);
         collectionName = 'purchaseorders';
         break;
       default:
@@ -540,13 +544,14 @@ exports.approveSubmission = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.rejectSubmission = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Submission not found' });
     }
 
     const submission = await PublicSubmission.findOne({
       _id:  req.params.id,
-      user: req.user._id,
+      user: companyId,
     });
     if (!submission) return res.status(404).json({ message: 'Submission not found' });
 
@@ -582,13 +587,14 @@ exports.rejectSubmission = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.requestChanges = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Submission not found' });
     }
 
     const submission = await PublicSubmission.findOne({
       _id:  req.params.id,
-      user: req.user._id,
+      user: companyId,
     });
     if (!submission) return res.status(404).json({ message: 'Submission not found' });
 

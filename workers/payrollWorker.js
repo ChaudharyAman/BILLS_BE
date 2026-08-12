@@ -433,6 +433,16 @@ async function processBatchJob({ jobId, userId, month, year, employeePayloads = 
         }
       }
     );
+
+    return {
+      jobId,
+      status: 'completed',
+      total: totalCount,
+      processed: totalCount,
+      success,
+      errors,
+      skippedNoActivity,
+    };
   } catch (fatalError) {
     console.error(`Fatal batch worker error for jobId ${jobId}:`, fatalError);
     await PayrollBatchRun.updateOne(

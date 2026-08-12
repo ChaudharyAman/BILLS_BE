@@ -335,7 +335,8 @@ function deriveImportedTaxBreakdown(taxTotal, invoiceType, isIntraState) {
 // ─── GET all invoices ─────────────────────────────────────────────────────────
 exports.getInvoices = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) {
+    const companyId = req.companyId || req.user?._id;
+    if (!companyId) {
       return res.status(401).json({ message: 'Not authorized' });
     }
 
@@ -352,14 +353,14 @@ exports.getInvoices = async (req, res) => {
     const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
     const skip = (page - 1) * limit;
 
-    let query = { user: req.user._id };
+    let query = { user: companyId };
 
     if (search) {
       const safeSearch = escapeRegex(search);
       // Find clients that match the search term
       const Client = require('../models/Client'); // Lazy load if needed
       const matchedClients = await Client.find({
-        user: req.user._id,
+        user: companyId,
         name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
@@ -447,10 +448,11 @@ exports.getInvoices = async (req, res) => {
 // ─── GET single invoice ───────────────────────────────────────────────────────
 exports.getInvoiceById = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Invoice not found' });
     }
-    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
     res.json(invoice);
   } catch (error) {
@@ -461,6 +463,7 @@ exports.getInvoiceById = async (req, res) => {
 // ─── CREATE invoice ───────────────────────────────────────────────────────────
 exports.createInvoice = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const {
       clientRef,
       clientName,
@@ -499,13 +502,13 @@ exports.createInvoice = async (req, res) => {
     const resolvedImportSource = importSource || (req.body._fromPdfImport ? PDF_IMPORT_SOURCE : '');
 
     // --- Subscription Plan Check ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const isPro = userObj?.subscription?.plan === 'pro' && userObj?.subscription?.status === 'active';
     if (!isPro) {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const invoiceCount = await Invoice.countDocuments({
-        user: req.user._id,
+        user: companyId,
         createdAt: { $gte: startOfMonth }
       });
       if (invoiceCount >= 15) {
@@ -513,27 +516,27 @@ exports.createInvoice = async (req, res) => {
       }
     }
     // -------------------------------
-    const userSettings = await Settings.findOne({ user: req.user._id });
+    const userSettings = await Settings.findOne({ user: companyId });
     const invoicePrefix = userSettings?.invoicePrefix || 'INV';
     let invoiceNo = req.body.invoiceNo;
     const isAuto = !invoiceNo || invoiceNo === 'Auto-generated';
 
     if (!isAuto) {
       // Validate Custom Invoice Number Uniqueness for this user
-      const existing = await Invoice.findOne({ user: req.user._id, invoiceNo });
+      const existing = await Invoice.findOne({ user: companyId, invoiceNo });
       if (existing) {
         return res.status(400).json({ message: `Invoice number "${invoiceNo}" already exists.` });
       }
     } else {
       // Generate Invoice Number
       invoiceNo = await generateNextUniqueInvoiceNumber({
-        userId: req.user._id,
+        userId: companyId,
         invoicePrefix,
       });
     }
 
     const client = await resolveClientForInvoice({
-      userId: req.user._id,
+      userId: companyId,
       clientRef,
       clientName,
       clientGST,
@@ -563,7 +566,7 @@ exports.createInvoice = async (req, res) => {
         } : null);
 
     const resolvedItems = resolvedImportSource === PDF_IMPORT_SOURCE
-      ? await resolvePdfImportItems(req.user._id, items || [])
+      ? await resolvePdfImportItems(companyId, items || [])
       : (items || []);
 
     const documentInvoiceType = ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'].includes(invoiceType)
@@ -612,7 +615,7 @@ exports.createInvoice = async (req, res) => {
 
     let linkedPo = null;
     if (purchaseOrderRef && mongoose.Types.ObjectId.isValid(purchaseOrderRef)) {
-      linkedPo = await PurchaseOrder.findOne({ _id: purchaseOrderRef, user: req.user._id });
+      linkedPo = await PurchaseOrder.findOne({ _id: purchaseOrderRef, user: companyId });
       if (!linkedPo) {
         return res.status(404).json({ message: 'Linked Purchase Order not found' });
       }
@@ -633,7 +636,7 @@ exports.createInvoice = async (req, res) => {
     let newInvoice = null;
     for (let attempt = 0; attempt < 25; attempt += 1) {
       const invoice = new Invoice({
-        user: req.user._id,
+        user: companyId,
         invoiceNo,
         invoiceType: documentInvoiceType,
         gstInvoiceType: storedGstInvoiceType,
@@ -734,6 +737,7 @@ exports.createInvoice = async (req, res) => {
 // ─── UPDATE invoice ───────────────────────────────────────────────────────────
 exports.updateInvoice = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const {
       clientRef,
       invoiceType,
@@ -767,7 +771,7 @@ exports.updateInvoice = async (req, res) => {
       purchaseOrderRef,
     } = req.body;
 
-    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
     const oldPoId = invoice.purchaseOrderRef;
@@ -776,13 +780,13 @@ exports.updateInvoice = async (req, res) => {
     const oldIsActive = ACTIVE_INVOICE_STATUSES.includes(oldStatus);
 
     // --- Subscription Plan Check for Edits ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const isPro = userObj?.subscription?.plan === 'pro' && userObj?.subscription?.status === 'active';
     if (!isPro) {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const conditions = {
-        user: req.user._id,
+        user: companyId,
         updatedAt: { $gte: startOfMonth },
         $expr: { $gt: ["$updatedAt", "$createdAt"] } 
       };
@@ -815,7 +819,7 @@ exports.updateInvoice = async (req, res) => {
     // -----------------------------------------
 
     // Fetch Client Snapshot
-    const client = await Client.findOne({ _id: clientRef, user: req.user._id });
+    const client = await Client.findOne({ _id: clientRef, user: companyId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const clientSnapshot = {
@@ -834,7 +838,7 @@ exports.updateInvoice = async (req, res) => {
       email: client.email || '',
     };
 
-    const userSettings = await Settings.findOne({ user: req.user._id });
+    const userSettings = await Settings.findOne({ user: companyId });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
@@ -915,7 +919,7 @@ exports.updateInvoice = async (req, res) => {
     invoice.overrideInvoiceType = !!req.body.overrideInvoiceType;
     // Allow updating invoiceNo only if a custom value was provided and it differs
     if (req.body.invoiceNo && req.body.invoiceNo !== 'Auto-generated' && req.body.invoiceNo !== invoice.invoiceNo) {
-      const duplicate = await Invoice.findOne({ user: req.user._id, invoiceNo: req.body.invoiceNo, _id: { $ne: invoice._id } });
+      const duplicate = await Invoice.findOne({ user: companyId, invoiceNo: req.body.invoiceNo, _id: { $ne: invoice._id } });
       if (duplicate) return res.status(400).json({ message: `Invoice number "${req.body.invoiceNo}" already exists.` });
       invoice.invoiceNo = req.body.invoiceNo;
     }
@@ -973,7 +977,7 @@ exports.updateInvoice = async (req, res) => {
     if (String(oldPoId || '') === String(newPoId || '')) {
       // Linked PO remains the same
       if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId)) {
-        const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, user: req.user._id });
+        const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, user: companyId });
         if (linkedPo) {
           let updated = false;
           if (oldIsActive && newIsActive) {
@@ -1008,7 +1012,7 @@ exports.updateInvoice = async (req, res) => {
       // Linked PO has changed
       // 1. Revert Old PO if it was active
       if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId) && oldIsActive) {
-        const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, user: req.user._id });
+        const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, user: companyId });
         if (oldPo) {
           oldPo.billedAmount = Math.max(0, roundToTwo((oldPo.billedAmount || 0) - oldGrandTotal));
           if (oldPo.billedAmount >= oldPo.grandTotal) {
@@ -1024,7 +1028,7 @@ exports.updateInvoice = async (req, res) => {
 
       // 2. Apply to New PO if new invoice is active
       if (newPoId && mongoose.Types.ObjectId.isValid(newPoId) && newIsActive) {
-        const newPo = await PurchaseOrder.findOne({ _id: newPoId, user: req.user._id });
+        const newPo = await PurchaseOrder.findOne({ _id: newPoId, user: companyId });
         if (!newPo) {
           return res.status(404).json({ message: 'New Purchase Order not found' });
         }
@@ -1054,11 +1058,12 @@ exports.updateInvoice = async (req, res) => {
 // ─── DELETE invoice ───────────────────────────────────────────────────────────
 exports.deleteInvoice = async (req, res) => {
   try {
-    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
     // --- Subscription Plan Check for Deletes ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const isPro = userObj?.subscription?.plan === 'pro' && userObj?.subscription?.status === 'active';
     if (!isPro) {
        return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
@@ -1069,7 +1074,7 @@ exports.deleteInvoice = async (req, res) => {
     const isOldActive = ACTIVE_INVOICE_STATUSES.includes(invoice.status || 'DRAFT');
 
     if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId) && isOldActive) {
-      const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, user: req.user._id });
+      const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, user: companyId });
       if (oldPo) {
         oldPo.billedAmount = Math.max(0, roundToTwo((oldPo.billedAmount || 0) - oldGrandTotal));
         if (oldPo.billedAmount >= oldPo.grandTotal) {
@@ -1094,12 +1099,13 @@ exports.deleteInvoice = async (req, res) => {
 // ─── UPDATE invoice status ───────────────────────────────────────────────────
 exports.updateInvoiceStatus = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { status } = req.body;
     if (!status) {
       return res.status(400).json({ message: 'Status is required' });
     }
 
-    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
     const oldStatus = invoice.status || 'DRAFT';
@@ -1122,7 +1128,7 @@ exports.updateInvoiceStatus = async (req, res) => {
     const newIsActive = ACTIVE_INVOICE_STATUSES.includes(status);
     const oldPoId = invoice.purchaseOrderRef;
     if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId)) {
-      const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, user: req.user._id });
+      const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, user: companyId });
       if (linkedPo) {
         let updated = false;
         if (oldIsActive && newIsActive) {
@@ -1163,19 +1169,20 @@ exports.updateInvoiceStatus = async (req, res) => {
 // ─── BULK create invoices ───────────────────────────────────────────────────
 exports.bulkCreateInvoices = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const invoices = req.body.invoices;
     if (!Array.isArray(invoices) || invoices.length === 0) {
       return res.status(400).json({ message: 'No invoices provided for bulk creation.' });
     }
 
     // --- Subscription Plan Check ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const isPro = userObj?.subscription?.plan === 'pro' && userObj?.subscription?.status === 'active';
     if (!isPro) {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const invoiceCount = await Invoice.countDocuments({
-        user: req.user._id,
+        user: companyId,
         createdAt: { $gte: startOfMonth }
       });
       if (invoiceCount + invoices.length > 15) {
@@ -1184,7 +1191,7 @@ exports.bulkCreateInvoices = async (req, res) => {
     }
     // -------------------------------
 
-    const userSettings = await Settings.findOne({ user: req.user._id });
+    const userSettings = await Settings.findOne({ user: companyId });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
@@ -1205,7 +1212,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       }
 
       let client = await Client.findOne({
-        user: req.user._id,
+        user: companyId,
         name: { $regex: buildExactNameRegex(clientName) },
       });
 
@@ -1222,7 +1229,7 @@ exports.bulkCreateInvoices = async (req, res) => {
             country: 'India',
           },
           placeOfSupply: invData.placeOfSupply || invData.clientState || 'Delhi',
-          user: req.user._id,
+          user: companyId,
         });
         await client.save();
       } else {
@@ -1275,7 +1282,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       const isAuto = !invoiceNo || invoiceNo === 'Auto-generated';
       if (isAuto) {
         invoiceNo = await generateNextUniqueInvoiceNumber({
-          userId: req.user._id,
+          userId: companyId,
           invoicePrefix: userSettings?.invoicePrefix || 'INV',
         });
       }
@@ -1307,7 +1314,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       const finalDate = parseImportedDate(invData.date);
 
       if (!isAuto) {
-        const existingInvoice = await Invoice.findOne({ user: req.user._id, invoiceNo });
+        const existingInvoice = await Invoice.findOne({ user: companyId, invoiceNo });
         if (existingInvoice && isSameImportedInvoice(existingInvoice, finalDate, finalGrandTotal)) {
           skippedInvoices.push({
             importRowId,
@@ -1322,7 +1329,7 @@ exports.bulkCreateInvoices = async (req, res) => {
 
         if (existingInvoice) {
           invoiceNo = await generateNextUniqueInvoiceNumber({
-            userId: req.user._id,
+            userId: companyId,
             invoicePrefix: 'INV',
           });
           renumberedInvoices.push({
@@ -1407,7 +1414,7 @@ exports.bulkCreateInvoices = async (req, res) => {
             notes: String(invData.notes || '').trim(),
             terms: invData.terms || '',
             exciseDuty: buildExciseDutySnapshot(invData.exciseDuty, finalExciseTotal),
-            user: req.user._id
+            user: companyId
           });
 
           try {
@@ -1419,7 +1426,7 @@ exports.bulkCreateInvoices = async (req, res) => {
             }
             const previousInvoiceNo = invoiceNo;
             invoiceNo = await generateNextUniqueInvoiceNumber({
-              userId: req.user._id,
+              userId: companyId,
               invoicePrefix: 'INV',
             });
             renumberedInvoices.push({
@@ -1482,12 +1489,13 @@ exports.bulkCreateInvoices = async (req, res) => {
 // ─── GET GST Report ───────────────────────────────────────────────────────────
 exports.getGSTReport = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { startDate, endDate } = req.query;
     const parsedDateRange = parseOptionalDateRange(req.query);
     
     // Filter by user
     const matchStage = {
-      user: req.user._id,
+      user: companyId,
       status: { $in: ACTIVE_INVOICE_STATUSES },
     };
 
@@ -1563,12 +1571,13 @@ exports.getGSTReport = async (req, res) => {
 // ─── GET Revenue Report ───────────────────────────────────────────────────────
 exports.getRevenueReport = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { startDate, endDate, businessUnit, groupBy } = req.query;
     const parsedDateRange = parseOptionalDateRange(req.query);
     
     // Filter by user
     const matchStage = {
-      user: req.user._id,
+      user: companyId,
       status: { $in: ACTIVE_INVOICE_STATUSES },
     };
 
@@ -1625,9 +1634,10 @@ exports.getRevenueReport = async (req, res) => {
 // ─── GET Payment Collection (Unpaid Invoices) ─────────────────────────────────
 exports.getPaymentCollection = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     // Find all invoices where balance is > 0
     const matchStage = { 
-      user: req.user._id,
+      user: companyId,
       balanceDue: { $gt: 0 },
       status: { $in: ACTIVE_INVOICE_STATUSES },
     };
@@ -1661,6 +1671,7 @@ exports.getPaymentCollection = async (req, res) => {
 // ─── GET Account Statement (Client Ledger) ────────────────────────────────────
 exports.getAccountStatement = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { clientId, startDate, endDate } = req.query;
     const parsedDateRange = parseOptionalDateRange(req.query);
 
@@ -1669,7 +1680,7 @@ exports.getAccountStatement = async (req, res) => {
     }
 
     const matchStage = { 
-      user: req.user._id,
+      user: companyId,
       "client.clientRef": new mongoose.Types.ObjectId(clientId),
       status: { $in: ACTIVE_INVOICE_STATUSES },
     };

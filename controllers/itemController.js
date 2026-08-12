@@ -6,7 +6,8 @@ const { buildUserCounterId } = require('../utils/counterKey');
 // Get all items
 exports.getItems = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) { return res.status(401).json({ message: 'Not authorized' }); }
+    const companyId = req.companyId || req.user?._id;
+    if (!companyId) { return res.status(401).json({ message: 'Not authorized' }); }
 
     const exportAll = req.query.all === 'true';
     const page = parseInt(req.query.page, 10) || 1;
@@ -14,7 +15,7 @@ exports.getItems = async (req, res) => {
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    let query = { user: req.user._id };
+    let query = { user: companyId };
 
     if (search) {
       const safeSearch = escapeRegex(search);
@@ -49,11 +50,12 @@ exports.getItems = async (req, res) => {
 // Create a new item
 exports.createItem = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess, salesInfo, purchaseInfo, openingQuantity, defaultTaxRate, rate } = req.body;
 
     if (!sku || sku.trim() === '') {
       const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(req.user._id, 'skuSeq') },
+        { id: buildUserCounterId(companyId, 'skuSeq') },
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
@@ -65,7 +67,7 @@ exports.createItem = async (req, res) => {
     const item = new Item({
       sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess,
       salesInfo, purchaseInfo, openingQuantity, defaultTaxRate, rate,
-      user: req.user._id
+      user: companyId
     });
 
     const newItem = await item.save();
@@ -78,6 +80,7 @@ exports.createItem = async (req, res) => {
 // Bulk create items
 exports.bulkCreateItems = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const items = req.body.items;
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'No items provided for bulk creation.' });
@@ -91,7 +94,7 @@ exports.bulkCreateItems = async (req, res) => {
 
         if (!sku || sku.trim() === '') {
           const counter = await Counter.findOneAndUpdate(
-            { id: buildUserCounterId(req.user._id, 'skuSeq') },
+            { id: buildUserCounterId(companyId, 'skuSeq') },
             { $inc: { seq: 1 } },
             { returnDocument: 'after', upsert: true }
           );
@@ -111,7 +114,7 @@ exports.bulkCreateItems = async (req, res) => {
           sellingPrice: itemData.sellingPrice,
           taxRate: itemData.taxRate,
           cess: itemData.cess,
-          user: req.user._id
+          user: companyId
         });
         
         const savedItem = await item.save();
@@ -139,7 +142,8 @@ exports.bulkCreateItems = async (req, res) => {
 // Get item by ID
 exports.getItemById = async (req, res) => {
   try {
-    const item = await Item.findOne({ _id: req.params.id, user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    const item = await Item.findOne({ _id: req.params.id, user: companyId });
     if (!item) {
       return res.status(404).json({ message: 'Item not found' });
     }
@@ -152,6 +156,7 @@ exports.getItemById = async (req, res) => {
 // Update item
 exports.updateItem = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess, salesInfo, purchaseInfo, openingQuantity, defaultTaxRate, rate } = req.body;
 
     // If sku is blank, preserve the existing item's SKU — do NOT auto-generate a new one on update
@@ -168,7 +173,7 @@ exports.updateItem = async (req, res) => {
     Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
 
     const item = await Item.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
+      { _id: req.params.id, user: companyId },
       updateData,
       { returnDocument: 'after', runValidators: true }
     );
@@ -184,7 +189,8 @@ exports.updateItem = async (req, res) => {
 // Delete item
 exports.deleteItem = async (req, res) => {
   try {
-    const item = await Item.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const companyId = req.companyId || req.user._id;
+    const item = await Item.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!item) {
       return res.status(404).json({ message: 'Item not found' });
     }

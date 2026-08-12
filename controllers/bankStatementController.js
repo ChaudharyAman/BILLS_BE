@@ -6,8 +6,9 @@ const BankStatement = require('../models/BankStatement');
 // @access  Private
 exports.getBankStatements = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const includeTxns = req.query.includeTransactions === 'true';
-    const query = BankStatement.find({ user: req.user._id });
+    const query = BankStatement.find({ user: companyId });
     
     if (!includeTxns) {
       query.select('-transactions');
@@ -27,12 +28,13 @@ exports.getBankStatements = async (req, res) => {
 // @access  Private
 exports.getBankStatementById = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id))
       return res.status(404).json({ message: 'Bank statement not found' });
 
     const statement = await BankStatement.findOne({
       _id: req.params.id,
-      user: req.user._id,
+      user: companyId,
     });
 
     if (!statement)
@@ -50,6 +52,7 @@ exports.getBankStatementById = async (req, res) => {
 // @access  Private
 exports.createBankStatement = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { fileName, label, transactions } = req.body;
 
     if (!transactions || !Array.isArray(transactions) || transactions.length === 0) {
@@ -61,7 +64,7 @@ exports.createBankStatement = async (req, res) => {
     }
 
     // Retrieve all existing transaction IDs for this user to check for duplicates
-    const existingStatements = await BankStatement.find({ user: req.user._id }, 'transactions.txnId').lean();
+    const existingStatements = await BankStatement.find({ user: companyId }, 'transactions.txnId').lean();
     const existingTxnIds = new Set();
     existingStatements.forEach(s => {
       (s.transactions || []).forEach(t => {
@@ -110,7 +113,7 @@ exports.createBankStatement = async (req, res) => {
     const closingBalance = uniqueTransactions[uniqueTransactions.length - 1]?.balance || 0;
 
     const statement = await BankStatement.create({
-      user: req.user._id,
+      user: companyId,
       fileName,
       label: label || fileName,
       totalCredits,
@@ -149,12 +152,13 @@ exports.createBankStatement = async (req, res) => {
 // @access  Private
 exports.deleteBankStatement = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id))
       return res.status(404).json({ message: 'Bank statement not found' });
 
     const statement = await BankStatement.findOne({
       _id: req.params.id,
-      user: req.user._id,
+      user: companyId,
     });
 
     if (!statement)

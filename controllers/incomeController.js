@@ -60,6 +60,7 @@ const validateIncomeCategory = async (userId, categoryId, subCategoryId) => {
 // @access  Private
 exports.getIncomes = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const exportAll = req.query.all === 'true';
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 10;
@@ -68,7 +69,7 @@ exports.getIncomes = async (req, res) => {
 
     const { status, sourceType, startDate, endDate, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
 
-    let query = { user: req.user._id };
+    let query = { user: companyId };
     if (req.query.category) query.category = req.query.category;
     if (req.query.subCategory) query.subCategory = req.query.subCategory;
     if (req.query.project) query.project = req.query.project;
@@ -93,7 +94,7 @@ exports.getIncomes = async (req, res) => {
       const Client = require('../models/Client');
       const safeSearch = escapeRegex(search);
       const matchedClients = await Client.find({
-        user: req.user._id,
+        user: companyId,
         name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
@@ -302,6 +303,8 @@ async function resolveParty({
 // @access  Private
 exports.createIncome = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
+
     const {
       category,
       subCategory,
@@ -335,7 +338,7 @@ exports.createIncome = async (req, res) => {
     let resolvedVendor = null;
     if (vendor) {
       resolvedVendor = await resolveParty({
-        userId: req.user._id,
+        userId: companyId,
         partyRef: vendor.vendorRef,
         partyName: vendor.name,
         isVendor: true,
@@ -352,7 +355,7 @@ exports.createIncome = async (req, res) => {
     let resolvedClient = null;
     if (client) {
       resolvedClient = await resolveParty({
-        userId: req.user._id,
+        userId: companyId,
         partyRef: client.clientRef,
         partyName: client.name,
         isVendor: false,
@@ -366,16 +369,16 @@ exports.createIncome = async (req, res) => {
       });
     }
 
-    const categoryData = await validateIncomeCategory(req.user._id, category, subCategory);
+    const categoryData = await validateIncomeCategory(companyId, category, subCategory);
 
     // Check if incomeNumber exists for this user (if you want uniqueness per user)
-    const existing = await Income.findOne({ incomeNumber, user: req.user._id });
+    const existing = await Income.findOne({ incomeNumber, user: companyId });
     if (existing) {
       return res.status(400).json({ message: 'Income number already exists' });
     }
 
     const income = await Income.create({
-      user: req.user._id,
+      user: companyId,
       ...categoryData,
       project: project || null,
       department: department || null,
@@ -417,9 +420,10 @@ exports.createIncome = async (req, res) => {
 // @access  Private
 exports.getIncomeById = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Income not found' });
     
-    const income = await Income.findOne({ _id: req.params.id, user: req.user._id })
+    const income = await Income.findOne({ _id: req.params.id, user: companyId })
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent')
       .populate('businessUnit', 'name code color');
@@ -439,9 +443,10 @@ exports.getIncomeById = async (req, res) => {
 // @access  Private
 exports.updateIncome = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Income not found' });
 
-    let income = await Income.findOne({ _id: req.params.id, user: req.user._id });
+    let income = await Income.findOne({ _id: req.params.id, user: companyId });
     if (!income) {
       return res.status(404).json({ message: 'Income not found' });
     }
@@ -454,13 +459,13 @@ exports.updateIncome = async (req, res) => {
     }
 
     // --- Subscription Plan Check for Edits ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const plan = userObj?.subscription?.plan || 'free';
     if (plan === 'free') {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const editedIncomesCount = await Income.countDocuments({
-        user: req.user._id,
+        user: companyId,
         updatedAt: { $gte: startOfMonth },
         $expr: { $gt: ["$updatedAt", "$createdAt"] }
       });
@@ -505,7 +510,7 @@ exports.updateIncome = async (req, res) => {
     if (vendor !== undefined) {
       if (vendor) {
         const vParty = await resolveParty({
-          userId: req.user._id,
+          userId: companyId,
           partyRef: vendor.vendorRef,
           partyName: vendor.name,
           isVendor: true,
@@ -527,7 +532,7 @@ exports.updateIncome = async (req, res) => {
     if (client !== undefined) {
       if (client) {
         const cParty = await resolveParty({
-          userId: req.user._id,
+          userId: companyId,
           partyRef: client.clientRef,
           partyName: client.name,
           isVendor: false,
@@ -546,7 +551,7 @@ exports.updateIncome = async (req, res) => {
     }
 
     if (incomeNumber && incomeNumber !== income.incomeNumber) {
-      const existingNumber = await Income.findOne({ incomeNumber, user: req.user._id });
+      const existingNumber = await Income.findOne({ incomeNumber, user: companyId });
       if (existingNumber) {
         return res.status(400).json({ message: 'Income number already exists' });
       }
@@ -602,7 +607,7 @@ exports.updateIncome = async (req, res) => {
 
     if (category !== undefined || subCategory !== undefined) {
       const categoryData = await validateIncomeCategory(
-        req.user._id,
+        companyId,
         category !== undefined ? category : income.category,
         subCategory !== undefined ? subCategory : income.subCategory
       );
@@ -634,17 +639,18 @@ exports.updateIncome = async (req, res) => {
 // @access  Private
 exports.deleteIncome = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Income not found' });
 
     // --- Subscription Plan Check for Deletes ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const plan = userObj?.subscription?.plan || 'free';
     if (plan === 'free') {
       return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
     }
     // -------------------------------------------
 
-    const income = await Income.findOne({ _id: req.params.id, user: req.user._id })
+    const income = await Income.findOne({ _id: req.params.id, user: companyId })
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent');
 

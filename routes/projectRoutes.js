@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
   getProjects,
   createProject,
@@ -12,13 +12,13 @@ const {
 router.use(protect);
 
 router.route('/')
-  .get(getProjects)
-  .post(createProject);
+  .get(authorize('projects', 'view'), getProjects)
+  .post(authorize('projects', 'create'), createProject);
 
-router.get('/:id/summary', getProjectSummary);
+router.get('/:id/summary', authorize('projects', 'view'), getProjectSummary);
 
 router.route('/:id')
-  .put(updateProject)
-  .delete(deleteProject);
+  .put(authorize('projects', 'edit'), updateProject)
+  .delete(authorize('projects', 'delete'), deleteProject);
 
 module.exports = router;
