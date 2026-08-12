@@ -12,6 +12,7 @@ const {
   getUserPayments,
   createUser,
   deleteUser,
+  resetUserPassword,
 } = require('../controllers/adminController');
 
 // All routes here are protected and require admin role
@@ -28,6 +29,7 @@ router.get('/users', getAllUsers);
 router.post('/users', createUser);
 router.get('/users/:id/payments', getUserPayments);
 router.patch('/users/:id/plan', updateUserPlan);
+router.patch('/users/:id/password', resetUserPassword);
 router.delete('/users/:id', deleteUser);
 
 module.exports = router;

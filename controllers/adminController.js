@@ -500,6 +500,40 @@ const getUserPayments = async (req, res) => {
   }
 };
 
+// @desc    Reset password for a user account by Superadmin
+// @route   PATCH /api/admin/users/:id/password
+// @access  Private/Admin
+const resetUserPassword = async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    if (!newPassword || newPassword.trim().length < 6) {
+      return res.status(400).json({ message: 'New password must be at least 6 characters long' });
+    }
+
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User account not found' });
+    }
+
+    user.password = newPassword.trim();
+    await user.save();
+
+    await logAdminAction(
+      req.user,
+      'RESET_USER_PASSWORD',
+      'User',
+      user._id,
+      user.email || user.username,
+      { isOwner: user.isOwner }
+    );
+
+    res.json({ message: 'User password reset successfully' });
+  } catch (error) {
+    console.error('Reset User Password Error:', error);
+    res.status(500).json({ message: 'Failed to reset password: ' + error.message });
+  }
+};
+
 module.exports = {
   getAllUsers,
   getCompanies,
@@ -511,4 +545,5 @@ module.exports = {
   updateUserPlan,
   deleteUser,
   getUserPayments,
+  resetUserPassword,
 };

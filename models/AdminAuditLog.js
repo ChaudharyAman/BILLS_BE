@@ -25,6 +25,7 @@ const AdminAuditLogSchema = new mongoose.Schema({
       'ROLE_CHANGE',
       'SUPERADMIN_PROMOTION',
       'SUPERADMIN_DEMOTION',
+      'RESET_USER_PASSWORD',
     ],
   },
   targetType: {
