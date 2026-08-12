@@ -69,6 +69,7 @@ AccessRoleSchema.statics.SYSTEM_MODULES = [
   'teamMembers',
   'subscription',
   'jobRoles',
+  'publicSubmissions',
 ];
 
 AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId) {

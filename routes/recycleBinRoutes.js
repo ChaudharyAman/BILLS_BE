@@ -8,14 +8,13 @@ const {
   bulkPermanentlyDeleteItems,
   emptyRecycleBin
 } = require('../controllers/recycleBinController');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 
-router.get('/', protect, getRecycleBinItems);
-router.post('/restore', protect, restoreItem);
-router.delete('/permanent', protect, permanentlyDeleteItem);
-router.post('/bulk-restore', protect, bulkRestoreItems);
-router.post('/bulk-permanent', protect, bulkPermanentlyDeleteItems);
-router.post('/empty', protect, emptyRecycleBin);
+router.get('/', protect, authorize('settings', 'view'), getRecycleBinItems);
+router.post('/restore', protect, authorize('settings', 'edit'), restoreItem);
+router.delete('/permanent', protect, authorize('settings', 'delete'), permanentlyDeleteItem);
+router.post('/bulk-restore', protect, authorize('settings', 'edit'), bulkRestoreItems);
+router.post('/bulk-permanent', protect, authorize('settings', 'delete'), bulkPermanentlyDeleteItems);
+router.post('/empty', protect, authorize('settings', 'delete'), emptyRecycleBin);
 
 module.exports = router;
-
