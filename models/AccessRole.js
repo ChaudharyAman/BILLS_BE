@@ -93,7 +93,7 @@ AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId) {
   managerMap.set('subscription', { view: false, create: false, edit: false, delete: false, approve: false });
 
   const accountantMap = buildPermissionMap(false, false, false, false, false);
-  const finModules = ['expenses', 'income', 'invoices', 'quotes', 'proformas', 'purchaseOrders', 'clients', 'vendors', 'items', 'budgets', 'bankStatements', 'recurringTransactions', 'reports', 'categories'];
+  const finModules = ['expenses', 'income', 'invoices', 'quotes', 'proformas', 'purchaseOrders', 'clients', 'vendors', 'items', 'budgets', 'bankStatements', 'recurringTransactions', 'reports', 'categories', 'publicSubmissions'];
   for (const mod of finModules) {
     accountantMap.set(mod, { view: true, create: true, edit: true, delete: true, approve: true });
   }
