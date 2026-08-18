@@ -3,7 +3,7 @@ const router = express.Router();
 const { protect, authorize } = require('../middleware/authMiddleware');
 const { getBudgetVsActual } = require('../controllers/budgetController');
 const { getProfitLoss } = require('../controllers/reports/profitLossController');
-const { getBalanceSheet } = require('../controllers/reports/balanceSheetController');
+const { getBalanceSheet, getSetupStatus } = require('../controllers/reports/balanceSheetController');
 const { getCashFlow } = require('../controllers/reports/cashFlowController');
 const {
   getPayrollSummary,
@@ -24,6 +24,7 @@ router.use(protect);
 router.get('/budget-vs-actual', authorize('reports', 'view'), getBudgetVsActual);
 router.get('/profit-loss', authorize('reports', 'view'), getProfitLoss);
 router.get('/balance-sheet', authorize('reports', 'view'), getBalanceSheet);
+router.get('/balance-sheet/setup-status', authorize('reports', 'view'), getSetupStatus);
 router.get('/cash-flow', authorize('reports', 'view'), getCashFlow);
 router.get('/tax-dashboard', authorize('reports', 'view'), getTaxDashboard);
 

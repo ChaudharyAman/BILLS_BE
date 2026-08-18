@@ -15,6 +15,7 @@ const DEFAULT_CATEGORIES = {
     { name: 'Professional Services', color: '#0f766e', icon: 'FaBriefcase', children: ['Legal', 'Accounting', 'Consulting'] },
     { name: 'Technology & Software', color: '#4f46e5', icon: 'FaLaptopCode', children: ['Subscriptions', 'Hardware', 'Licenses'] },
     { name: 'Bank & Financial Charges', color: '#be123c', icon: 'FaUniversity', children: ['Bank Fees & SMS Charges', 'Payment Gateway Fees', 'Interest Paid'] },
+    { name: 'Interest Expense', color: '#be123c', icon: 'FaPercent' },
     { name: 'Outsource & Contractor Costs', color: '#0369a1', icon: 'FaUserTie', children: ['Freelancers', 'Contract Agencies', 'Outsourced Developers'] },
     { name: 'Employee Welfare & Benefits', color: '#047857', icon: 'FaHeart', children: ['Staff Welfare & Pantry', 'Training & Seminars', 'Team Outings & Offsites'] },
     { name: 'Shipping & Logistics', color: '#d97706', icon: 'FaTruck', children: ['Courier & Postage', 'Freight Charges', 'Customs & Import Duties'] },
@@ -158,7 +159,7 @@ exports.createCategory = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
     const name = normalizeName(req.body.name);
-    const { type, icon, color, budgetLimit, description } = req.body;
+    const { type, icon, color, budgetLimit, description, isCogs } = req.body;
 
     if (!name || !type) {
       return res.status(400).json({ message: 'Name and type are required' });
@@ -178,6 +179,7 @@ exports.createCategory = async (req, res) => {
       color,
       budgetLimit,
       description,
+      isCogs: Boolean(isCogs),
       parent,
       isSystem: false,
     });
@@ -223,8 +225,8 @@ exports.updateCategory = async (req, res) => {
     }
 
     const updateData = {};
-    for (const field of ['name', 'type', 'icon', 'color', 'budgetLimit', 'description']) {
-      if (req.body[field] !== undefined) updateData[field] = field === 'name' ? normalizeName(req.body[field]) : req.body[field];
+    for (const field of ['name', 'type', 'icon', 'color', 'budgetLimit', 'description', 'isCogs']) {
+      if (req.body[field] !== undefined) updateData[field] = field === 'name' ? normalizeName(req.body[field]) : (field === 'isCogs' ? Boolean(req.body[field]) : req.body[field]);
     }
 
     if (Object.prototype.hasOwnProperty.call(req.body, 'parent')) {

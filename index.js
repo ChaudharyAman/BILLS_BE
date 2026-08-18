@@ -90,6 +90,8 @@ app.use('/api/budgets', require('./routes/budgetRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/api/assets', require('./routes/assetRoutes'));
 app.use('/api/liabilities', require('./routes/liabilityRoutes'));
+app.use('/api/equity', require('./routes/equityRoutes'));
+app.use('/api/accruals', require('./routes/accrualRoutes'));
 app.use('/api/recurring', require('./routes/recurringRoutes'));
 app.use('/api/projects', require('./routes/projectRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));

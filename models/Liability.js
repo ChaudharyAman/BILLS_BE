@@ -12,6 +12,9 @@ const LiabilitySchema = new mongoose.Schema({
   },
   principalAmount: { type: Number, required: true, min: 0 },
   outstandingAmount: { type: Number, required: true, min: 0 },
+  // Amount of principal due within the next 12 months for long-term liabilities
+  // TODO: In future, derive this automatically from liability amortization schedules
+  currentPortionAmount: { type: Number, default: 0, min: 0 },
   interestRate: { type: Number, default: 0, min: 0 },
   startDate: Date,
   dueDate: Date,

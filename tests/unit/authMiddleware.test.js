@@ -60,7 +60,9 @@ describe('Auth Middleware Security Tests (Bug 6 Guard)', () => {
     };
 
     User.findById.mockReturnValue({
-      select: jest.fn().mockResolvedValue(mockUser),
+      select: jest.fn().mockReturnValue({
+        populate: jest.fn().mockResolvedValue(mockUser),
+      }),
     });
 
     const req = {
