@@ -2,8 +2,47 @@ const mongoose = require('mongoose');
 const Expense = require('../models/Expense');
 const User = require('../models/User');
 const Category = require('../models/Category');
+const CashLedgerEntry = require('../models/CashLedgerEntry');
+const { recordCashMovement, roundTwo } = require('../utils/cashLedgerHelper');
 const escapeRegex = require('../utils/escapeRegex');
 const { updateBudgetSpent, checkBudgetWarning } = require('./budgetController');
+
+async function syncExpenseCashMovement(expense, paymentDate = new Date(), session = null) {
+  if (!expense || !expense.user || !expense._id) return;
+  if (expense.privateNotes?.includes('Payroll ID:') || expense.expenseNumber?.startsWith('PAY-')) {
+    return;
+  }
+
+  const companyId = expense.user;
+  const paidAmount = Math.max(0, roundTwo(Number(expense.amountPaid) || 0));
+
+  const match = {
+    user: new mongoose.Types.ObjectId(String(companyId)),
+    sourceModel: 'Expense',
+    sourceId: new mongoose.Types.ObjectId(String(expense._id)),
+    isDeleted: { $ne: true },
+  };
+
+  const existing = await CashLedgerEntry.aggregate([
+    { $match: match },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  const previouslyPostedOutflow = -(roundTwo(existing[0]?.total || 0));
+  const delta = roundTwo(paidAmount - previouslyPostedOutflow);
+
+  if (Math.abs(delta) >= 0.01) {
+    await recordCashMovement({
+      user: companyId,
+      amount: -delta,
+      type: 'expense_payment',
+      sourceModel: 'Expense',
+      sourceId: expense._id,
+      date: paymentDate || expense.date || new Date(),
+      notes: `Payment for Expense #${expense.expenseNumber || expense._id}`,
+      session,
+    });
+  }
+}
 
 const validateExpenseCategory = async (userId, categoryId, subCategoryId) => {
   const result = { category: categoryId || null, subCategory: subCategoryId || null };
@@ -476,6 +515,7 @@ exports.createExpense = async (req, res) => {
     });
 
     if (expense.category) await updateBudgetSpent(expense.category, companyId);
+    await syncExpenseCashMovement(expense, expense.date);
 
     res.status(201).json(budgetWarning ? { data: expense, budgetWarning } : expense);
   } catch (error) {
@@ -696,6 +736,8 @@ exports.updateExpense = async (req, res) => {
       await updateBudgetSpent(expense.category._id || expense.category, companyId);
     }
 
+    await syncExpenseCashMovement(expense, expense.date);
+
     res.json(expense);
   } catch (error) {
     console.error('Error updating expense', error);
@@ -727,6 +769,10 @@ exports.deleteExpense = async (req, res) => {
     if (expense) {
       const oldCategory = expense.category;
       await Expense.updateOne({ _id: expense._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+      await CashLedgerEntry.updateMany(
+        { sourceModel: 'Expense', sourceId: expense._id, user: companyId },
+        { $set: { isDeleted: true, deletedAt: new Date() } }
+      );
       if (oldCategory) await updateBudgetSpent(oldCategory, companyId);
       res.json({ message: 'Expense removed' });
     } else {

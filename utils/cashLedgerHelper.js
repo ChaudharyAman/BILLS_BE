@@ -82,7 +82,9 @@ async function getCashBalanceAsOf(userId, asOfDate = new Date()) {
 
   let totalCash = 0;
   const accountsWithBalance = accounts.map(acc => {
-    const opening = Number(acc.openingBalance) || 0;
+    const hasOpeningDate = acc.openingBalanceDate && !isNaN(new Date(acc.openingBalanceDate).getTime());
+    const isOpeningEffective = hasOpeningDate ? new Date(acc.openingBalanceDate) <= dateLimit : true;
+    const opening = isOpeningEffective ? (Number(acc.openingBalance) || 0) : 0;
     const movement = movementMap.get(String(acc._id)) || 0;
     const balance = roundTwo(opening + movement);
     totalCash += balance;
@@ -114,6 +116,7 @@ async function recordCashMovement({
   sourceId = null,
   createdBy = null,
   notes = '',
+  session = null,
 }) {
   const userObjectId = new mongoose.Types.ObjectId(String(user));
   let targetAccount = account;
@@ -125,8 +128,9 @@ async function recordCashMovement({
   const accountId = targetAccount._id ? targetAccount._id : targetAccount;
   const entryDate = date ? new Date(date) : new Date();
   const signedAmount = roundTwo(amount);
+  const sessionOpt = session ? { session } : {};
 
-  const entry = await CashLedgerEntry.create({
+  const createdDocs = await CashLedgerEntry.create([{
     user: userObjectId,
     account: accountId,
     date: entryDate,
@@ -136,11 +140,13 @@ async function recordCashMovement({
     sourceId,
     createdBy,
     notes,
-  });
+  }], sessionOpt);
+
+  const entry = Array.isArray(createdDocs) ? createdDocs[0] : createdDocs;
 
   await CashAccount.findByIdAndUpdate(accountId, {
     $inc: { currentBalance: signedAmount },
-  });
+  }, sessionOpt);
 
   return entry;
 }

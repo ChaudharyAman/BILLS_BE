@@ -40,7 +40,7 @@ const CashAccountSchema = new mongoose.Schema({
   },
   openingBalanceDate: {
     type: Date,
-    default: Date.now,
+    default: null,
   },
   currentBalance: {
     type: Number,

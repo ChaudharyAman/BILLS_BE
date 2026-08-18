@@ -37,13 +37,14 @@ const CashLedgerEntrySchema = new mongoose.Schema({
       'liability_repayment',
       'capital_contribution',
       'capital_withdrawal',
+      'payroll_payment',
       'manual_adjustment'
     ],
     required: true,
   },
   sourceModel: {
     type: String,
-    enum: ['Invoice', 'Expense', 'Income', 'Asset', 'Liability', 'EquityTransaction', 'Manual'],
+    enum: ['Invoice', 'Expense', 'Income', 'Asset', 'Liability', 'EquityTransaction', 'Payroll', 'Manual'],
     default: 'Manual',
   },
   sourceId: {

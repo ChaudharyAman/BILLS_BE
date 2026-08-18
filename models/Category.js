@@ -11,6 +11,7 @@ const CategorySchema = new mongoose.Schema({
   parent: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
   budgetLimit: { type: Number, default: 0, min: 0 },
   isCogs: { type: Boolean, default: false },
+  isDepreciation: { type: Boolean, default: false },
   description: { type: String, default: '' },
 }, { timestamps: true });
 

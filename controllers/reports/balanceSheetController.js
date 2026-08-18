@@ -4,6 +4,7 @@ const {
   parseYearOrDateRange,
   getPeriodSales,
   getPeriodExpenses,
+  getDepreciationCategoryIds,
   getPeriodCogs,
   getPeriodInterestExpense,
   getPeriodOperatingExpenses,
@@ -38,6 +39,7 @@ exports.getBalanceSheet = async (req, res) => {
     }
 
     const { targetYear, priorYear, curStart, curEnd, priorStart, priorEnd } = range;
+    const deprCategoryIds = await getDepreciationCategoryIds(userId);
 
     const [
       curCashData,
@@ -91,8 +93,8 @@ exports.getBalanceSheet = async (req, res) => {
       getAccrualsAsOf(userId, priorEnd),
       getPeriodSales(userId, curStart, curEnd),
       getPeriodSales(userId, priorStart, priorEnd),
-      getPeriodExpenses(userId, curStart, curEnd),
-      getPeriodExpenses(userId, priorStart, priorEnd),
+      getPeriodExpenses(userId, curStart, curEnd, deprCategoryIds),
+      getPeriodExpenses(userId, priorStart, priorEnd, deprCategoryIds),
       getPeriodCogs(userId, curStart, curEnd),
       getPeriodCogs(userId, priorStart, priorEnd),
       getPeriodInterestExpense(userId, curStart, curEnd),
@@ -110,14 +112,16 @@ exports.getBalanceSheet = async (req, res) => {
     const cCash = curCashData.totalCash;
     const pCash = priorCashData.totalCash;
 
-    // Operating expenses excluding COGS and Interest Expense to prevent double counting
+    // Operating expenses excluding COGS, Interest Expense, and Depreciation to prevent double counting
     const excludedCurCategories = [
       ...(curCogsData.categoryIds || []),
       ...(curInterestData.categoryIds || []),
+      ...(deprCategoryIds || []),
     ];
     const excludedPriorCategories = [
       ...(priorCogsData.categoryIds || []),
       ...(priorInterestData.categoryIds || []),
+      ...(deprCategoryIds || []),
     ];
 
     const curInvTotal = curInvData.hasInventory ? curInvData.totalValuation : null;
@@ -481,6 +485,17 @@ exports.getBalanceSheet = async (req, res) => {
           type: 'aggregate',
           model: 'Invoice',
           description: 'Total tax liability billed on invoices in period',
+          asOf: curEnd.toISOString(),
+        },
+      },
+      {
+        category: 'TDS Receivable',
+        priorYear: priorTds,
+        currentYear: curTds,
+        source: {
+          type: 'aggregate',
+          model: 'Invoice',
+          description: 'Cumulative billed TDS deducted on customer invoices up to period end (pending tax credit certificate reconciliation)',
           asOf: curEnd.toISOString(),
         },
       },

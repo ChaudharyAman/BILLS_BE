@@ -79,18 +79,37 @@ async function getPeriodSales(userId, startDate, endDate) {
 }
 
 /**
- * Expenses within period
+ * Depreciation category IDs for excluding manual depreciation expenses
  */
-async function getPeriodExpenses(userId, startDate, endDate) {
+async function getDepreciationCategoryIds(userId) {
+  const deprCategories = await Category.find({
+    user: userId,
+    $or: [
+      { isDepreciation: true },
+      { name: { $regex: /depreciation/i } },
+    ],
+    isDeleted: { $ne: true },
+  }).select('_id').lean();
+  return deprCategories.map(c => c._id);
+}
+
+/**
+ * Expenses within period (optional excluded category IDs, e.g. depreciation)
+ */
+async function getPeriodExpenses(userId, startDate, endDate, excludedCategoryIds = []) {
+  const match = {
+    user: userId,
+    date: { $gte: startDate, $lte: endDate },
+    status: ACTIVE_EXPENSE_STATUSES,
+    isDeleted: { $ne: true },
+  };
+
+  if (Array.isArray(excludedCategoryIds) && excludedCategoryIds.length > 0) {
+    match.category = { $nin: excludedCategoryIds };
+  }
+
   const result = await Expense.aggregate([
-    {
-      $match: {
-        user: userId,
-        date: { $gte: startDate, $lte: endDate },
-        status: ACTIVE_EXPENSE_STATUSES,
-        isDeleted: { $ne: true },
-      },
-    },
+    { $match: match },
     { $group: { _id: null, total: { $sum: '$grandTotal' } } },
   ]);
   return roundTwo(result[0]?.total || 0);
@@ -513,6 +532,17 @@ async function getEquityTransactionsAsOf(userId, asOfDate) {
  * Cumulative retained earnings as of date (since company inception)
  */
 async function getCumulativeRetainedEarningsAsOf(userId, asOfDate) {
+  const deprCategoryIds = await getDepreciationCategoryIds(userId);
+  const expMatch = {
+    user: userId,
+    date: { $lte: asOfDate },
+    status: ACTIVE_EXPENSE_STATUSES,
+    isDeleted: { $ne: true },
+  };
+  if (deprCategoryIds.length > 0) {
+    expMatch.category = { $nin: deprCategoryIds };
+  }
+
   const [salesRes, expRes, taxRes, equityData, fixedAssets] = await Promise.all([
     Invoice.aggregate([
       {
@@ -527,12 +557,7 @@ async function getCumulativeRetainedEarningsAsOf(userId, asOfDate) {
     ]),
     Expense.aggregate([
       {
-        $match: {
-          user: userId,
-          date: { $lte: asOfDate },
-          status: ACTIVE_EXPENSE_STATUSES,
-          isDeleted: { $ne: true },
-        },
+        $match: expMatch,
       },
       { $group: { _id: null, total: { $sum: '$grandTotal' } } },
     ]),
@@ -574,7 +599,7 @@ async function getCumulativeRetainedEarningsAsOf(userId, asOfDate) {
   }
   const cumDepreciation = roundTwo(totalCumDepreciation);
 
-  // Known limitation: If user logged a manual "Depreciation" Expense record, this could double-count.
+  // Schedule-based depreciation is subtracted directly; manual depreciation expenses are excluded from cumExp to prevent double counting.
   const retainedEarnings = roundTwo(cumSales - cumExp - cumTax - cumDepreciation - cumDistributions + adjustments);
 
   return {
@@ -635,6 +660,7 @@ module.exports = {
   parseYearOrDateRange,
   getPeriodSales,
   getPeriodExpenses,
+  getDepreciationCategoryIds,
   getPeriodCogs,
   getPeriodInterestExpense,
   getPeriodOperatingExpenses,

@@ -4,6 +4,8 @@ const Item = require('../models/Item');
 const Counter = require('../models/Counter');
 const Settings = require('../models/Settings');
 const PurchaseOrder = require('../models/PurchaseOrder');
+const CashLedgerEntry = require('../models/CashLedgerEntry');
+const { recordCashMovement, roundTwo } = require('../utils/cashLedgerHelper');
 const mongoose = require('mongoose');
 const escapeRegex = require('../utils/escapeRegex');
 const { buildAutoDocumentNumber } = require('../utils/documentNumber');
@@ -23,6 +25,48 @@ const TDS_SECTION_LABELS = {
   '194A': 'Interest',
   'Manual': 'Manual Custom Rate'
 };
+
+async function syncInvoiceCashMovement(invoice, paymentDate = new Date(), session = null) {
+  if (!invoice || !invoice.user || !invoice._id) return;
+  const companyId = invoice.user;
+  const grandTotal = Number(invoice.grandTotal) || 0;
+  const finalTds = Number(invoice.tds) || 0;
+  const status = invoice.status || 'DRAFT';
+
+  let paidAmount = 0;
+  if (status === 'PAID') {
+    paidAmount = Math.max(0, roundTwo(grandTotal - finalTds));
+  } else if (status === 'PARTIAL') {
+    paidAmount = Math.max(0, roundTwo(Number(invoice.advancePaid) || 0));
+  }
+
+  const match = {
+    user: new mongoose.Types.ObjectId(String(companyId)),
+    sourceModel: 'Invoice',
+    sourceId: new mongoose.Types.ObjectId(String(invoice._id)),
+    isDeleted: { $ne: true },
+  };
+
+  const existing = await CashLedgerEntry.aggregate([
+    { $match: match },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  const previouslyPosted = roundTwo(existing[0]?.total || 0);
+  const delta = roundTwo(paidAmount - previouslyPosted);
+
+  if (Math.abs(delta) >= 0.01) {
+    await recordCashMovement({
+      user: companyId,
+      amount: delta,
+      type: 'invoice_payment',
+      sourceModel: 'Invoice',
+      sourceId: invoice._id,
+      date: paymentDate || invoice.date || new Date(),
+      notes: `Payment for Invoice #${invoice.invoiceNo || invoice._id}`,
+      session,
+    });
+  }
+}
 
 function hasValidGstin(gstin) {
   return /^[0-9A-Z]{15}$/.test(String(gstin || '').trim().toUpperCase());
@@ -726,6 +770,7 @@ exports.createInvoice = async (req, res) => {
     }
 
     await syncIncomeFromInvoice(newInvoice);
+    await syncInvoiceCashMovement(newInvoice, newInvoice.date);
     res.status(201).json(newInvoice);
 
   } catch (error) {
@@ -1047,6 +1092,7 @@ exports.updateInvoice = async (req, res) => {
 
     const updatedInvoice = await invoice.save();
     await syncIncomeFromInvoice(updatedInvoice);
+    await syncInvoiceCashMovement(updatedInvoice, updatedInvoice.date);
     res.json(updatedInvoice);
 
   } catch (error) {
@@ -1089,6 +1135,10 @@ exports.deleteInvoice = async (req, res) => {
     }
 
     await Invoice.updateOne({ _id: invoice._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await CashLedgerEntry.updateMany(
+      { sourceModel: 'Invoice', sourceId: invoice._id, user: companyId },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
     await removeIncomeForInvoice(invoice._id, invoice.user);
     res.json({ message: 'Invoice deleted successfully' });
   } catch (error) {
@@ -1158,6 +1208,7 @@ exports.updateInvoiceStatus = async (req, res) => {
 
     const updatedInvoice = await invoice.save();
     await syncIncomeFromInvoice(updatedInvoice);
+    await syncInvoiceCashMovement(updatedInvoice, updatedInvoice.date);
     res.json(updatedInvoice);
   } catch (error) {
     console.error('updateInvoiceStatus error:', error);
@@ -1441,6 +1492,7 @@ exports.bulkCreateInvoices = async (req, res) => {
           }
         }
       await syncIncomeFromInvoice(savedInvoice);
+      await syncInvoiceCashMovement(savedInvoice, savedInvoice.date);
       createdInvoices.push(savedInvoice);
       importedInvoices.push({
         importRowId,

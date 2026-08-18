@@ -20,8 +20,15 @@ const Expense = require('../../models/Expense');
 const Category = require('../../models/Category');
 const Item = require('../../models/Item');
 const AccrualEntry = require('../../models/AccrualEntry');
+const Payroll = require('../../models/Payroll');
+const Employee = require('../../models/Employee');
+const Client = require('../../models/Client');
+const Settings = require('../../models/Settings');
 
 const { getBalanceSheet, getSetupStatus } = require('../../controllers/reports/balanceSheetController');
+const invoiceController = require('../../controllers/invoiceController');
+const expenseController = require('../../controllers/expenseController');
+const { markPayrollAsPaid } = require('../../controllers/payroll/lifecycle');
 
 jest.setTimeout(120000);
 
@@ -600,5 +607,253 @@ describe('Balance Sheet Controller Tests', () => {
     expect(invRow.priorYear).toBeNull();
     expect(invRow.currentYear).toBe(5000); // 100 * 50
     expect(invRow.source.type).toBe('aggregate');
+  });
+
+  test('Invoice payment automatically posts to cash ledger and balances the balance sheet', async () => {
+    const user = await User.create({ name: 'Invoice Cash Co', email: 'invcash@co.com', username: 'invcashco', password: 'pw' });
+    await Settings.create({ user: user._id, invoicePrefix: 'INV' });
+    const client = await Client.create({ user: user._id, name: 'ACME Corp', placeOfSupply: 'Delhi' });
+
+    // Step 1: Create unpaid invoice for ₹10,000 (status: 'SENT')
+    let createdInv = null;
+    const req1 = {
+      user,
+      companyId: user._id,
+      body: {
+        clientRef: client._id,
+        date: new Date('2026-03-01'),
+        status: 'SENT',
+        items: [{ name: 'Consulting', qty: 1, rate: 10000, taxRate: 0, amount: 10000 }],
+      },
+    };
+    await invoiceController.createInvoice(req1, { status: jest.fn().mockReturnThis(), json: (d) => { createdInv = d; } });
+
+    // Before payment: AR = 10000, Cash = 0, Retained earnings = 10000. Balanced = true.
+    let bs1 = null;
+    await getBalanceSheet({ user, query: { year: 2026 } }, { json: (d) => { bs1 = d; }, status: jest.fn().mockReturnThis() });
+    expect(bs1.categories.find(c => c.category === 'Accounts receivable').currentYear).toBe(10000);
+    expect(bs1.categories.find(c => c.category === 'Cash').currentYear).toBe(0);
+    expect(bs1.balanceCheck.currentYear.balanced).toBe(true);
+
+    // Step 2: Mark invoice as PAID
+    const req2 = {
+      user,
+      companyId: user._id,
+      params: { id: createdInv._id },
+      body: { status: 'PAID' },
+    };
+    await invoiceController.updateInvoiceStatus(req2, { status: jest.fn().mockReturnThis(), json: jest.fn() });
+
+    // After payment: AR = 0, Cash = 10000, Retained earnings = 10000. Balanced = true!
+    let bs2 = null;
+    await getBalanceSheet({ user, query: { year: 2026 } }, { json: (d) => { bs2 = d; }, status: jest.fn().mockReturnThis() });
+    expect(bs2.categories.find(c => c.category === 'Accounts receivable').currentYear).toBe(0);
+    expect(bs2.categories.find(c => c.category === 'Cash').currentYear).toBe(10000);
+    expect(bs2.balanceCheck.currentYear.balanced).toBe(true);
+  });
+
+  test('Expense payment automatically posts to cash ledger and balances the balance sheet', async () => {
+    const user = await User.create({ name: 'Exp Cash Co', email: 'expcash@co.com', username: 'expcashco', password: 'pw' });
+    const cat = await Category.create({ user: user._id, name: 'Office Supplies', type: 'expense' });
+
+    // Initial cash via equity contribution: ₹20,000
+    await EquityTransaction.create({ user: user._id, type: 'owner_contribution', amount: 20000, commonStockAmount: 20000, date: new Date('2026-01-01') });
+    await CashAccount.create({ user: user._id, name: 'Main Cash', openingBalance: 20000 });
+
+    // Create and pay expense for ₹5,000
+    let createdExp = null;
+    const req = {
+      user,
+      companyId: user._id,
+      body: {
+        category: cat._id,
+        expenseNumber: 'EXP-001',
+        date: new Date('2026-04-01'),
+        subTotal: 5000,
+        taxTotal: 0,
+        grandTotal: 5000,
+        amountPaid: 5000,
+        status: 'PAID',
+      },
+    };
+    await expenseController.createExpense(req, { status: jest.fn().mockReturnThis(), json: (d) => { createdExp = d; } });
+
+    let bs = null;
+    await getBalanceSheet({ user, query: { year: 2026 } }, { json: (d) => { bs = d; }, status: jest.fn().mockReturnThis() });
+    expect(bs.categories.find(c => c.category === 'Cash').currentYear).toBe(15000); // 20,000 - 5,000
+    expect(bs.categories.find(c => c.category === 'Accounts payable').currentYear).toBe(0);
+    expect(bs.categories.find(c => c.category === 'Retained earnings').currentYear).toBe(-5000);
+    expect(bs.balanceCheck.currentYear.balanced).toBe(true);
+  });
+
+  test('Payroll payment posts cash outflow and balances the balance sheet', async () => {
+    const user = await User.create({ name: 'Payroll Cash Co', email: 'prcash@co.com', username: 'prcashco', password: 'pw' });
+    await CashAccount.create({ user: user._id, name: 'Main Cash', openingBalance: 50000 });
+    await EquityTransaction.create({ user: user._id, type: 'owner_contribution', amount: 50000, commonStockAmount: 50000, date: new Date('2026-01-01') });
+
+    const employee = await Employee.create({
+      user: user._id,
+      employeeId: 'EMP-001',
+      firstName: 'Alice',
+      lastName: 'Smith',
+      email: 'alice@co.com',
+      monthlyCTC: 30000,
+      joiningDate: new Date('2026-01-01'),
+    });
+
+    const payroll = await Payroll.create({
+      user: user._id,
+      employee: employee._id,
+      month: 5,
+      year: 2026,
+      grossEarnings: 30000,
+      totalDeductions: 0,
+      netSalary: 30000,
+      earnings: {
+        basic: 30000,
+        totalEarnings: 30000,
+      },
+      status: 'approved',
+    });
+
+    const req = {
+      user,
+      params: { id: payroll._id },
+      body: { paymentDate: new Date('2026-05-31'), paymentMethod: 'Bank Transfer' },
+    };
+    await markPayrollAsPaid(req, { json: jest.fn(), status: jest.fn().mockReturnThis() });
+
+    let bs = null;
+    await getBalanceSheet({ user, query: { year: 2026 } }, { json: (d) => { bs = d; }, status: jest.fn().mockReturnThis() });
+    expect(bs.categories.find(c => c.category === 'Cash').currentYear).toBe(20000); // 50,000 - 30,000
+    expect(bs.categories.find(c => c.category === 'Retained earnings').currentYear).toBe(-30000);
+    expect(bs.balanceCheck.currentYear.balanced).toBe(true);
+  });
+
+  test('Partial invoice payments post incremental delta and avoid double posting on re-save', async () => {
+    const user = await User.create({ name: 'Partial Co', email: 'partial@co.com', username: 'partialco', password: 'pw' });
+    await Settings.create({ user: user._id, invoicePrefix: 'INV' });
+    const client = await Client.create({ user: user._id, name: 'Beta Corp' });
+
+    // Create invoice with 1st partial payment of 3,000 out of 10,000
+    let invDoc = null;
+    const req1 = {
+      user,
+      companyId: user._id,
+      body: {
+        clientRef: client._id,
+        date: new Date('2026-02-01'),
+        status: 'PARTIAL',
+        advancePaid: 3000,
+        items: [{ name: 'Dev', qty: 1, rate: 10000, taxRate: 0, amount: 10000 }],
+      },
+    };
+    await invoiceController.createInvoice(req1, { status: jest.fn().mockReturnThis(), json: (d) => { invDoc = d; } });
+
+    let bs1 = null;
+    await getBalanceSheet({ user, query: { year: 2026 } }, { json: (d) => { bs1 = d; }, status: jest.fn().mockReturnThis() });
+    expect(bs1.categories.find(c => c.category === 'Cash').currentYear).toBe(3000);
+    expect(bs1.categories.find(c => c.category === 'Accounts receivable').currentYear).toBe(7000);
+
+    // 2nd partial payment: increase advancePaid to 7,000
+    const req2 = {
+      user,
+      companyId: user._id,
+      params: { id: invDoc._id },
+      body: {
+        clientRef: client._id,
+        date: new Date('2026-02-01'),
+        status: 'PARTIAL',
+        advancePaid: 7000,
+        items: [{ name: 'Dev', qty: 1, rate: 10000, taxRate: 0, amount: 10000 }],
+      },
+    };
+    await invoiceController.updateInvoice(req2, { status: jest.fn().mockReturnThis(), json: (d) => { invDoc = d; } });
+
+    let bs2 = null;
+    await getBalanceSheet({ user, query: { year: 2026 } }, { json: (d) => { bs2 = d; }, status: jest.fn().mockReturnThis() });
+    expect(bs2.categories.find(c => c.category === 'Cash').currentYear).toBe(7000);
+    expect(bs2.categories.find(c => c.category === 'Accounts receivable').currentYear).toBe(3000);
+
+    // Re-save without changing payment: ensure no duplicate cash entries
+    await invoiceController.updateInvoice(req2, { status: jest.fn().mockReturnThis(), json: jest.fn() });
+    let bs3 = null;
+    await getBalanceSheet({ user, query: { year: 2026 } }, { json: (d) => { bs3 = d; }, status: jest.fn().mockReturnThis() });
+    expect(bs3.categories.find(c => c.category === 'Cash').currentYear).toBe(7000);
+    expect(bs3.balanceCheck.currentYear.balanced).toBe(true);
+  });
+
+  test('Manual Depreciation Expense record is excluded from retained earnings to prevent double counting', async () => {
+    const user = await User.create({ name: 'Depr Excl Co', email: 'deprexcl@co.com', username: 'deprexclco', password: 'pw' });
+    await CashAccount.create({ user: user._id, name: 'Main Cash', openingBalance: 100000 });
+    await EquityTransaction.create({ user: user._id, type: 'owner_contribution', amount: 100000, commonStockAmount: 100000, date: new Date('2025-01-01') });
+
+    // Fixed asset with 9,000 annual straight-line depreciation
+    await Asset.create({
+      user: user._id,
+      name: 'Machinery',
+      category: 'fixed',
+      purchaseDate: new Date('2025-01-01T00:00:00.000Z'),
+      purchaseValue: 50000,
+      salvageValue: 5000,
+      usefulLife: 5,
+      depreciationMethod: 'straight-line',
+      status: 'active',
+    });
+
+    // Manual expense record categorized under "Depreciation" category
+    const deprCategory = await Category.create({ user: user._id, name: 'Depreciation Expense', type: 'expense', isDepreciation: true });
+    await Expense.create({
+      user: user._id,
+      category: deprCategory._id,
+      expenseNumber: 'DEP-001',
+      date: new Date('2025-12-31'),
+      subTotal: 9000,
+      grandTotal: 9000,
+      amountPaid: 0,
+      balanceDue: 9000,
+      status: 'UNPAID',
+    });
+
+    const req = { user, query: { year: 2025 } };
+    let resData = null;
+    await getBalanceSheet(req, { json: (d) => { resData = d; }, status: jest.fn().mockReturnThis() });
+
+    const reRow = resData.categories.find(c => c.category === 'Retained earnings');
+    // Retained earnings should be -9000 (counted once from asset schedule), not -18000
+    expect(reRow.currentYear).toBe(-9000);
+    expect(resData.periodNetIncome.currentYear).toBe(-9000);
+  });
+
+  test('Cash accounts opened in future periods are excluded from prior year historical snapshot', async () => {
+    const user = await User.create({ name: 'Future Cash Co', email: 'fcash@co.com', username: 'fcashco', password: 'pw' });
+
+    // Account opened in 2026 with opening balance 10,000
+    await CashAccount.create({
+      user: user._id,
+      name: '2026 Bank Account',
+      openingBalance: 10000,
+      openingBalanceDate: new Date('2026-01-01T00:00:00.000Z'),
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    const req = { user, query: { year: 2026 } };
+    let resData = null;
+    await getBalanceSheet(req, { json: (d) => { resData = d; }, status: jest.fn().mockReturnThis() });
+
+    const cashRow = resData.categories.find(c => c.category === 'Cash');
+    expect(cashRow.priorYear).toBe(0); // Excluded from 2025
+    expect(cashRow.currentYear).toBe(10000); // Included in 2026
+  });
+
+  test('TDS Receivable row contains explicit source metadata and description', async () => {
+    const user = await User.create({ name: 'TDS Meta Co', email: 'tdsmeta@co.com', username: 'tdsmetaco', password: 'pw' });
+    const req = { user, query: { year: 2026 } };
+    let resData = null;
+    await getBalanceSheet(req, { json: (d) => { resData = d; }, status: jest.fn().mockReturnThis() });
+
+    const tdsRow = resData.categories.find(c => c.category === 'TDS Receivable');
+    expect(tdsRow).toBeDefined();
+    expect(tdsRow.source.description).toContain('pending tax credit certificate reconciliation');
   });
 });
