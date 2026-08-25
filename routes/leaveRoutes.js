@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
   getLeaveTypes,
   createLeaveType,
@@ -15,23 +15,23 @@ const {
 router.use(protect);
 
 router.route('/types')
-  .get(getLeaveTypes)
-  .post(createLeaveType);
+  .get(authorize('leaves', 'view'), getLeaveTypes)
+  .post(authorize('leaves', 'create'), createLeaveType);
 
 router.route('/balances')
-  .get(getLeaveBalances);
+  .get(authorize('leaves', 'view'), getLeaveBalances);
 
 router.route('/requests')
-  .get(getLeaveRequests)
-  .post(createLeaveRequest);
+  .get(authorize('leaves', 'view'), getLeaveRequests)
+  .post(authorize('leaves', 'create'), createLeaveRequest);
 
 router.route('/requests/:id')
-  .delete(deleteLeaveRequest);
+  .delete(authorize('leaves', 'delete'), deleteLeaveRequest);
 
 router.route('/requests/:id/status')
-  .put(updateLeaveRequestStatus);
+  .put(authorize('leaves', 'approve'), updateLeaveRequestStatus);
 
 router.route('/recalculate-balances')
-  .post(recalculateBalancesEndpoint);
+  .post(authorize('leaves', 'edit'), recalculateBalancesEndpoint);
 
 module.exports = router;

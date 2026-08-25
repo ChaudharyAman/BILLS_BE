@@ -37,6 +37,7 @@ const aggregateByCategory = async (Model, userId, startDate, endDate, totalExpre
 
 exports.getProfitLoss = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { startDate, endDate } = parseMonthlyDateRange(req.query);
     const netRevenueExpression = {
       $cond: [
@@ -53,8 +54,8 @@ exports.getProfitLoss = async (req, res) => {
     };
 
     const [revenue, expenses] = await Promise.all([
-      aggregateByCategory(Income, req.user._id, startDate, endDate, netRevenueExpression),
-      aggregateByCategory(Expense, req.user._id, startDate, endDate),
+      aggregateByCategory(Income, companyId, startDate, endDate, netRevenueExpression),
+      aggregateByCategory(Expense, companyId, startDate, endDate),
     ]);
     const totalRevenue = revenue.reduce((sum, item) => sum + item.total, 0);
     const totalExpenses = expenses.reduce((sum, item) => sum + item.total, 0);

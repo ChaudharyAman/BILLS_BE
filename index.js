@@ -90,6 +90,8 @@ app.use('/api/budgets', require('./routes/budgetRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/api/assets', require('./routes/assetRoutes'));
 app.use('/api/liabilities', require('./routes/liabilityRoutes'));
+app.use('/api/equity', require('./routes/equityRoutes'));
+app.use('/api/accruals', require('./routes/accrualRoutes'));
 app.use('/api/recurring', require('./routes/recurringRoutes'));
 app.use('/api/projects', require('./routes/projectRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
@@ -99,6 +101,7 @@ app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/pdf', require('./routes/pdfRoutes'));
 app.use('/api/bank-statements', require('./routes/bankStatementRoutes'));
 app.use('/api/recycle-bin', require('./routes/recycleBinRoutes'));
+app.use('/api/team-members', require('./routes/teamMemberRoutes'));
 
 // ── Public Submission Portal (no auth — token-scoped) ────────────────────────
 app.use('/api/public', require('./routes/publicSubmissionRoutes'));

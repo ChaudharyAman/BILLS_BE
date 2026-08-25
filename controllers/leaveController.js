@@ -121,8 +121,9 @@ const seedLeaveBalancesForYear = async (userId, year) => {
 // Controllers
 exports.getLeaveTypes = async (req, res) => {
   try {
-    await seedDefaultLeaveTypes(req.user._id);
-    const types = await LeaveType.find({ user: req.user._id }).sort({ isPaid: -1, name: 1 });
+    const companyId = req.companyId || req.user._id;
+    await seedDefaultLeaveTypes(companyId);
+    const types = await LeaveType.find({ user: companyId }).sort({ isPaid: -1, name: 1 });
     res.json(types);
   } catch (error) {
     console.error('Error fetching leave types:', error);
@@ -132,19 +133,20 @@ exports.getLeaveTypes = async (req, res) => {
 
 exports.createLeaveType = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { name, code, annualEntitlement, carriesForward, isPaid, description } = req.body;
     if (!name || !code) {
       return res.status(400).json({ message: 'Name and Code are required' });
     }
 
     const typeCode = code.toUpperCase().trim();
-    const existing = await LeaveType.findOne({ user: req.user._id, code: typeCode });
+    const existing = await LeaveType.findOne({ user: companyId, code: typeCode });
     if (existing) {
       return res.status(400).json({ message: `Leave type with code ${typeCode} already exists` });
     }
 
     const leaveType = await LeaveType.create({
-      user: req.user._id,
+      user: companyId,
       name: name.trim(),
       code: typeCode,
       annualEntitlement: Number(annualEntitlement) || 0,
@@ -162,12 +164,13 @@ exports.createLeaveType = async (req, res) => {
 
 exports.getLeaveBalances = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const year = Number(req.query.year) || new Date().getFullYear();
     const employeeId = req.query.employee;
 
-    await seedLeaveBalancesForYear(req.user._id, year);
+    await seedLeaveBalancesForYear(companyId, year);
 
-    const query = { user: req.user._id, year };
+    const query = { user: companyId, year };
     if (employeeId && mongoose.Types.ObjectId.isValid(String(employeeId))) {
       query.employee = employeeId;
     }
@@ -186,8 +189,9 @@ exports.getLeaveBalances = async (req, res) => {
 
 exports.getLeaveRequests = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { employee, status } = req.query;
-    const query = { user: req.user._id };
+    const query = { user: companyId };
 
     if (employee && mongoose.Types.ObjectId.isValid(String(employee))) {
       query.employee = employee;
@@ -211,16 +215,17 @@ exports.getLeaveRequests = async (req, res) => {
 
 exports.createLeaveRequest = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { employee, leaveType, startDate, endDate, numberOfDays, reason } = req.body;
 
     if (!employee || !leaveType || !startDate || !endDate || !numberOfDays) {
       return res.status(400).json({ message: 'Missing required leave fields' });
     }
 
-    const emp = await Employee.findOne({ _id: employee, user: req.user._id });
+    const emp = await Employee.findOne({ _id: employee, user: companyId });
     if (!emp) return res.status(404).json({ message: 'Employee not found' });
 
-    const lt = await LeaveType.findOne({ _id: leaveType, user: req.user._id });
+    const lt = await LeaveType.findOne({ _id: leaveType, user: companyId });
     if (!lt) return res.status(404).json({ message: 'Leave type not found' });
 
     const start = new Date(startDate);
@@ -235,7 +240,7 @@ exports.createLeaveRequest = async (req, res) => {
 
     const overlap = await LeaveRequest.findOne({
       employee,
-      user: req.user._id,
+      user: companyId,
       status: { $in: ['pending', 'approved'] },
       startDate: { $lte: endOfDay },
       endDate: { $gte: startOfDay }
@@ -248,7 +253,7 @@ exports.createLeaveRequest = async (req, res) => {
     }
 
     const request = await LeaveRequest.create({
-      user: req.user._id,
+      user: companyId,
       employee,
       leaveType,
       startDate: start,
@@ -272,6 +277,7 @@ exports.createLeaveRequest = async (req, res) => {
 
 exports.updateLeaveRequestStatus = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { status, approverRemarks } = req.body;
     if (!['approved', 'rejected', 'pending'].includes(status)) {
       return res.status(400).json({ message: 'Invalid status update' });
@@ -281,7 +287,7 @@ exports.updateLeaveRequestStatus = async (req, res) => {
       return res.status(404).json({ message: 'Leave request not found' });
     }
 
-    const request = await LeaveRequest.findOne({ _id: req.params.id, user: req.user._id })
+    const request = await LeaveRequest.findOne({ _id: req.params.id, user: companyId })
       .populate('employee')
       .populate('leaveType');
 
@@ -296,11 +302,11 @@ exports.updateLeaveRequestStatus = async (req, res) => {
 
     // Trigger balance recalculation on approval/cancellation change
     const year = new Date(request.startDate).getFullYear();
-    await recalculateLeaveBalances(request.employee._id, year, req.user._id);
+    await recalculateLeaveBalances(request.employee._id, year, companyId);
 
     // Write to AuditLog
     await AuditLog.create({
-      user: req.user._id,
+      user: companyId,
       actor: req.user._id,
       action: 'LEAVE_STATUS_UPDATE',
       targetEmployee: request.employee._id,
@@ -324,20 +330,21 @@ exports.updateLeaveRequestStatus = async (req, res) => {
 
 exports.deleteLeaveRequest = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Leave request not found' });
     }
 
-    const request = await LeaveRequest.findOne({ _id: req.params.id, user: req.user._id });
+    const request = await LeaveRequest.findOne({ _id: req.params.id, user: companyId });
     if (!request) return res.status(404).json({ message: 'Leave request not found' });
 
     const employeeId = request.employee;
     const year = new Date(request.startDate).getFullYear();
 
-    await LeaveRequest.updateOne({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await LeaveRequest.updateOne({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // Recalculate balances
-    await recalculateLeaveBalances(employeeId, year, req.user._id);
+    await recalculateLeaveBalances(employeeId, year, companyId);
 
     res.json({ message: 'Leave request deleted successfully' });
   } catch (error) {
@@ -348,11 +355,12 @@ exports.deleteLeaveRequest = async (req, res) => {
 
 exports.recalculateBalancesEndpoint = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { employeeId, year } = req.body;
     if (!employeeId || !year) {
       return res.status(400).json({ message: 'Employee ID and Year are required' });
     }
-    await recalculateLeaveBalances(employeeId, Number(year), req.user._id);
+    await recalculateLeaveBalances(employeeId, Number(year), companyId);
     res.json({ message: 'Balances recalculated successfully' });
   } catch (error) {
     console.error('Error recalculating balances:', error);

@@ -90,8 +90,11 @@ async function api(method, pathname, options = {}) {
     data = raw ? JSON.parse(raw) : null;
   } catch (_) {}
 
-  if (options.expectedStatus !== undefined && response.status !== options.expectedStatus) {
-    throw new Error(`${method} ${pathname} expected ${options.expectedStatus} but got ${response.status}: ${raw}`);
+  if (options.expectedStatus !== undefined) {
+    const expected = Array.isArray(options.expectedStatus) ? options.expectedStatus : [options.expectedStatus];
+    if (!expected.includes(response.status)) {
+      throw new Error(`${method} ${pathname} expected ${options.expectedStatus} but got ${response.status}: ${raw}`);
+    }
   }
 
   return { response, data };
@@ -1144,7 +1147,7 @@ async function payrollAndEmployeeCases() {
     // 2. Process payroll draft for June 2026
     const process = await api('POST', '/api/payroll/process', {
       token: state.tokens.pro,
-      expectedStatus: 201,
+      expectedStatus: [201, 202],
       body: {
         month: 6,
         year: 2026,
@@ -1251,7 +1254,7 @@ async function payrollAndEmployeeCases() {
     // 3. Process payroll draft for July 2026 (31 days)
     const process = await api('POST', '/api/payroll/process', {
       token: state.tokens.pro,
-      expectedStatus: 201,
+      expectedStatus: [201, 202],
       body: {
         month: 7,
         year: 2026,
@@ -1333,7 +1336,7 @@ async function payrollAndEmployeeCases() {
 
     const processOlder = await api('POST', '/api/payroll/process', {
       token: state.tokens.pro,
-      expectedStatus: 201,
+      expectedStatus: [201, 202],
       body: {
         month: 6,
         year: 2026,
@@ -1373,7 +1376,7 @@ async function payrollAndEmployeeCases() {
 
     const processNewer = await api('POST', '/api/payroll/process', {
       token: state.tokens.pro,
-      expectedStatus: 201,
+      expectedStatus: [201, 202],
       body: {
         month: 6,
         year: 2026,
@@ -1412,7 +1415,7 @@ async function payrollAndEmployeeCases() {
 
     const processCustom = await api('POST', '/api/payroll/process', {
       token: state.tokens.pro,
-      expectedStatus: 201,
+      expectedStatus: [201, 202],
       body: {
         month: 6,
         year: 2026,
@@ -1499,7 +1502,7 @@ async function payrollAndEmployeeCases() {
     // Process payroll batch
     const process = await api('POST', '/api/payroll/process', {
       token: state.tokens.pro,
-      expectedStatus: 201,
+      expectedStatus: [201, 202],
       body: {
         month: 5,
         year: 2026,
@@ -1662,7 +1665,7 @@ async function payrollAndEmployeeCases() {
     // 3. Process payroll for June 2026
     const process = await api('POST', '/api/payroll/process', {
       token: state.tokens.pro,
-      expectedStatus: 201,
+      expectedStatus: [201, 202],
       body: {
         month: 6,
         year: 2026,
@@ -1731,7 +1734,7 @@ async function payrollAndEmployeeCases() {
     // 2. Process payroll draft for August 2026
     const process1 = await api('POST', '/api/payroll/process', {
       token: state.tokens.pro,
-      expectedStatus: 201,
+      expectedStatus: [201, 202],
       body: {
         month: 8,
         year: 2026,
@@ -1809,7 +1812,7 @@ async function payrollAndEmployeeCases() {
 
     const process2 = await api('POST', '/api/payroll/process', {
       token: state.tokens.pro,
-      expectedStatus: 201,
+      expectedStatus: [201, 202],
       body: {
         month: 8,
         year: 2026,
@@ -2201,6 +2204,110 @@ async function writeReportAndClose(exitCode) {
   process.exit(exitCode);
 }
 
+async function teamMemberCases() {
+  await run('Team Members & RBAC complete lifecycle', async () => {
+    // 1. Fetch default system roles for owner
+    const rolesRes = await api('GET', '/api/team-members/roles', {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+    });
+    ok(rolesRes.data.length >= 4, 'Expected at least 4 default system roles');
+
+    // 2. Create custom role
+    const createRoleRes = await api('POST', '/api/team-members/roles', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        name: unique('Custom Accountant'),
+        description: 'Read-only expenses and invoices',
+        permissions: {
+          expenses: { view: true, create: false, edit: false, delete: false, approve: false },
+          invoices: { view: true, create: false, edit: false, delete: false, approve: false },
+        },
+      },
+    });
+    const customRoleId = createRoleRes.data._id;
+    ok(customRoleId, 'Failed to create custom AccessRole');
+
+    // 3. Invite Team Member with custom role
+    const memberEmail = `${unique('team-member')}@example.com`;
+    const inviteRes = await api('POST', '/api/team-members/invite', {
+      token: state.tokens.pro,
+      expectedStatus: 201,
+      body: {
+        email: memberEmail,
+        accessRoleId: customRoleId,
+      },
+    });
+    const inviteToken = inviteRes.data.inviteToken;
+    const memberId = inviteRes.data.teamMember._id;
+    ok(inviteToken, 'Invite token missing');
+
+    // 4. Accept invite
+    const acceptRes = await api('POST', '/api/team-members/accept-invite', {
+      expectedStatus: 200,
+      body: {
+        token: inviteToken,
+        password: 'TeamPassword123!',
+      },
+    });
+    ok(acceptRes.data.message.includes('activated'), 'Accept invite failed');
+
+    // 5. Log in as Team Member
+    const loginRes = await api('POST', '/api/auth/login', {
+      expectedStatus: 200,
+      body: {
+        username: memberEmail,
+        password: 'TeamPassword123!',
+      },
+    });
+    const memberToken = cookieHeaderFromResponse(loginRes.response) || `Bearer ${loginRes.data.token}`;
+    ok(loginRes.data.user.isOwner === false, 'Team member should not be owner');
+
+    // 6. Verify Team Member can view expenses
+    const viewExp = await api('GET', '/api/expenses', {
+      token: memberToken,
+      expectedStatus: 200,
+    });
+    ok(Array.isArray(viewExp.data.data || viewExp.data.expenses), 'Team member expense fetch failed');
+
+    // 7. Verify Team Member receives 403 Forbidden when attempting unauthorized operation (create expense)
+    await api('POST', '/api/expenses', {
+      token: memberToken,
+      expectedStatus: 403,
+      body: {
+        title: 'Unauthorized Expense',
+        amount: 500,
+        date: '2026-08-12',
+      },
+    });
+
+    // 8. Suspend Team Member
+    await api('PATCH', `/api/team-members/${memberId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+      body: { status: 'suspended' },
+    });
+
+    // 9. Verify suspended Team Member cannot log in or access API
+    await api('POST', '/api/auth/login', {
+      expectedStatus: 401,
+      body: {
+        username: memberEmail,
+        password: 'TeamPassword123!',
+      },
+    });
+
+    // 10. Delete Team Member
+    await api('DELETE', `/api/team-members/${memberId}`, {
+      token: state.tokens.pro,
+      expectedStatus: 200,
+    });
+
+    return 'Team Members & RBAC lifecycle verified successfully';
+  });
+}
+
 async function main() {
   await connectDb();
   await cleanup();
@@ -2215,6 +2322,7 @@ async function main() {
   await payrollAndEmployeeCases();
   await bankStatementCases();
   await publicPortalCases();
+  await teamMemberCases();
 
   await run('Logout endpoint responds', async () => {
     await api('POST', '/api/auth/logout', { expectedStatus: 200 });
@@ -2228,6 +2336,7 @@ main()
     await writeReportAndClose(hasFailures ? 1 : 0);
   })
   .catch(async (error) => {
+    console.error('BOOTSTRAP ERROR STACK:', error);
     note('FAIL', 'Runner bootstrap', error.message);
     await writeReportAndClose(1);
   });

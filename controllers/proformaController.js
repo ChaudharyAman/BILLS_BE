@@ -57,7 +57,8 @@ function isSameImportedProforma(existingProforma, importedDate, importedGrandTot
 
 exports.getProformas = async (req, res) => {
   try {
-    if (!req.user?._id) return res.status(401).json({ message: 'Not authorized' });
+    const companyId = req.companyId || req.user?._id;
+    if (!companyId) return res.status(401).json({ message: 'Not authorized' });
 
     const exportAll = req.query.all === 'true';
     const page = parseInt(req.query.page, 10) || 1;
@@ -65,13 +66,13 @@ exports.getProformas = async (req, res) => {
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    let query = { user: req.user._id };
+    let query = { user: companyId };
 
     if (search) {
       const safeSearch = escapeRegex(search);
       const Client = require('../models/Client');
       const matchedClients = await Client.find({
-        user: req.user._id,
+        user: companyId,
         name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
@@ -109,10 +110,11 @@ exports.getProformas = async (req, res) => {
 
 exports.getProformaById = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Proforma not found' });
     }
-    const proforma = await Proforma.findOne({ _id: req.params.id, user: req.user._id });
+    const proforma = await Proforma.findOne({ _id: req.params.id, user: companyId });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
     res.json(proforma);
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -120,25 +122,26 @@ exports.getProformaById = async (req, res) => {
 
 exports.createProforma = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
       poNumber, poDate,
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
 
     // --- Subscription Plan Check (BEFORE counter increment to avoid wasting sequence numbers) ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const plan = userObj?.subscription?.plan || 'free';
     if (plan === 'free') {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const proformaCount = await Proforma.countDocuments({
-        user: req.user._id,
+        user: companyId,
         createdAt: { $gte: startOfMonth }
       });
       let quoteCount = 0;
       try {
         const QuoteModel = require('../models/Quote');
-        quoteCount = await QuoteModel.countDocuments({ user: req.user._id, createdAt: { $gte: startOfMonth } });
+        quoteCount = await QuoteModel.countDocuments({ user: companyId, createdAt: { $gte: startOfMonth } });
       } catch(e) {}
       if (quoteCount + proformaCount >= 15) {
         return res.status(403).json({ message: 'Free plan limit reached. You can only create 15 Quotes & Proformas per month. Please upgrade to Pro.' });
@@ -146,7 +149,7 @@ exports.createProforma = async (req, res) => {
     }
     // -------------------------------
 
-    const client = await Client.findOne({ _id: clientRef, user: req.user._id });
+    const client = await Client.findOne({ _id: clientRef, user: companyId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const clientSnapshot = {
@@ -165,7 +168,7 @@ exports.createProforma = async (req, res) => {
       email: client.email || '',
     };
 
-    const userSettings = await Settings.findOne({ user: req.user._id });
+    const userSettings = await Settings.findOne({ user: companyId });
     const proformaPrefix = userSettings?.proformaPrefix || 'PRF';
     let proformaNo = buildCustomDocumentNumber({
       prefix: proformaPrefix,
@@ -175,13 +178,13 @@ exports.createProforma = async (req, res) => {
     });
 
     if (proformaNo) {
-      const existing = await Proforma.findOne({ user: req.user._id, proformaNo });
+      const existing = await Proforma.findOne({ user: companyId, proformaNo });
       if (existing) {
         return res.status(400).json({ message: `Proforma number "${proformaNo}" already exists.` });
       }
     } else {
       const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(req.user._id, 'proformaNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+        { id: buildUserCounterId(companyId, 'proformaNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
       );
       proformaNo = buildAutoDocumentNumber(proformaPrefix, counter.seq);
     }
@@ -206,7 +209,7 @@ exports.createProforma = async (req, res) => {
     };
 
     const proforma = new Proforma({
-      user: req.user._id, proformaNo, invoiceType: invoiceType || 'Tax Invoice',
+      user: companyId, proformaNo, invoiceType: invoiceType || 'Tax Invoice',
       date, validUntil, paymentMode, paymentTerms,
       client: clientSnapshot, items: processedItems,
       subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
@@ -228,22 +231,23 @@ exports.createProforma = async (req, res) => {
 
 exports.updateProforma = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
       poNumber, poDate,
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
 
-    const proforma = await Proforma.findOne({ _id: req.params.id, user: req.user._id });
+    const proforma = await Proforma.findOne({ _id: req.params.id, user: companyId });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
 
     // --- Subscription Plan Check for Edits ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const plan = userObj?.subscription?.plan || 'free';
     if (plan === 'free') {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const conditions = {
-        user: req.user._id,
+        user: companyId,
         updatedAt: { $gte: startOfMonth },
         $expr: { $gt: ["$updatedAt", "$createdAt"] } 
       };
@@ -272,7 +276,7 @@ exports.updateProforma = async (req, res) => {
     }
     // -----------------------------------------
 
-    const client = await Client.findOne({ _id: clientRef, user: req.user._id });
+    const client = await Client.findOne({ _id: clientRef, user: companyId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const clientSnapshot = {
@@ -291,7 +295,7 @@ exports.updateProforma = async (req, res) => {
       email: client.email || '',
     };
 
-    const userSettings = await Settings.findOne({ user: req.user._id });
+    const userSettings = await Settings.findOne({ user: companyId });
     const proformaPrefix = userSettings?.proformaPrefix || 'PRF';
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
@@ -315,7 +319,7 @@ exports.updateProforma = async (req, res) => {
     });
 
     if (requestedProformaNo && requestedProformaNo !== proforma.proformaNo) {
-      const duplicate = await Proforma.findOne({ user: req.user._id, proformaNo: requestedProformaNo, _id: { $ne: proforma._id } });
+      const duplicate = await Proforma.findOne({ user: companyId, proformaNo: requestedProformaNo, _id: { $ne: proforma._id } });
       if (duplicate) {
         return res.status(400).json({ message: `Proforma number "${requestedProformaNo}" already exists.` });
       }
@@ -349,11 +353,12 @@ exports.updateProforma = async (req, res) => {
 
 exports.deleteProforma = async (req, res) => {
   try {
-    const proforma = await Proforma.findOne({ _id: req.params.id, user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    const proforma = await Proforma.findOne({ _id: req.params.id, user: companyId });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
     
     // --- Subscription Check ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     if (userObj?.subscription?.plan === 'free') {
        return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
     }
@@ -366,18 +371,19 @@ exports.deleteProforma = async (req, res) => {
 
 exports.convertToInvoice = async (req, res) => {
   try {
-    const proforma = await Proforma.findOne({ _id: req.params.id, user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    const proforma = await Proforma.findOne({ _id: req.params.id, user: companyId });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
     if (proforma.status === 'CONVERTED') return res.status(400).json({ message: 'Already converted' });
 
-    const userSettings = await Settings.findOne({ user: req.user._id });
+    const userSettings = await Settings.findOne({ user: companyId });
     const counter = await Counter.findOneAndUpdate(
-      { id: buildUserCounterId(req.user._id, 'invoiceNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+      { id: buildUserCounterId(companyId, 'invoiceNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
     // Fetch fresh client data to ensure correct address format specially for old proformas
-    const client = await Client.findOne({ _id: proforma.client.clientRef, user: req.user._id });
+    const client = await Client.findOne({ _id: proforma.client.clientRef, user: companyId });
     let clientSnapshot = proforma.client;
     let resolvedShipping = proforma.shippingAddress;
 
@@ -471,25 +477,26 @@ exports.convertToInvoice = async (req, res) => {
 // ─── BULK create proformas ───────────────────────────────────────────────────
 exports.bulkCreateProformas = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const proformas = req.body.proformas;
     if (!Array.isArray(proformas) || proformas.length === 0) {
       return res.status(400).json({ message: 'No proformas provided for bulk creation.' });
     }
 
     // --- Subscription Plan Check ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const plan = userObj?.subscription?.plan || 'free';
     if (plan === 'free') {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const proformaCount = await Proforma.countDocuments({
-        user: req.user._id,
+        user: companyId,
         createdAt: { $gte: startOfMonth }
       });
       let quoteCount = 0;
       try {
         const QuoteModel = require('../models/Quote');
-        quoteCount = await QuoteModel.countDocuments({ user: req.user._id, createdAt: { $gte: startOfMonth } });
+        quoteCount = await QuoteModel.countDocuments({ user: companyId, createdAt: { $gte: startOfMonth } });
       } catch(e) {}
       
       const combined = proformaCount + quoteCount;
@@ -499,7 +506,7 @@ exports.bulkCreateProformas = async (req, res) => {
     }
     // -------------------------------
 
-    const userSettings = await Settings.findOne({ user: req.user._id });
+    const userSettings = await Settings.findOne({ user: companyId });
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
@@ -518,14 +525,14 @@ exports.bulkCreateProformas = async (req, res) => {
         throw new Error('Client name is required for each imported proforma.');
       }
 
-      let client = await Client.findOne({ name: rowClientName, user: req.user._id });
+      let client = await Client.findOne({ name: rowClientName, user: companyId });
       if (!client) {
          client = new Client({
             name: rowClientName || 'Unknown Client',
             email: pData.clientEmail || '',
             phone: pData.clientPhone || '',
             billingAddress: { state: pData.clientState || '' },
-            user: req.user._id
+            user: companyId
          });
          await client.save();
       }
@@ -537,7 +544,7 @@ exports.bulkCreateProformas = async (req, res) => {
       const originalProformaNo = proformaNo;
       if (!proformaNo || proformaNo === 'Auto-generated') {
         proformaNo = await generateNextUniqueProformaNumber({
-          userId: req.user._id,
+          userId: companyId,
           proformaPrefix: userSettings?.proformaPrefix || 'PRF',
         });
       }
@@ -557,7 +564,7 @@ exports.bulkCreateProformas = async (req, res) => {
       const finalDate = parseImportedDate(pData.date);
 
       if (originalProformaNo) {
-        const existingProforma = await Proforma.findOne({ user: req.user._id, proformaNo: originalProformaNo });
+        const existingProforma = await Proforma.findOne({ user: companyId, proformaNo: originalProformaNo });
         if (existingProforma && isSameImportedProforma(existingProforma, finalDate, grandTotal)) {
           skippedProformas.push({
             importRowId,
@@ -572,7 +579,7 @@ exports.bulkCreateProformas = async (req, res) => {
 
         if (existingProforma) {
           proformaNo = await generateNextUniqueProformaNumber({
-            userId: req.user._id,
+            userId: companyId,
             proformaPrefix: userSettings?.proformaPrefix || 'PRF',
           });
           renumberedProformas.push({
@@ -624,7 +631,7 @@ exports.bulkCreateProformas = async (req, res) => {
         shippingCharges: finalShipping, packagingCharges: finalPackaging,
         discountTotal: finalDiscount, grandTotal,
         status: 'DRAFT',
-        user: req.user._id
+        user: companyId
       });
 
         try {
@@ -636,7 +643,7 @@ exports.bulkCreateProformas = async (req, res) => {
           }
 
           proformaNo = await generateNextUniqueProformaNumber({
-            userId: req.user._id,
+            userId: companyId,
             proformaPrefix: userSettings?.proformaPrefix || 'PRF',
           });
           renumberedProformas.push({
@@ -703,12 +710,13 @@ exports.bulkCreateProformas = async (req, res) => {
 // ─── UPDATE proforma status ──────────────────────────────────────────────────
 exports.updateProformaStatus = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { status } = req.body;
     if (!status) {
       return res.status(400).json({ message: 'Status is required' });
     }
 
-    const proforma = await Proforma.findOne({ _id: req.params.id, user: req.user._id });
+    const proforma = await Proforma.findOne({ _id: req.params.id, user: companyId });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
     if (proforma.status === 'CONVERTED' || proforma.convertedToInvoice) {
       return res.status(400).json({ message: 'Converted proformas cannot be updated.' });
@@ -722,4 +730,3 @@ exports.updateProformaStatus = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-

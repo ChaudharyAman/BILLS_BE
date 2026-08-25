@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
   getDepartments,
   createDepartment,
@@ -11,11 +11,11 @@ const {
 router.use(protect);
 
 router.route('/')
-  .get(getDepartments)
-  .post(createDepartment);
+  .get(authorize('departments', 'view'), getDepartments)
+  .post(authorize('departments', 'create'), createDepartment);
 
 router.route('/:id')
-  .put(updateDepartment)
-  .delete(deleteDepartment);
+  .put(authorize('departments', 'edit'), updateDepartment)
+  .delete(authorize('departments', 'delete'), deleteDepartment);
 
 module.exports = router;

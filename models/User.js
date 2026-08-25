@@ -67,6 +67,39 @@ const userSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
+  },
+  // ── Team Members & RBAC Tenancy ──────────────────────────────────────────
+  companyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  isOwner: {
+    type: Boolean,
+    default: true
+  },
+  accessRole: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'AccessRole',
+    default: null
+  },
+  invitedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  status: {
+    type: String,
+    enum: ['active', 'invited', 'suspended'],
+    default: 'active'
+  },
+  inviteToken: {
+    type: String,
+    default: null
+  },
+  inviteTokenExpires: {
+    type: Date,
+    default: null
   }
 });
 

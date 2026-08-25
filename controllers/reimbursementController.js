@@ -4,8 +4,9 @@ const mongoose = require('mongoose');
 
 exports.getClaims = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { employee, status, category } = req.query;
-    const query = { user: req.user._id };
+    const query = { user: companyId };
 
     if (employee && mongoose.Types.ObjectId.isValid(String(employee))) {
       query.employee = employee;
@@ -31,11 +32,12 @@ exports.getClaims = async (req, res) => {
 
 exports.getClaimById = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Claim not found' });
     }
 
-    const claim = await ReimbursementClaim.findOne({ _id: req.params.id, user: req.user._id })
+    const claim = await ReimbursementClaim.findOne({ _id: req.params.id, user: companyId })
       .populate('employee', 'firstName lastName employeeId designation');
 
     if (!claim) {
@@ -51,13 +53,14 @@ exports.getClaimById = async (req, res) => {
 
 exports.createClaim = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { employee, category, amount, billUrl } = req.body;
 
     if (!employee || !mongoose.Types.ObjectId.isValid(String(employee))) {
       return res.status(400).json({ message: 'Valid employee ID is required' });
     }
 
-    const emp = await Employee.findOne({ _id: employee, user: req.user._id });
+    const emp = await Employee.findOne({ _id: employee, user: companyId });
     if (!emp) {
       return res.status(404).json({ message: 'Employee not found' });
     }
@@ -72,7 +75,7 @@ exports.createClaim = async (req, res) => {
     }
 
     const claim = await ReimbursementClaim.create({
-      user: req.user._id,
+      user: companyId,
       employee,
       category,
       amount: amt,
@@ -89,6 +92,7 @@ exports.createClaim = async (req, res) => {
 
 exports.updateClaimStatus = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { status, approverRemarks } = req.body;
     if (!['approved', 'rejected', 'pending'].includes(status)) {
       return res.status(400).json({ message: 'Invalid status update' });
@@ -98,7 +102,7 @@ exports.updateClaimStatus = async (req, res) => {
       return res.status(404).json({ message: 'Claim not found' });
     }
 
-    const claim = await ReimbursementClaim.findOne({ _id: req.params.id, user: req.user._id });
+    const claim = await ReimbursementClaim.findOne({ _id: req.params.id, user: companyId });
     if (!claim) {
       return res.status(404).json({ message: 'Claim not found' });
     }
@@ -118,12 +122,13 @@ exports.updateClaimStatus = async (req, res) => {
 
 exports.updateClaim = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { category, amount, billUrl, status, approverRemarks } = req.body;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Claim not found' });
     }
 
-    const claim = await ReimbursementClaim.findOne({ _id: req.params.id, user: req.user._id });
+    const claim = await ReimbursementClaim.findOne({ _id: req.params.id, user: companyId });
     if (!claim) {
       return res.status(404).json({ message: 'Claim not found' });
     }
@@ -155,11 +160,12 @@ exports.updateClaim = async (req, res) => {
 
 exports.deleteClaim = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Claim not found' });
     }
 
-    const claim = await ReimbursementClaim.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const claim = await ReimbursementClaim.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!claim) {
       return res.status(404).json({ message: 'Claim not found' });
     }

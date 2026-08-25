@@ -57,6 +57,7 @@ const addYearsClamped = (date, yearsToAdd) => addMonthsClamped(date, yearsToAdd 
 // @access  Private
 exports.createOrder = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { plan, billingCycle } = req.body;
 
     if (!plan || !billingCycle) {
@@ -83,7 +84,7 @@ exports.createOrder = async (req, res) => {
     }
 
     await SubscriptionOrder.create({
-      user: req.user._id,
+      user: companyId,
       razorpayOrderId: order.id,
       plan,
       billingCycle,
@@ -105,6 +106,7 @@ exports.createOrder = async (req, res) => {
 // @access  Private
 exports.verifyPayment = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const {
       razorpay_order_id,
       razorpay_payment_id,
@@ -127,7 +129,7 @@ exports.verifyPayment = async (req, res) => {
     }
 
     const pendingOrder = await SubscriptionOrder.findOne({
-      user: req.user._id,
+      user: companyId,
       razorpayOrderId: razorpay_order_id,
     });
 
@@ -176,7 +178,7 @@ exports.verifyPayment = async (req, res) => {
       ? addMonthsClamped(startDate, 1)
       : addYearsClamped(startDate, 1);
 
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(companyId);
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
@@ -232,7 +234,8 @@ exports.verifyPayment = async (req, res) => {
 // @access  Private
 exports.getSubscriptionStatus = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('subscription role');
+    const companyId = req.companyId || req.user._id;
+    const user = await User.findById(companyId).select('subscription role');
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -251,7 +254,8 @@ exports.getSubscriptionStatus = async (req, res) => {
 // @access  Private
 exports.getPaymentHistory = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('paymentHistory').lean();
+    const companyId = req.companyId || req.user._id;
+    const user = await User.findById(companyId).select('paymentHistory').lean();
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -261,7 +265,7 @@ exports.getPaymentHistory = async (req, res) => {
 
     // Backward compatibility for older Pro purchases saved before paymentHistory existed.
     if (history.length === 0) {
-      const fullUser = await User.findById(req.user._id).select('subscription').lean();
+      const fullUser = await User.findById(companyId).select('subscription').lean();
       if (fullUser && fullUser.subscription && fullUser.subscription.plan === 'pro' && fullUser.subscription.razorpayPaymentId) {
         const sub = fullUser.subscription;
         let amountPaid = 0;
@@ -295,6 +299,7 @@ exports.getPaymentHistory = async (req, res) => {
 // @access  Private
 exports.getUsageStats = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const Invoice = require('../models/Invoice');
     const Quote = require('../models/Quote');
     const PurchaseOrder = require('../models/PurchaseOrder');
@@ -304,45 +309,45 @@ exports.getUsageStats = async (req, res) => {
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
     const invoicesCount = await Invoice.countDocuments({
-      user: req.user._id,
+      user: companyId,
       createdAt: { $gte: startOfMonth },
     });
 
     const quotesCount = await Quote.countDocuments({
-      user: req.user._id,
+      user: companyId,
       createdAt: { $gte: startOfMonth },
     });
 
     const purchaseOrdersCount = await PurchaseOrder.countDocuments({
-      user: req.user._id,
+      user: companyId,
       createdAt: { $gte: startOfMonth },
     });
 
     const editedInvoicesCount = await Invoice.countDocuments({
-      user: req.user._id,
+      user: companyId,
       updatedAt: { $gte: startOfMonth },
       $expr: { $gt: ['$updatedAt', '$createdAt'] },
     });
 
     const editedQuotesCount = await Quote.countDocuments({
-      user: req.user._id,
+      user: companyId,
       updatedAt: { $gte: startOfMonth },
       $expr: { $gt: ['$updatedAt', '$createdAt'] },
     });
 
     const editedPurchaseOrdersCount = await PurchaseOrder.countDocuments({
-      user: req.user._id,
+      user: companyId,
       updatedAt: { $gte: startOfMonth },
       $expr: { $gt: ['$updatedAt', '$createdAt'] },
     });
 
     const proformasCount = await Proforma.countDocuments({
-      user: req.user._id,
+      user: companyId,
       createdAt: { $gte: startOfMonth },
     });
 
     const editedProformasCount = await Proforma.countDocuments({
-      user: req.user._id,
+      user: companyId,
       updatedAt: { $gte: startOfMonth },
       $expr: { $gt: ['$updatedAt', '$createdAt'] },
     });

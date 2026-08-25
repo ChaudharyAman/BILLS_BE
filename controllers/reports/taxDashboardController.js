@@ -458,7 +458,7 @@ exports.getTaxDashboard = async (req, res) => {
   try {
     const { startDate, endDate } = getMonthRange(req.query);
     const previous = previousPeriodRange(startDate, endDate);
-    const userId = req.user._id;
+    const userId = req.companyId || req.user._id;
     const buId = req.query.businessUnit && mongoose.Types.ObjectId.isValid(req.query.businessUnit)
       ? new mongoose.Types.ObjectId(req.query.businessUnit)
       : null;

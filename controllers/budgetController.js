@@ -111,10 +111,11 @@ exports.checkBudgetWarning = async (categoryId, userId, amount, excludeExpenseId
 
 exports.getBudgets = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 20;
     const skip = (page - 1) * limit;
-    const query = { user: req.user._id };
+    const query = { user: companyId };
 
     if (req.query.category) query.category = req.query.category;
     if (req.query.businessUnit) query.businessUnit = req.query.businessUnit;
@@ -140,8 +141,9 @@ exports.getBudgets = async (req, res) => {
 
 exports.createBudget = async (req, res) => {
   try {
-    const payload = await normalizeBudgetPayload(req.body, req.user._id);
-    const budget = await Budget.create({ ...payload, user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    const payload = await normalizeBudgetPayload(req.body, companyId);
+    const budget = await Budget.create({ ...payload, user: companyId });
     await refreshOneBudget(budget);
     res.status(201).json(budget);
   } catch (error) {
@@ -153,14 +155,15 @@ exports.createBudget = async (req, res) => {
 
 exports.updateBudget = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Budget not found' });
     }
 
-    const existing = await Budget.findOne({ _id: req.params.id, user: req.user._id });
+    const existing = await Budget.findOne({ _id: req.params.id, user: companyId });
     if (!existing) return res.status(404).json({ message: 'Budget not found' });
 
-    const payload = await normalizeBudgetPayload({ ...existing.toObject(), ...req.body }, req.user._id);
+    const payload = await normalizeBudgetPayload({ ...existing.toObject(), ...req.body }, companyId);
     Object.assign(existing, payload);
     await refreshOneBudget(existing);
     const budget = await Budget.findById(existing._id)
@@ -175,10 +178,11 @@ exports.updateBudget = async (req, res) => {
 
 exports.deleteBudget = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Budget not found' });
     }
-    const budget = await Budget.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const budget = await Budget.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!budget) return res.status(404).json({ message: 'Budget not found' });
     res.json({ message: 'Budget deleted successfully' });
   } catch (error) {
@@ -189,12 +193,13 @@ exports.deleteBudget = async (req, res) => {
 
 exports.getBudgetVsActual = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const parsedPage = parseInt(req.query.page, 10);
     const parsedLimit = parseInt(req.query.limit, 10);
     const page = Number.isInteger(parsedPage) ? Math.max(1, parsedPage) : 1;
     const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(parsedLimit, 100)) : 20;
     const skip = (page - 1) * limit;
-    const query = { user: req.user._id, status: { $in: ['active', 'exceeded'] } };
+    const query = { user: companyId, status: { $in: ['active', 'exceeded'] } };
 
     if (req.query.category) query.category = req.query.category;
     if (req.query.period) query.period = req.query.period;
@@ -220,7 +225,7 @@ exports.getBudgetVsActual = async (req, res) => {
     const expenseTotals = categoryIds.length > 0 ? await Expense.aggregate([
       {
         $match: {
-          user: req.user._id,
+          user: companyId,
           category: { $in: categoryIds },
           date: { $gte: dates.min, $lte: dates.max },
           status: { $ne: 'CANCELLED' },

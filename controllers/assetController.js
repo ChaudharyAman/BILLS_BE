@@ -9,8 +9,9 @@ const pageOptions = (query) => {
 
 exports.getAssets = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { page, limit, skip } = pageOptions(req.query);
-    const query = { user: req.user._id };
+    const query = { user: companyId };
     if (req.query.status) query.status = req.query.status;
     if (req.query.category) query.category = req.query.category;
 
@@ -29,8 +30,9 @@ exports.getAssets = async (req, res) => {
 
 exports.getAssetById = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Asset not found' });
-    const asset = await Asset.findOne({ _id: req.params.id, user: req.user._id });
+    const asset = await Asset.findOne({ _id: req.params.id, user: companyId });
     if (!asset) return res.status(404).json({ message: 'Asset not found' });
     res.json(asset);
   } catch (error) {
@@ -40,7 +42,8 @@ exports.getAssetById = async (req, res) => {
 
 exports.createAsset = async (req, res) => {
   try {
-    const asset = await Asset.create({ ...req.body, user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    const asset = await Asset.create({ ...req.body, user: companyId });
     res.status(201).json(asset);
   } catch (error) {
     res.status(400).json({ message: error.message || 'Server error creating asset' });
@@ -49,9 +52,10 @@ exports.createAsset = async (req, res) => {
 
 exports.updateAsset = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Asset not found' });
     const asset = await Asset.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
+      { _id: req.params.id, user: companyId },
       { $set: req.body },
       { returnDocument: 'after', runValidators: true }
     );
@@ -64,8 +68,9 @@ exports.updateAsset = async (req, res) => {
 
 exports.deleteAsset = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Asset not found' });
-    const asset = await Asset.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const asset = await Asset.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!asset) return res.status(404).json({ message: 'Asset not found' });
     res.json({ message: 'Asset deleted successfully' });
   } catch (error) {

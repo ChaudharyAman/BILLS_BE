@@ -36,7 +36,8 @@ const validateHead = async (head, userId) => {
 
 exports.getDepartments = async (req, res) => {
   try {
-    const departments = await Department.find({ user: req.user._id })
+    const companyId = req.companyId || req.user._id;
+    const departments = await Department.find({ user: companyId })
       .populate('head', 'employeeId firstName lastName')
       .sort({ name: 1 })
       .lean();
@@ -50,12 +51,13 @@ exports.getDepartments = async (req, res) => {
 
 exports.createDepartment = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const payload = pickDepartmentFields(req.body);
-    payload.head = await validateHead(payload.head, req.user._id);
+    payload.head = await validateHead(payload.head, companyId);
 
     const department = await Department.create({
       ...payload,
-      user: req.user._id,
+      user: companyId,
     });
 
     res.status(201).json(department);
@@ -73,17 +75,18 @@ exports.createDepartment = async (req, res) => {
 
 exports.updateDepartment = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Department not found' });
     }
 
     const payload = pickDepartmentFields(req.body);
     if (Object.prototype.hasOwnProperty.call(payload, 'head')) {
-      payload.head = await validateHead(payload.head, req.user._id);
+      payload.head = await validateHead(payload.head, companyId);
     }
 
     const department = await Department.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
+      { _id: req.params.id, user: companyId },
       { $set: payload },
       { returnDocument: 'after', runValidators: true }
     ).populate('head', 'employeeId firstName lastName');
@@ -107,16 +110,17 @@ exports.updateDepartment = async (req, res) => {
 
 exports.deleteDepartment = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Department not found' });
     }
 
-    const hasEmployees = await Employee.exists({ user: req.user._id, department: req.params.id });
+    const hasEmployees = await Employee.exists({ user: companyId, department: req.params.id });
     if (hasEmployees) {
       return res.status(400).json({ message: 'Cannot delete a department with employees. Reassign employees first.' });
     }
 
-    const department = await Department.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const department = await Department.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!department) {
       return res.status(404).json({ message: 'Department not found' });
     }

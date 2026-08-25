@@ -2,8 +2,47 @@ const mongoose = require('mongoose');
 const Expense = require('../models/Expense');
 const User = require('../models/User');
 const Category = require('../models/Category');
+const CashLedgerEntry = require('../models/CashLedgerEntry');
+const { recordCashMovement, roundTwo } = require('../utils/cashLedgerHelper');
 const escapeRegex = require('../utils/escapeRegex');
 const { updateBudgetSpent, checkBudgetWarning } = require('./budgetController');
+
+async function syncExpenseCashMovement(expense, paymentDate = new Date(), session = null) {
+  if (!expense || !expense.user || !expense._id) return;
+  if (expense.privateNotes?.includes('Payroll ID:') || expense.expenseNumber?.startsWith('PAY-')) {
+    return;
+  }
+
+  const companyId = expense.user;
+  const paidAmount = Math.max(0, roundTwo(Number(expense.amountPaid) || 0));
+
+  const match = {
+    user: new mongoose.Types.ObjectId(String(companyId)),
+    sourceModel: 'Expense',
+    sourceId: new mongoose.Types.ObjectId(String(expense._id)),
+    isDeleted: { $ne: true },
+  };
+
+  const existing = await CashLedgerEntry.aggregate([
+    { $match: match },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  const previouslyPostedOutflow = -(roundTwo(existing[0]?.total || 0));
+  const delta = roundTwo(paidAmount - previouslyPostedOutflow);
+
+  if (Math.abs(delta) >= 0.01) {
+    await recordCashMovement({
+      user: companyId,
+      amount: -delta,
+      type: 'expense_payment',
+      sourceModel: 'Expense',
+      sourceId: expense._id,
+      date: paymentDate || expense.date || new Date(),
+      notes: `Payment for Expense #${expense.expenseNumber || expense._id}`,
+      session,
+    });
+  }
+}
 
 const validateExpenseCategory = async (userId, categoryId, subCategoryId) => {
   const result = { category: categoryId || null, subCategory: subCategoryId || null };
@@ -130,12 +169,13 @@ exports.getExpenses = async (req, res) => {
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    let query = { user: req.user._id };
+    const companyId = req.companyId || req.user._id;
+    let query = { user: companyId };
     if (req.query.category) query.category = req.query.category;
     if (req.query.excludeCategoryName) {
       const Category = require('../models/Category');
       const excludeCategory = await Category.findOne({
-        user: req.user._id,
+        user: companyId,
         name: req.query.excludeCategoryName,
         type: 'expense'
       });
@@ -159,7 +199,7 @@ exports.getExpenses = async (req, res) => {
       const Client = require('../models/Client');
       const safeSearch = escapeRegex(search);
       const matchedClients = await Client.find({
-        user: req.user._id,
+        user: companyId,
         name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
@@ -372,11 +412,10 @@ async function resolveParty({
   return party.save();
 }
 
-// @desc    Create new expense
-// @route   POST /api/expenses
-// @access  Private
 exports.createExpense = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
+
     const {
       category,
       subCategory,
@@ -402,7 +441,7 @@ exports.createExpense = async (req, res) => {
     let resolvedVendor = null;
     if (vendor) {
       resolvedVendor = await resolveParty({
-        userId: req.user._id,
+        userId: companyId,
         partyRef: vendor.vendorRef,
         partyName: vendor.name,
         isVendor: true,
@@ -419,7 +458,7 @@ exports.createExpense = async (req, res) => {
     let resolvedClient = null;
     if (client) {
       resolvedClient = await resolveParty({
-        userId: req.user._id,
+        userId: companyId,
         partyRef: client.clientRef,
         partyName: client.name,
         isVendor: false,
@@ -427,10 +466,10 @@ exports.createExpense = async (req, res) => {
       });
     }
 
-    const categoryData = await validateExpenseCategory(req.user._id, category, subCategory);
+    const categoryData = await validateExpenseCategory(companyId, category, subCategory);
 
-    // Check if expenseNumber exists for this user (if you want uniqueness per user)
-    const existing = await Expense.findOne({ expenseNumber, user: req.user._id });
+    // Check if expenseNumber exists for this company
+    const existing = await Expense.findOne({ expenseNumber, user: companyId });
     if (existing) {
       return res.status(400).json({ message: 'Expense number already exists' });
     }
@@ -443,11 +482,11 @@ exports.createExpense = async (req, res) => {
 
     const basePayable = reverseCharge ? Math.max(grandTotal - taxTotal, 0) : grandTotal;
     const payableAmount = Math.max(basePayable - tds_amount, 0);
-    const budgetWarning = await checkBudgetWarning(categoryData.category, req.user._id, payableAmount);
+    const budgetWarning = await checkBudgetWarning(categoryData.category, companyId, payableAmount);
     const paymentState = resolvePaymentState(grandTotal, amountPaid, status, !!reverseCharge, taxTotal, tds_amount);
 
     const expense = await Expense.create({
-      user: req.user._id,
+      user: companyId,
       ...categoryData,
       project: project || null,
       department: department || null,
@@ -475,7 +514,8 @@ exports.createExpense = async (req, res) => {
       net_vendor_payment: payableAmount
     });
 
-    if (expense.category) await updateBudgetSpent(expense.category, req.user._id);
+    if (expense.category) await updateBudgetSpent(expense.category, companyId);
+    await syncExpenseCashMovement(expense, expense.date);
 
     res.status(201).json(budgetWarning ? { data: expense, budgetWarning } : expense);
   } catch (error) {
@@ -492,9 +532,10 @@ exports.createExpense = async (req, res) => {
 // @access  Private
 exports.getExpenseById = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Expense not found' });
     
-    const expense = await Expense.findOne({ _id: req.params.id, user: req.user._id })
+    const expense = await Expense.findOne({ _id: req.params.id, user: companyId })
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent');
 
@@ -513,22 +554,23 @@ exports.getExpenseById = async (req, res) => {
 // @access  Private
 exports.updateExpense = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Expense not found' });
 
-    let expense = await Expense.findOne({ _id: req.params.id, user: req.user._id });
+    let expense = await Expense.findOne({ _id: req.params.id, user: companyId });
     if (!expense) {
       return res.status(404).json({ message: 'Expense not found' });
     }
     const oldCategory = expense.category;
 
     // --- Subscription Plan Check for Edits ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const plan = userObj?.subscription?.plan || 'free';
     if (plan === 'free') {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const editedExpensesCount = await Expense.countDocuments({
-        user: req.user._id,
+        user: companyId,
         updatedAt: { $gte: startOfMonth },
         $expr: { $gt: ["$updatedAt", "$createdAt"] }
       });
@@ -565,7 +607,7 @@ exports.updateExpense = async (req, res) => {
     if (vendor !== undefined) {
       if (vendor) {
         const vParty = await resolveParty({
-          userId: req.user._id,
+          userId: companyId,
           partyRef: vendor.vendorRef,
           partyName: vendor.name,
           isVendor: true,
@@ -587,7 +629,7 @@ exports.updateExpense = async (req, res) => {
     if (client !== undefined) {
       if (client) {
         const cParty = await resolveParty({
-          userId: req.user._id,
+          userId: companyId,
           partyRef: client.clientRef,
           partyName: client.name,
           isVendor: false,
@@ -652,7 +694,7 @@ exports.updateExpense = async (req, res) => {
     };
 
     if (expenseNumber && expenseNumber !== expense.expenseNumber) {
-      const existing = await Expense.findOne({ expenseNumber, user: req.user._id });
+      const existing = await Expense.findOne({ expenseNumber, user: companyId });
       if (existing) {
         return res.status(400).json({ message: 'Expense number already exists' });
       }
@@ -660,7 +702,7 @@ exports.updateExpense = async (req, res) => {
 
     if (category !== undefined || subCategory !== undefined) {
       const categoryData = await validateExpenseCategory(
-        req.user._id,
+        companyId,
         category !== undefined ? category : expense.category,
         subCategory !== undefined ? subCategory : expense.subCategory
       );
@@ -685,14 +727,16 @@ exports.updateExpense = async (req, res) => {
 
     await expense.save();
 
-    expense = await Expense.findOne({ _id: expense._id, user: req.user._id })
+    expense = await Expense.findOne({ _id: expense._id, user: companyId })
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent');
 
-    if (oldCategory) await updateBudgetSpent(oldCategory, req.user._id);
+    if (oldCategory) await updateBudgetSpent(oldCategory, companyId);
     if (expense.category && String(expense.category._id || expense.category) !== String(oldCategory || '')) {
-      await updateBudgetSpent(expense.category._id || expense.category, req.user._id);
+      await updateBudgetSpent(expense.category._id || expense.category, companyId);
     }
+
+    await syncExpenseCashMovement(expense, expense.date);
 
     res.json(expense);
   } catch (error) {
@@ -709,22 +753,27 @@ exports.updateExpense = async (req, res) => {
 // @access  Private
 exports.deleteExpense = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Expense not found' });
 
     // --- Subscription Plan Check for Deletes ---
-    const userObj = await User.findById(req.user._id);
+    const userObj = await User.findById(companyId);
     const plan = userObj?.subscription?.plan || 'free';
     if (plan === 'free') {
       return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
     }
     // -------------------------------------------
 
-    const expense = await Expense.findOne({ _id: req.params.id, user: req.user._id });
+    const expense = await Expense.findOne({ _id: req.params.id, user: companyId });
 
     if (expense) {
       const oldCategory = expense.category;
       await Expense.updateOne({ _id: expense._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
-      if (oldCategory) await updateBudgetSpent(oldCategory, req.user._id);
+      await CashLedgerEntry.updateMany(
+        { sourceModel: 'Expense', sourceId: expense._id, user: companyId },
+        { $set: { isDeleted: true, deletedAt: new Date() } }
+      );
+      if (oldCategory) await updateBudgetSpent(oldCategory, companyId);
       res.json({ message: 'Expense removed' });
     } else {
       res.status(404).json({ message: 'Expense not found' });

@@ -19,12 +19,13 @@ const maskIntegrationSecrets = (settingsDoc) => {
 // Get Settings (Create default if not exists)
 exports.getSettings = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) {
+    const companyId = req.companyId || req.user?._id;
+    if (!companyId) {
         return res.status(401).json({ message: 'Not authorized' });
     }
-    let settings = await Settings.findOne({ user: req.user._id }).populate('user', 'username email phone');
+    let settings = await Settings.findOne({ user: companyId }).populate('user', 'username email phone');
     if (!settings) {
-      settings = new Settings({ user: req.user._id });
+      settings = new Settings({ user: companyId });
       await settings.save();
       // Re-fetch to populate after creation
       settings = await Settings.findById(settings._id).populate('user', 'username email phone');
@@ -39,10 +40,11 @@ exports.getSettings = async (req, res) => {
 // Update Settings
 exports.updateSettings = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) {
+    const companyId = req.companyId || req.user?._id;
+    if (!companyId) {
         return res.status(401).json({ message: 'Not authorized' });
     }
-    let settings = await Settings.findOne({ user: req.user._id });
+    let settings = await Settings.findOne({ user: companyId });
 
     // Handle file uploads (Logo & Signature)
     let newLogoUrl = undefined;
@@ -131,7 +133,7 @@ exports.updateSettings = async (req, res) => {
 
              const existingUser = await User.findOne({ 
                  $or: checkingQuery,
-                 _id: { $ne: req.user._id } // Exclude current user
+                 _id: { $ne: req.user._id } // Exclude current logged in user
              });
              
              if (existingUser) {
@@ -153,7 +155,7 @@ exports.updateSettings = async (req, res) => {
 
     if (!settings) {
       // Create new if not exists
-      const settingsData = { ...settingsUpdate, user: req.user._id };
+      const settingsData = { ...settingsUpdate, user: companyId };
       if (newLogoUrl) settingsData.logoUrl = newLogoUrl;
       if (newSignatureUrl) settingsData.signatureUrl = newSignatureUrl;
       if (safeIntegration !== undefined) settingsData.integration = safeIntegration;
@@ -221,9 +223,10 @@ function buildPortalLink(token) {
  */
 exports.getPublicSubmissionsConfig = async (req, res) => {
   try {
-    let settings = await Settings.findOne({ user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    let settings = await Settings.findOne({ user: companyId });
     if (!settings) {
-      settings = new Settings({ user: req.user._id });
+      settings = new Settings({ user: companyId });
       await settings.save();
     }
 
@@ -250,9 +253,10 @@ exports.getPublicSubmissionsConfig = async (req, res) => {
  */
 exports.updatePublicSubmissionsConfig = async (req, res) => {
   try {
-    let settings = await Settings.findOne({ user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    let settings = await Settings.findOne({ user: companyId });
     if (!settings) {
-      settings = new Settings({ user: req.user._id });
+      settings = new Settings({ user: companyId });
     }
 
     if (!settings.publicSubmissions) settings.publicSubmissions = {};
@@ -294,7 +298,7 @@ exports.updatePublicSubmissionsConfig = async (req, res) => {
     if (wasEnabled !== nowEnabled) {
       try {
         await AuditLog.create({
-          user:    req.user._id,
+          user:    companyId,
           actor:   req.user._id,
           action:  nowEnabled ? 'PUBLIC_PORTAL_ENABLED' : 'PUBLIC_PORTAL_DISABLED',
           changes: {},
@@ -326,9 +330,10 @@ exports.updatePublicSubmissionsConfig = async (req, res) => {
  */
 exports.regeneratePublicToken = async (req, res) => {
   try {
-    let settings = await Settings.findOne({ user: req.user._id });
+    const companyId = req.companyId || req.user._id;
+    let settings = await Settings.findOne({ user: companyId });
     if (!settings) {
-      settings = new Settings({ user: req.user._id });
+      settings = new Settings({ user: companyId });
     }
     if (!settings.publicSubmissions) settings.publicSubmissions = {};
 
@@ -343,7 +348,7 @@ exports.regeneratePublicToken = async (req, res) => {
 
     try {
       await AuditLog.create({
-        user:    req.user._id,
+        user:    companyId,
         actor:   req.user._id,
         action:  'PUBLIC_TOKEN_REGENERATED',
         changes: { hadPreviousToken: !!oldToken },
@@ -367,4 +372,3 @@ exports.regeneratePublicToken = async (req, res) => {
     return res.status(500).json({ message: error.message });
   }
 };
-

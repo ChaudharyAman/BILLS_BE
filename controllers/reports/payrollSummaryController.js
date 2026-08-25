@@ -29,7 +29,8 @@ const sendReport = (res, rows, sheetName, filename, format = 'json') => {
 
 exports.getPayrollSummary = async (req, res) => {
   try {
-    const match = { user: req.user._id };
+    const companyId = req.companyId || req.user._id;
+    const match = { user: companyId };
     if (req.query.month !== undefined) {
       const month = Number.parseInt(req.query.month, 10);
       if (!validateMonth(month)) {
@@ -94,7 +95,8 @@ exports.getBankTransferSheet = async (req, res) => {
       return res.status(400).json({ message: 'Valid month and year are required' });
     }
 
-    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+    const companyId = req.companyId || req.user._id;
+    const payrolls = await Payroll.find({ user: companyId, month, year })
       .populate({ path: 'employee', select: '+bankDetails.accountNumber firstName lastName employeeId bankDetails.ifscCode' })
       .sort({ createdAt: 1 })
       .lean();
@@ -163,7 +165,8 @@ exports.getPFChallan = async (req, res) => {
       return res.status(400).json({ message: 'Valid month and year are required' });
     }
 
-    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+    const companyId = req.companyId || req.user._id;
+    const payrolls = await Payroll.find({ user: companyId, month, year })
       .populate({ path: 'employee', select: 'firstName lastName employeeId +uanNumber' })
       .sort({ createdAt: 1 })
       .lean();
@@ -280,7 +283,8 @@ exports.getESIChallan = async (req, res) => {
       return res.status(400).json({ message: 'Valid month and year are required' });
     }
 
-    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+    const companyId = req.companyId || req.user._id;
+    const payrolls = await Payroll.find({ user: companyId, month, year })
       .populate({ path: 'employee', select: 'firstName lastName employeeId' })
       .sort({ createdAt: 1 })
       .lean();
@@ -339,7 +343,8 @@ exports.getStatutorySummary = async (req, res) => {
       return res.status(400).json({ message: 'Valid month and year are required' });
     }
 
-    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+    const companyId = req.companyId || req.user._id;
+    const payrolls = await Payroll.find({ user: companyId, month, year })
       .populate({ path: 'employee', select: 'firstName lastName employeeId' })
       .sort({ createdAt: 1 })
       .lean();
@@ -429,8 +434,9 @@ exports.getTDSSummary = async (req, res) => {
 
     const financialYearStart = year;
     const financialYearEnd = year + 1;
+    const companyId = req.companyId || req.user._id;
     const payrolls = await Payroll.find({
-      user: req.user._id,
+      user: companyId,
       $or: [
         { year: financialYearStart, month: { $gte: 4 } },
         { year: financialYearEnd, month: { $lte: 3 } },
@@ -495,9 +501,10 @@ exports.getAnnualEmployeeSummary = async (req, res) => {
       return res.status(400).json({ message: 'Valid employeeId is required' });
     }
 
-    let employee = await Employee.findOne({ _id: employeeId, user: req.user._id }).select('firstName lastName employeeId monthlyCTC');
+    const companyId = req.companyId || req.user._id;
+    let employee = await Employee.findOne({ _id: employeeId, user: companyId }).select('firstName lastName employeeId monthlyCTC');
     if (!employee) {
-      const pastPayroll = await Payroll.findOne({ employee: employeeId, user: req.user._id }).select('employeeSnapshot');
+      const pastPayroll = await Payroll.findOne({ employee: employeeId, user: companyId }).select('employeeSnapshot');
       if (pastPayroll && pastPayroll.employeeSnapshot) {
         employee = {
           _id: employeeId,
@@ -510,7 +517,7 @@ exports.getAnnualEmployeeSummary = async (req, res) => {
     }
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
-    const payrolls = await Payroll.find({ user: req.user._id, employee: employeeId, year })
+    const payrolls = await Payroll.find({ user: companyId, employee: employeeId, year })
       .sort({ month: 1 })
       .lean();
 
@@ -562,7 +569,8 @@ exports.getPFECR = async (req, res) => {
       return res.status(400).json({ message: 'Valid month and year are required' });
     }
 
-    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+    const companyId = req.companyId || req.user._id;
+    const payrolls = await Payroll.find({ user: companyId, month, year })
       .populate({ path: 'employee', select: '+uanNumber firstName lastName employeeId' })
       .sort({ createdAt: 1 })
       .lean();
@@ -632,7 +640,8 @@ exports.getESIMonthlyUpload = async (req, res) => {
       return res.status(400).json({ message: 'Valid month and year are required' });
     }
 
-    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+    const companyId = req.companyId || req.user._id;
+    const payrolls = await Payroll.find({ user: companyId, month, year })
       .populate({ path: 'employee', select: '+esiNumber firstName lastName employeeId dateOfLeaving status' })
       .sort({ createdAt: 1 })
       .lean();
@@ -715,7 +724,8 @@ exports.getBankPaymentBatch = async (req, res) => {
       return res.status(400).json({ message: 'Valid month and year are required' });
     }
 
-    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+    const companyId = req.companyId || req.user._id;
+    const payrolls = await Payroll.find({ user: companyId, month, year })
       .populate({ path: 'employee', select: '+bankDetails.accountNumber firstName lastName employeeId bankDetails.ifscCode bankDetails.bankName bankDetails.accountName email' })
       .sort({ createdAt: 1 })
       .lean();

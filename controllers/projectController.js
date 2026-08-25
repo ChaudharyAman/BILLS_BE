@@ -5,15 +5,15 @@ const Employee = require('../models/Employee');
 const Income = require('../models/Income');
 const Expense = require('../models/Expense');
 
-const validateProjectRefs = async (body, userId) => {
+const validateProjectRefs = async (body, companyId) => {
   if (body.client) {
     if (!mongoose.Types.ObjectId.isValid(body.client)) throw Object.assign(new Error('Invalid client'), { statusCode: 400 });
-    const client = await Client.findOne({ _id: body.client, user: userId });
+    const client = await Client.findOne({ _id: body.client, user: companyId });
     if (!client) throw Object.assign(new Error('Client not found'), { statusCode: 400 });
   }
   if (Array.isArray(body.team) && body.team.length > 0) {
     const validTeam = body.team.filter(id => mongoose.Types.ObjectId.isValid(id));
-    const count = await Employee.countDocuments({ _id: { $in: validTeam }, user: userId });
+    const count = await Employee.countDocuments({ _id: { $in: validTeam }, user: companyId });
     if (count !== validTeam.length) throw Object.assign(new Error('One or more team members were not found'), { statusCode: 400 });
     body.team = validTeam;
   }
@@ -21,10 +21,11 @@ const validateProjectRefs = async (body, userId) => {
 
 exports.getProjects = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 20;
     const skip = (page - 1) * limit;
-    const query = { user: req.user._id };
+    const query = { user: companyId };
     if (req.query.status) query.status = req.query.status;
 
     const total = await Project.countDocuments(query);
@@ -43,8 +44,9 @@ exports.getProjects = async (req, res) => {
 
 exports.createProject = async (req, res) => {
   try {
-    const payload = { ...req.body, user: req.user._id };
-    await validateProjectRefs(payload, req.user._id);
+    const companyId = req.companyId || req.user._id;
+    const payload = { ...req.body, user: companyId };
+    await validateProjectRefs(payload, companyId);
     const project = await Project.create(payload);
     res.status(201).json(project);
   } catch (error) {
@@ -55,11 +57,12 @@ exports.createProject = async (req, res) => {
 
 exports.updateProject = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Project not found' });
     const payload = { ...req.body };
-    await validateProjectRefs(payload, req.user._id);
+    await validateProjectRefs(payload, companyId);
     const project = await Project.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
+      { _id: req.params.id, user: companyId },
       { $set: payload },
       { returnDocument: 'after', runValidators: true }
     ).populate('client', 'name').populate('team', 'employeeId firstName lastName');
@@ -73,13 +76,14 @@ exports.updateProject = async (req, res) => {
 
 exports.deleteProject = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Project not found' });
     const inUse = await Promise.all([
-      Income.exists({ user: req.user._id, project: req.params.id }),
-      Expense.exists({ user: req.user._id, project: req.params.id }),
+      Income.exists({ user: companyId, project: req.params.id }),
+      Expense.exists({ user: companyId, project: req.params.id }),
     ]);
     if (inUse.some(Boolean)) return res.status(400).json({ message: 'Cannot delete a project with transactions' });
-    const project = await Project.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const project = await Project.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!project) return res.status(404).json({ message: 'Project not found' });
     res.json({ message: 'Project deleted successfully' });
   } catch (error) {
@@ -89,13 +93,14 @@ exports.deleteProject = async (req, res) => {
 
 exports.getProjectSummary = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Project not found' });
-    const project = await Project.findOne({ _id: req.params.id, user: req.user._id });
+    const project = await Project.findOne({ _id: req.params.id, user: companyId });
     if (!project) return res.status(404).json({ message: 'Project not found' });
 
     const [incomeAgg, expenseAgg] = await Promise.all([
-      Income.aggregate([{ $match: { user: req.user._id, project: project._id } }, { $group: { _id: null, total: { $sum: '$grandTotal' } } }]),
-      Expense.aggregate([{ $match: { user: req.user._id, project: project._id } }, { $group: { _id: null, total: { $sum: '$grandTotal' } } }]),
+      Income.aggregate([{ $match: { user: companyId, project: project._id } }, { $group: { _id: null, total: { $sum: '$grandTotal' } } }]),
+      Expense.aggregate([{ $match: { user: companyId, project: project._id } }, { $group: { _id: null, total: { $sum: '$grandTotal' } } }]),
     ]);
     const totalIncome = incomeAgg[0]?.total || 0;
     const totalExpenses = expenseAgg[0]?.total || 0;

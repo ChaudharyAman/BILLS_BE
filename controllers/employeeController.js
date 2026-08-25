@@ -720,13 +720,14 @@ const buildSalaryStructureFromCTC = (payload, config) => {
 
 exports.getEmployees = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { status, department } = req.query;
     const parsedPage = Number.parseInt(req.query.page, 10);
     const parsedLimit = Number.parseInt(req.query.limit, 10);
     const page = Number.isInteger(parsedPage) ? Math.max(1, parsedPage) : 1;
     const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(parsedLimit, 100)) : 20;
     const skip = (page - 1) * limit;
-    const query = { user: req.user._id };
+    const query = { user: companyId };
 
     if (status) query.status = status;
     if (department) query.department = department;
@@ -763,9 +764,10 @@ exports.getEmployees = async (req, res) => {
 
 exports.getActiveEmployees = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const month = Number(req.query.month);
     const year = Number(req.query.year);
-    const query = { user: req.user._id };
+    const query = { user: companyId };
 
     if (Number.isInteger(month) && Number.isInteger(year)) {
       const startOfMonth = new Date(year, month - 1, 1);
@@ -809,11 +811,12 @@ exports.getActiveEmployees = async (req, res) => {
 
 exports.createEmployee = async (req, res) => {
   try {
-    const employeeData = { ...req.body, user: req.user._id };
+    const companyId = req.companyId || req.user._id;
+    const employeeData = { ...req.body, user: companyId };
     delete employeeData._id;
     delete employeeData.isDeleted;
     delete employeeData.deletedAt;
-    employeeData.department = await validateDepartment(employeeData.department, req.user._id);
+    employeeData.department = await validateDepartment(employeeData.department, companyId);
 
     const employee = await Employee.create(employeeData);
     res.status(201).json(employee);
@@ -828,11 +831,12 @@ exports.createEmployee = async (req, res) => {
 
 exports.getEmployeeById = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Employee not found' });
     }
 
-    const employee = await Employee.findOne({ _id: req.params.id, user: req.user._id })
+    const employee = await Employee.findOne({ _id: req.params.id, user: companyId })
       .populate('department', 'name code')
       .select('+panNumber +uanNumber +aadharNumber +bankDetails.accountNumber');
 
@@ -846,11 +850,12 @@ exports.getEmployeeById = async (req, res) => {
 
 exports.updateEmployee = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Employee not found' });
     }
 
-    const existingEmployee = await Employee.findOne({ _id: req.params.id, user: req.user._id });
+    const existingEmployee = await Employee.findOne({ _id: req.params.id, user: companyId });
     if (!existingEmployee) return res.status(404).json({ message: 'Employee not found' });
 
     const updateData = { ...req.body };
@@ -869,7 +874,7 @@ exports.updateEmployee = async (req, res) => {
     FORBIDDEN_UPDATE_FIELDS.forEach((field) => delete updateData[field]);
 
     if (Object.prototype.hasOwnProperty.call(updateData, 'department')) {
-      updateData.department = await validateDepartment(updateData.department, req.user._id);
+      updateData.department = await validateDepartment(updateData.department, companyId);
     }
 
     const effectiveCompType = updateData.compensationType || existingEmployee.compensationType || 'monthly_salary';
@@ -923,7 +928,7 @@ exports.updateEmployee = async (req, res) => {
       try {
         const AuditLog = require('../models/AuditLog');
         await AuditLog.create({
-          user: req.user._id,
+          user: companyId,
           actor: req.user._id,
           action: 'SALARY_EDIT',
           targetEmployee: existingEmployee._id,
@@ -941,7 +946,7 @@ exports.updateEmployee = async (req, res) => {
     Object.assign(existingEmployee, updateData);
     await existingEmployee.save();
 
-    const employee = await Employee.findOne({ _id: req.params.id, user: req.user._id })
+    const employee = await Employee.findOne({ _id: req.params.id, user: companyId })
       .populate('department', 'name code')
       .select('+panNumber +uanNumber +aadharNumber +bankDetails.accountNumber');
 
@@ -958,38 +963,39 @@ exports.updateEmployee = async (req, res) => {
 
 exports.deleteEmployee = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const employeeId = req.params.id;
     if (!mongoose.Types.ObjectId.isValid(String(employeeId))) {
       return res.status(404).json({ message: 'Employee not found' });
     }
 
-    const employee = await Employee.findOne({ _id: employeeId, user: req.user._id });
+    const employee = await Employee.findOne({ _id: employeeId, user: companyId });
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     // 1. Find all payroll records to delete their generated expenses
-    const payrolls = await Payroll.find({ user: req.user._id, employee: employeeId }).select('expenseRef');
+    const payrolls = await Payroll.find({ user: companyId, employee: employeeId }).select('expenseRef');
     const expenseIds = payrolls.map(p => p.expenseRef).filter(Boolean);
     if (expenseIds.length > 0) {
-      await Expense.updateMany({ user: req.user._id, _id: { $in: expenseIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
+      await Expense.updateMany({ user: companyId, _id: { $in: expenseIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
     }
 
     // 2. Delete payroll records
-    await Payroll.updateMany({ user: req.user._id, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Payroll.updateMany({ user: companyId, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 3. Delete loans
-    await Loan.updateMany({ user: req.user._id, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Loan.updateMany({ user: companyId, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 4. Delete reimbursement claims
-    await ReimbursementClaim.updateMany({ user: req.user._id, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await ReimbursementClaim.updateMany({ user: companyId, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 5. Pull employee from project teams
     await Project.updateMany(
-      { user: req.user._id, team: employeeId },
+      { user: companyId, team: employeeId },
       { $pull: { team: employeeId } }
     );
 
     // 6. Delete the employee profile itself
-    await Employee.findOneAndUpdate({ _id: employeeId, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Employee.findOneAndUpdate({ _id: employeeId, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     res.json({ message: 'Employee and all associated payrolls, expenses, loans, and claims deleted successfully' });
   } catch (error) {
@@ -1000,6 +1006,7 @@ exports.deleteEmployee = async (req, res) => {
 
 exports.bulkDeleteEmployees = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ message: 'No employee IDs provided' });
@@ -1011,29 +1018,29 @@ exports.bulkDeleteEmployees = async (req, res) => {
     }
 
     // 1. Find all payroll records to delete their generated expenses
-    const payrolls = await Payroll.find({ user: req.user._id, employee: { $in: employeeIds } }).select('expenseRef');
+    const payrolls = await Payroll.find({ user: companyId, employee: { $in: employeeIds } }).select('expenseRef');
     const expenseIds = payrolls.map(p => p.expenseRef).filter(Boolean);
     if (expenseIds.length > 0) {
-      await Expense.updateMany({ user: req.user._id, _id: { $in: expenseIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
+      await Expense.updateMany({ user: companyId, _id: { $in: expenseIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
     }
 
     // 2. Delete payroll records
-    await Payroll.updateMany({ user: req.user._id, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Payroll.updateMany({ user: companyId, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 3. Delete loans
-    await Loan.updateMany({ user: req.user._id, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Loan.updateMany({ user: companyId, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 4. Delete reimbursement claims
-    await ReimbursementClaim.updateMany({ user: req.user._id, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await ReimbursementClaim.updateMany({ user: companyId, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 5. Pull employees from project teams
     await Project.updateMany(
-      { user: req.user._id, team: { $in: employeeIds } },
+      { user: companyId, team: { $in: employeeIds } },
       { $pull: { team: { $in: employeeIds } } }
     );
 
     // 6. Delete the employee profiles
-    const result = await Employee.updateMany({ _id: { $in: employeeIds }, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const result = await Employee.updateMany({ _id: { $in: employeeIds }, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
     const count = result.modifiedCount ?? result.matchedCount ?? employeeIds.length;
     res.json({ 
       message: `${count} employee(s) and all associated payrolls, expenses, loans, and claims deleted successfully`,
@@ -1047,6 +1054,7 @@ exports.bulkDeleteEmployees = async (req, res) => {
 
 exports.importEmployees = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!req.file?.buffer) {
       return res.status(400).json({ message: 'Excel file is required' });
     }
@@ -1068,7 +1076,7 @@ exports.importEmployees = async (req, res) => {
     }
 
     const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', range: rangeStart });
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(companyId);
 
     let imported = 0;
     let skipped = 0;
@@ -1254,7 +1262,7 @@ exports.importEmployees = async (req, res) => {
       let departmentId = null;
       if (departmentName) {
         let dept = await Department.findOne({
-          user: req.user._id,
+          user: companyId,
           name: { $regex: new RegExp(`^${escapeRegex(departmentName)}$`, 'i') },
         });
         if (!dept) {
@@ -1262,12 +1270,12 @@ exports.importEmployees = async (req, res) => {
           if (!baseCode) baseCode = 'DEPT';
           let code = baseCode;
           let counter = 1;
-          while (await Department.exists({ user: req.user._id, code })) {
+          while (await Department.exists({ user: companyId, code })) {
             code = `${baseCode}${counter}`;
             counter += 1;
           }
           dept = await Department.create({
-            user: req.user._id,
+            user: companyId,
             name: departmentName,
             code,
             description: 'Auto-created during employee import',
@@ -1293,11 +1301,11 @@ exports.importEmployees = async (req, res) => {
       if (roleName) {
         const Role = mongoose.model('Role');
         if (mongoose.Types.ObjectId.isValid(roleName)) {
-          roleDoc = await Role.findOne({ _id: roleName, user: req.user._id });
+          roleDoc = await Role.findOne({ _id: roleName, user: companyId });
         }
         if (!roleDoc) {
           roleDoc = await Role.findOne({
-            user: req.user._id,
+            user: companyId,
             name: { $regex: new RegExp(`^${escapeRegex(roleName)}$`, 'i') }
           });
         }
@@ -1318,7 +1326,7 @@ exports.importEmployees = async (req, res) => {
       }
 
       const payload = {
-        user: req.user._id,
+        user: companyId,
         employeeId,
         firstName,
         lastName,
@@ -1452,7 +1460,7 @@ exports.importEmployees = async (req, res) => {
 
       try {
         let created;
-        const existing = await Employee.findOne({ user: req.user._id, employeeId });
+        const existing = await Employee.findOne({ user: companyId, employeeId });
         if (existing) {
           await appendSalaryRevisionIfChanged({
             employee: existing,
@@ -1530,6 +1538,7 @@ exports.importEmployees = async (req, res) => {
 
 exports.exportEmployeesExcel = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     try {
       mongoose.model('Role');
     } catch (e) {
@@ -1541,14 +1550,14 @@ exports.exportEmployeesExcel = async (req, res) => {
       require('../models/Department');
     }
 
-    const employees = await Employee.find({ user: req.user._id })
+    const employees = await Employee.find({ user: companyId })
       .populate('department', 'name code')
       .populate('role', 'name')
       .select('+panNumber +aadharNumber +uanNumber +bankDetails.accountNumber')
       .sort({ createdAt: -1 })
       .lean();
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(companyId);
 
     const standardKeys = new Set([
       '_id', 'user', 'employeeId', 'firstName', 'lastName', 'email', 'phone', 'dateOfBirth', 'gender',
@@ -1696,7 +1705,8 @@ exports.exportEmployeesExcel = async (req, res) => {
 
 exports.downloadImportTemplateExcel = async (req, res) => {
   try {
-    const config = await getOrCreateConfig(req.user._id);
+    const companyId = req.companyId || req.user._id;
+    const config = await getOrCreateConfig(companyId);
     const columns = buildExcelColumns(config);
 
     // Compute Merges dynamically
@@ -1872,11 +1882,12 @@ const processRetroactiveArrears = async ({ userId, employee, effectiveDate, payl
 
 exports.addSalaryRevision = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Employee not found' });
     }
 
-    const employee = await Employee.findOne({ _id: req.params.id, user: req.user._id });
+    const employee = await Employee.findOne({ _id: req.params.id, user: companyId });
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const effectiveDate = parsePossibleDate(req.body.effectiveDate);
@@ -1911,7 +1922,7 @@ exports.addSalaryRevision = async (req, res) => {
       return res.status(400).json({ message: valError });
     }
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(companyId);
     const previousCTC = Number(employee.monthlyCTC) || Number(employee.salaryStructure?.ctc) || 0;
     const previousHourlyRate = Number(employee.hourlyRate) || 0;
     
@@ -1924,7 +1935,7 @@ exports.addSalaryRevision = async (req, res) => {
           return res.status(400).json({ message: 'Invalid Role ID format' });
         }
         const Role = mongoose.model('Role');
-        roleDoc = await Role.findOne({ _id: roleId, user: req.user._id });
+        roleDoc = await Role.findOne({ _id: roleId, user: companyId });
         if (!roleDoc) {
           return res.status(400).json({ message: 'Job Role Template not found' });
         }
@@ -2174,7 +2185,7 @@ exports.addSalaryRevision = async (req, res) => {
     try {
       const AuditLog = require('../models/AuditLog');
       await AuditLog.create({
-        user: req.user._id,
+        user: companyId,
         actor: req.user._id,
         action: 'SALARY_REVISION_ADDED',
         targetEmployee: employee._id,
@@ -2193,7 +2204,7 @@ exports.addSalaryRevision = async (req, res) => {
 
     // Retroactive Salary Revision Arrears Calculation Step (idempotent, server-time aligned)
     await processRetroactiveArrears({
-      userId: req.user._id,
+      userId: companyId,
       employee,
       effectiveDate,
       payload: nextPayload,
@@ -2209,6 +2220,7 @@ exports.addSalaryRevision = async (req, res) => {
 
 exports.updateEmployeeDeclarations = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Employee not found' });
     }
@@ -2216,7 +2228,7 @@ exports.updateEmployeeDeclarations = async (req, res) => {
     const { taxRegime, declarations } = req.body;
 
     const employee = await Employee.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
+      { _id: req.params.id, user: companyId },
       { $set: { taxRegime, declarations } },
       { returnDocument: 'after', runValidators: true }
     )
@@ -2233,12 +2245,13 @@ exports.updateEmployeeDeclarations = async (req, res) => {
 
 exports.updateSalaryRevision = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { id, revisionId } = req.params;
     if (!mongoose.Types.ObjectId.isValid(String(id)) || !mongoose.Types.ObjectId.isValid(String(revisionId))) {
       return res.status(404).json({ message: 'Invalid employee or revision ID' });
     }
 
-    const employee = await Employee.findOne({ _id: id, user: req.user._id });
+    const employee = await Employee.findOne({ _id: id, user: companyId });
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const revision = employee.salaryRevisions.id(revisionId);
@@ -2248,7 +2261,7 @@ exports.updateSalaryRevision = async (req, res) => {
     const revDate = new Date(revision.effectiveDate);
     const paidPayrolls = await Payroll.find({
       employee: employee._id,
-      user: req.user._id,
+      user: companyId,
       status: 'paid'
     });
 
@@ -2298,7 +2311,7 @@ exports.updateSalaryRevision = async (req, res) => {
       return res.status(400).json({ message: valError });
     }
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(companyId);
 
     let revisedRole = employee.role;
     let roleDoc = null;
@@ -2309,7 +2322,7 @@ exports.updateSalaryRevision = async (req, res) => {
           return res.status(400).json({ message: 'Invalid Role ID format' });
         }
         const Role = mongoose.model('Role');
-        roleDoc = await Role.findOne({ _id: roleId, user: req.user._id });
+        roleDoc = await Role.findOne({ _id: roleId, user: companyId });
         if (!roleDoc) {
           return res.status(400).json({ message: 'Job Role Template not found' });
         }
@@ -2482,7 +2495,7 @@ exports.updateSalaryRevision = async (req, res) => {
     try {
       const AuditLog = require('../models/AuditLog');
       await AuditLog.create({
-        user: req.user._id,
+        user: companyId,
         actor: req.user._id,
         action: 'SALARY_REVISION_UPDATED',
         targetEmployee: employee._id,
@@ -2505,12 +2518,13 @@ exports.updateSalaryRevision = async (req, res) => {
 
 exports.deleteSalaryRevision = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { id, revisionId } = req.params;
     if (!mongoose.Types.ObjectId.isValid(String(id)) || !mongoose.Types.ObjectId.isValid(String(revisionId))) {
       return res.status(404).json({ message: 'Invalid employee or revision ID' });
     }
 
-    const employee = await Employee.findOne({ _id: id, user: req.user._id });
+    const employee = await Employee.findOne({ _id: id, user: companyId });
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const revision = employee.salaryRevisions.id(revisionId);
@@ -2520,7 +2534,7 @@ exports.deleteSalaryRevision = async (req, res) => {
     const revDate = new Date(revision.effectiveDate);
     const paidPayrolls = await Payroll.find({
       employee: employee._id,
-      user: req.user._id,
+      user: companyId,
       status: 'paid'
     });
 
@@ -2610,7 +2624,7 @@ exports.deleteSalaryRevision = async (req, res) => {
     try {
       const AuditLog = require('../models/AuditLog');
       await AuditLog.create({
-        user: req.user._id,
+        user: companyId,
         actor: req.user._id,
         action: 'SALARY_REVISION_DELETED',
         targetEmployee: employee._id,
@@ -2633,6 +2647,7 @@ exports.validateCompensationTypePayload = validateCompensationTypePayload;
 
 exports.bulkSalaryRevision = async (req, res) => {
   try {
+    const companyId = req.companyId || req.user._id;
     const { effectiveDate, incrementType, incrementValue, department, designation, employeeIds, revisions, reason, preview, previewOnly } = req.body;
     const isPreview = Boolean(preview || previewOnly);
     const parsedDate = parsePossibleDate(effectiveDate);
@@ -2640,14 +2655,14 @@ exports.bulkSalaryRevision = async (req, res) => {
       return res.status(400).json({ message: 'Valid effectiveDate is required' });
     }
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(companyId);
 
     let targetEmployees = [];
     if (Array.isArray(revisions) && revisions.length > 0) {
       const ids = revisions.map(r => r.employeeId).filter(id => mongoose.Types.ObjectId.isValid(String(id)));
-      targetEmployees = await Employee.find({ _id: { $in: ids }, user: req.user._id });
+      targetEmployees = await Employee.find({ _id: { $in: ids }, user: companyId });
     } else {
-      const filter = { user: req.user._id, status: { $ne: 'terminated' } };
+      const filter = { user: companyId, status: { $ne: 'terminated' } };
       if (department && mongoose.Types.ObjectId.isValid(String(department))) {
         filter.department = department;
       }
@@ -2802,7 +2817,7 @@ exports.bulkSalaryRevision = async (req, res) => {
         try {
           const AuditLog = require('../models/AuditLog');
           await AuditLog.create({
-            user: req.user._id,
+            user: companyId,
             actor: req.user._id,
             action: 'SALARY_REVISION_ADDED',
             targetEmployee: employee._id,
@@ -2824,7 +2839,7 @@ exports.bulkSalaryRevision = async (req, res) => {
 
         // Retroactive Salary Revision Arrears Calculation Step for Bulk Revisions
         await processRetroactiveArrears({
-          userId: req.user._id,
+          userId: companyId,
           employee,
           effectiveDate: parsedDate,
           payload: nextPayload,

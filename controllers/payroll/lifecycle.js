@@ -10,6 +10,7 @@ const Employee = require('../../models/Employee');
 const Expense = require('../../models/Expense');
 const Loan = require('../../models/Loan');
 const AuditLog = require('../../models/AuditLog');
+const { recordCashMovement } = require('../../utils/cashLedgerHelper');
 const { runTransaction } = require('../../utils/withTransaction');
 const { roundAmount, getSalarySplits, buildPayrollSnapshot, calculateGratuityEntitlement } = require('../../utils/payrollMath');
 const { monthName, buildEmployeeName, isValidMonth, isValidYear, getOrCreateConfig, getPayrollCategory } = require('./common');
@@ -299,6 +300,17 @@ const markPayrollAsPaid = async (req, res) => {
       payroll.paymentMethod = req.body.paymentMethod || payroll.paymentMethod || 'Bank Transfer';
       payroll.transactionId = req.body.transactionId || payroll.transactionId;
       payroll.expenseRef = expense._id;
+
+      await recordCashMovement({
+        user: req.user._id,
+        amount: -payroll.netSalary,
+        type: 'payroll_payment',
+        sourceModel: 'Payroll',
+        sourceId: payroll._id,
+        date: paymentDate,
+        notes: `Salary payout for ${buildEmployeeName(payroll.employee, payroll.employeeSnapshot)} (${monthName(payroll.month)} ${payroll.year})`,
+        session,
+      });
 
       payroll.approvalWorkflow.push({
         status: 'paid',
