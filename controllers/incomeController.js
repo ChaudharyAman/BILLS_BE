@@ -3,6 +3,7 @@ const Income = require('../models/Income');
 const User = require('../models/User');
 const Category = require('../models/Category');
 const escapeRegex = require('../utils/escapeRegex');
+const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
 
 const validateIncomeCategory = async (userId, categoryId, subCategoryId) => {
   const result = { category: categoryId || null, subCategory: subCategoryId || null };
@@ -113,7 +114,7 @@ exports.getIncomes = async (req, res) => {
 
     const total = await Income.countDocuments(query);
     const incomesQuery = Income.find(query)
-      .select('-items -terms -privateNotes')
+      .select('-items -terms -privateNotes -attachments.buffer')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent')
       .populate('businessUnit', 'name code color')
@@ -332,6 +333,7 @@ exports.createIncome = async (req, res) => {
       tds_rate,
       tds_amount,
       amountPaid,
+      paymentDate,
       status
     } = req.body;
 
@@ -405,7 +407,9 @@ exports.createIncome = async (req, res) => {
       tds_section: tds_section || '',
       tds_rate: Number(tds_rate) || 0,
       tds_amount: Number(tds_amount) || 0,
-      amountPaid: Number(amountPaid) || 0
+      amountPaid: Number(amountPaid) || 0,
+      paymentDate: paymentDate ? new Date(paymentDate) : (Number(amountPaid) > 0 || status === 'PAID' ? (date || new Date()) : null),
+      attachments: processIncomingAttachments(req.body.attachments, []),
     });
 
     res.status(201).json(income);
@@ -424,6 +428,7 @@ exports.getIncomeById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Income not found' });
     
     const income = await Income.findOne({ _id: req.params.id, user: companyId })
+      .select('-attachments.buffer')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent')
       .populate('businessUnit', 'name code color');
@@ -503,7 +508,8 @@ exports.updateIncome = async (req, res) => {
       tds_section,
       tds_rate,
       tds_amount,
-      amountPaid
+      amountPaid,
+      paymentDate
     } = req.body;
 
     let resolvedVendor = undefined;
@@ -601,6 +607,7 @@ exports.updateIncome = async (req, res) => {
       tds_rate: tds_rate !== undefined ? Number(tds_rate) : income.tds_rate,
       tds_amount: tdsAmt,
       amountPaid: paidAmt,
+      paymentDate: paymentDate !== undefined ? (paymentDate ? new Date(paymentDate) : null) : (paidAmt > 0 && !income.paymentDate ? (date || income.date || new Date()) : income.paymentDate),
       net_received_payment: netReceived,
       balanceDue: balDue
     };
@@ -615,6 +622,10 @@ exports.updateIncome = async (req, res) => {
       updateData.subCategory = categoryData.subCategory;
     }
 
+    if (req.body.attachments !== undefined) {
+      updateData.attachments = processIncomingAttachments(req.body.attachments, income.attachments);
+    }
+
     // Remove undefined fields so we don't overwrite with nulls
     Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
 
@@ -623,6 +634,7 @@ exports.updateIncome = async (req, res) => {
       { $set: updateData },
       { returnDocument: 'after', runValidators: true }
     )
+      .select('-attachments.buffer')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent');
 
@@ -630,6 +642,27 @@ exports.updateIncome = async (req, res) => {
   } catch (error) {
     console.error('Error updating income', error);
     res.status(error.statusCode || 500).json({ message: error.message || 'Server Error updating income' });
+  }
+};
+
+// @desc    Get income attachment file stream
+// @route   GET /api/incomes/:id/attachments/:attachmentId
+// @access  Private
+exports.getIncomeAttachment = async (req, res) => {
+  try {
+    const companyId = req.companyId || req.user?._id;
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Income not found' });
+
+    const income = await Income.findOne({ _id: req.params.id, user: companyId });
+    if (!income) return res.status(404).json({ message: 'Income not found' });
+
+    const attachment = income.attachments.id(req.params.attachmentId) || income.attachments[req.params.attachmentId];
+    if (!attachment) return res.status(404).json({ message: 'Attachment not found' });
+
+    return streamAttachment(res, attachment);
+  } catch (error) {
+    console.error('getIncomeAttachment error:', error);
+    res.status(500).json({ message: error.message });
   }
 };
 

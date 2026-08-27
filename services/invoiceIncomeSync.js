@@ -136,6 +136,9 @@ async function syncIncomeFromInvoice(invoice, session = null) {
     terms: invoice.terms || '',
     privateNotes: invoice.notes || '',
     status: mapInvoiceStatusToIncomeStatus(invoice),
+    paymentDate: invoice.paymentDate || (isFullyPaid || isPartial ? (invoice.date || new Date()) : null),
+    amountPaid: invoice.advancePaid !== undefined ? Number(invoice.advancePaid) : (isFullyPaid ? Number(invoice.grandTotal) : 0),
+    balanceDue: invoice.balanceDue !== undefined ? Number(invoice.balanceDue) : 0,
   };
 
   const query = Income.findOneAndUpdate(

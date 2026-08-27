@@ -34,6 +34,7 @@ const buildAuthResponse = (req) => {
       username: user.username,
       email: user.email,
       phone: user.phone,
+      avatar: user.avatar || '',
       role: user.role,
       subscription: req.ownerUser?.subscription || user.subscription,
       isOwner: user.isOwner !== false,
@@ -125,7 +126,7 @@ exports.updateProfile = async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    const { username, email, phone, currentPassword, newPassword } = req.body;
+    const { username, email, phone, avatar, currentPassword, newPassword } = req.body;
 
     // If changing password, verify current password first
     if (newPassword) {
@@ -147,6 +148,7 @@ exports.updateProfile = async (req, res) => {
       user.email = email.toLowerCase();
     }
     if (phone !== undefined) user.phone = phone;
+    if (avatar !== undefined) user.avatar = avatar;
 
     const updated = await user.save();
     res.json({
@@ -155,6 +157,7 @@ exports.updateProfile = async (req, res) => {
         username: updated.username,
         email: updated.email,
         phone: updated.phone,
+        avatar: updated.avatar || '',
         role: updated.role,
         subscription: updated.subscription
       }

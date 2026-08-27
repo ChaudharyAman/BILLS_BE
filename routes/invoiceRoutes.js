@@ -12,6 +12,7 @@ router.get('/', protect, authorize('invoices', 'view'), invoiceController.getInv
 router.get('/reports/gst', protect, authorize('reports', 'view'), premium, invoiceController.getGSTReport);
 router.get('/reports/revenue', protect, authorize('reports', 'view'), premium, invoiceController.getRevenueReport);
 router.get('/:id', protect, authorize('invoices', 'view'), invoiceController.getInvoiceById);
+router.get('/:id/attachments/:attachmentId', protect, authorize('invoices', 'view'), invoiceController.getInvoiceAttachment);
 router.post('/', protect, authorize('invoices', 'create'), invoiceController.createInvoice);
 router.post('/bulk', protect, authorize('invoices', 'create'), invoiceController.bulkCreateInvoices);
 router.put('/:id', protect, authorize('invoices', 'edit'), invoiceController.updateInvoice);

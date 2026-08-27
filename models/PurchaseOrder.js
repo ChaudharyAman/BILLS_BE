@@ -1,6 +1,14 @@
 const mongoose = require('mongoose');
 const softDeletePlugin = require('../middleware/softDeletePlugin');
 
+const AttachmentSchema = new mongoose.Schema({
+  originalName: { type: String, required: true },
+  mimeType:     { type: String, required: true },
+  sizeBytes:    { type: Number, required: true },
+  buffer:       { type: Buffer, required: true },
+  uploadedAt:   { type: Date, default: Date.now },
+});
+
 const PurchaseOrderItemSchema = new mongoose.Schema({
   itemRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
   name: { type: String, required: true },
@@ -89,6 +97,8 @@ const PurchaseOrderSchema = new mongoose.Schema({
     default: null,
     index: true,
   },
+
+  attachments: [AttachmentSchema],
 }, { timestamps: true });
 
 PurchaseOrderSchema.index({ user: 1, poNumber: 1 }, { unique: true });

@@ -3,6 +3,14 @@ const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 
 
+const AttachmentSchema = new mongoose.Schema({
+  originalName: { type: String, required: true },
+  mimeType:     { type: String, required: true },
+  sizeBytes:    { type: Number, required: true },
+  buffer:       { type: Buffer, required: true },
+  uploadedAt:   { type: Date, default: Date.now },
+});
+
 // Sub-schema for Invoice Items (Snapshot)
 const InvoiceItemSchema = new mongoose.Schema({
 
@@ -213,6 +221,8 @@ const InvoiceSchema = new mongoose.Schema({
     default: null,
     index: true,
   },
+
+  attachments: [AttachmentSchema],
 
 }, { timestamps: true });
 
