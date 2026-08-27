@@ -3,7 +3,7 @@ const { parseInvoice } = require('../utils/invoiceParser');
 const { renderPdfPagesToImages } = require('./pdfVisionRenderer');
 
 const NVIDIA_BASE_URL = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
-const NVIDIA_MODEL = process.env.NVIDIA_INVOICE_MODEL || process.env.NVIDIA_MODEL || 'meta/llama-3.1-8b-instruct';
+const NVIDIA_MODEL = process.env.NVIDIA_INVOICE_MODEL || process.env.NVIDIA_MODEL || 'meta/llama-3.2-11b-vision-instruct';
 const NVIDIA_VISION_MODEL = process.env.NVIDIA_INVOICE_VISION_MODEL || 'meta/llama-3.2-11b-vision-instruct';
 const TEXT_CHUNK_LINE_LIMIT = Number(process.env.NVIDIA_INVOICE_TEXT_CHUNK_LINES || 80);
 const TEXT_CHUNK_LIMIT = Number(process.env.NVIDIA_INVOICE_TEXT_CHUNK_LIMIT || 6);
