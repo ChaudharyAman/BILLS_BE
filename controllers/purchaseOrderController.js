@@ -9,6 +9,7 @@ const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseImportedDate } = require('../utils/dateRange');
+const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
@@ -196,6 +197,7 @@ exports.getPurchaseOrders = async (req, res) => {
 
     const total = await PurchaseOrder.countDocuments(query);
     const purchaseOrdersQuery = PurchaseOrder.find(query)
+      .select('-attachments.buffer')
       .lean()
       .sort({ createdAt: -1 });
 
@@ -222,7 +224,7 @@ exports.getPurchaseOrderById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Purchase Order not found' });
     }
-    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId });
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId }).select('-attachments.buffer');
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
     res.json(purchaseOrder);
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -329,6 +331,7 @@ exports.createPurchaseOrder = async (req, res) => {
       refNumber: refNumber || '',
       status: status || 'DRAFT', shippingAddress, transport,
       placeOfSupply: vendorState, reverseCharge: !!reverseCharge, notes, privateNotes, terms,
+      attachments: processIncomingAttachments(req.body.attachments, []),
     });
 
     const saved = await purchaseOrder.save();
@@ -343,16 +346,11 @@ exports.createPurchaseOrder = async (req, res) => {
 exports.updatePurchaseOrder = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const { vendorRef, invoiceType, items, date, validUntil, shippingAddress, transport,
-      refNumber,
-      placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
-      customChargeLabel, discountTotal, status, notes, privateNotes, terms, reverseCharge } = req.body;
-
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Purchase Order not found' });
+    }
     const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
-    if (purchaseOrder.status === 'BILLED') {
-      return res.status(400).json({ message: 'Billed purchase orders cannot be edited.' });
-    }
 
     // --- Subscription Plan Check for Edits ---
     const userObj = await User.findById(companyId);
@@ -361,29 +359,27 @@ exports.updatePurchaseOrder = async (req, res) => {
     if (plan === 'free') {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const conditions = {
-        user: companyId,
-        updatedAt: { $gte: startOfMonth },
-        $expr: { $gt: ["$updatedAt", "$createdAt"] } 
-      };
       
-      const editedPurchaseOrdersCount = await PurchaseOrder.countDocuments(conditions);
-
+      let editedPOCount = 0;
       let otherEditsCount = 0;
       try {
+        editedPOCount = await PurchaseOrder.countDocuments({
+          user: companyId,
+          updatedAt: { $gte: startOfMonth },
+          $expr: { $gt: ["$updatedAt", "$createdAt"] }
+        });
         const InvoiceModel = require('../models/Invoice');
-        const ProformaModel = require('../models/Proforma');
         const QuoteModel = require('../models/Quote');
-        const [inv, prf, qt] = await Promise.all([
-          InvoiceModel.countDocuments(conditions),
-          ProformaModel.countDocuments(conditions),
-          QuoteModel.countDocuments(conditions)
+        const ProformaModel = require('../models/Proforma');
+        const [inv, qt, prf] = await Promise.all([
+          InvoiceModel.countDocuments({ user: companyId, updatedAt: { $gte: startOfMonth }, $expr: { $gt: ["$updatedAt", "$createdAt"] } }),
+          QuoteModel.countDocuments({ user: companyId, updatedAt: { $gte: startOfMonth }, $expr: { $gt: ["$updatedAt", "$createdAt"] } }),
+          ProformaModel.countDocuments({ user: companyId, updatedAt: { $gte: startOfMonth }, $expr: { $gt: ["$updatedAt", "$createdAt"] } }),
         ]);
-        otherEditsCount = inv + prf + qt;
+        otherEditsCount = inv + qt + prf;
       } catch (e) {}
       
-      const totalEditsThisMonth = editedPurchaseOrdersCount + otherEditsCount;
-
+      const totalEditsThisMonth = editedPOCount + otherEditsCount;
       const isAlreadyEditedThisMonth = purchaseOrder.updatedAt && purchaseOrder.updatedAt >= startOfMonth && purchaseOrder.updatedAt > purchaseOrder.createdAt;
 
       if (totalEditsThisMonth >= 5 && !isAlreadyEditedThisMonth) {
@@ -392,9 +388,14 @@ exports.updatePurchaseOrder = async (req, res) => {
     }
     // -----------------------------------------
 
+    const { vendorRef, invoiceType, items, date, validUntil, shippingAddress, transport,
+      refNumber,
+      placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
+      customChargeLabel, discountTotal, status, notes, privateNotes, terms, reverseCharge } = req.body;
+
     const vendor = await resolveVendor({
       userId: companyId,
-      vendorRef: req.body.vendorRef,
+      vendorRef,
       vendorName: req.body.vendorName,
       vendorGST: req.body.vendorGST,
       placeOfSupply,
@@ -464,6 +465,9 @@ exports.updatePurchaseOrder = async (req, res) => {
       placeOfSupply: vendorState, reverseCharge: !!reverseCharge, notes, privateNotes, terms,
     });
     if (status) purchaseOrder.status = status;
+    if (req.body.attachments !== undefined) {
+      purchaseOrder.attachments = processIncomingAttachments(req.body.attachments, purchaseOrder.attachments);
+    }
 
     const saved = await purchaseOrder.save();
     res.json(saved);
@@ -745,6 +749,26 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
 
     res.status(201).json({ message: `Successfully imported ${createdPurchaseOrders.length} purchaseOrders.`, count: createdPurchaseOrders.length });
   } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getPurchaseOrderAttachment = async (req, res) => {
+  try {
+    const companyId = req.companyId || req.user?._id;
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Purchase Order not found' });
+    }
+
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId });
+    if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
+
+    const attachment = purchaseOrder.attachments.id(req.params.attachmentId) || purchaseOrder.attachments[req.params.attachmentId];
+    if (!attachment) return res.status(404).json({ message: 'Attachment not found' });
+
+    return streamAttachment(res, attachment);
+  } catch (error) {
+    console.error('getPurchaseOrderAttachment error:', error);
     res.status(500).json({ message: error.message });
   }
 };

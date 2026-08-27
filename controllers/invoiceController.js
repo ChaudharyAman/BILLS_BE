@@ -14,6 +14,7 @@ const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalcul
 const { calculateTds } = require('../utils/tdsCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseOptionalDateRange, parseImportedDate } = require('../utils/dateRange');
+const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
 
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
@@ -467,7 +468,7 @@ exports.getInvoices = async (req, res) => {
 
     const invoicesQuery = Invoice.find(query)
       .populate('user', 'username')
-      .select('-items -terms -shippingAddress')
+      .select('-items -terms -shippingAddress -attachments.buffer')
       .lean()
       .sort(sortObj);
 
@@ -496,7 +497,7 @@ exports.getInvoiceById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Invoice not found' });
     }
-    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId });
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId }).select('-attachments.buffer');
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
     res.json(invoice);
   } catch (error) {
@@ -733,6 +734,7 @@ exports.createInvoice = async (req, res) => {
         terms,
         exciseDuty: buildExciseDutySnapshot(exciseDuty, totalExcise),
         purchaseOrderRef: linkedPo ? linkedPo._id : undefined,
+        attachments: processIncomingAttachments(req.body.attachments, []),
       });
 
       try {
@@ -1015,6 +1017,10 @@ exports.updateInvoice = async (req, res) => {
     invoice.terms = terms;
     invoice.exciseDuty = buildExciseDutySnapshot(exciseDuty || invoice.exciseDuty, totalExcise);
     invoice.status = finalStatus;
+
+    if (req.body.attachments !== undefined) {
+      invoice.attachments = processIncomingAttachments(req.body.attachments, invoice.attachments);
+    }
 
     const newPoId = purchaseOrderRef;
     const newIsActive = ACTIVE_INVOICE_STATUSES.includes(finalStatus);
@@ -1769,5 +1775,25 @@ exports.getAccountStatement = async (req, res) => {
       return res.status(400).json({ message: error.message });
     }
     res.status(500).json({ message: 'Error fetching Account Statement', error: error.message });
+  }
+};
+
+exports.getInvoiceAttachment = async (req, res) => {
+  try {
+    const companyId = req.companyId || req.user?._id;
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId });
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+
+    const attachment = invoice.attachments.id(req.params.attachmentId) || invoice.attachments[req.params.attachmentId];
+    if (!attachment) return res.status(404).json({ message: 'Attachment not found' });
+
+    return streamAttachment(res, attachment);
+  } catch (error) {
+    console.error('getInvoiceAttachment error:', error);
+    res.status(500).json({ message: error.message });
   }
 };

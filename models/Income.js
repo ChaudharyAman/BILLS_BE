@@ -1,6 +1,14 @@
 const mongoose = require('mongoose');
 const softDeletePlugin = require('../middleware/softDeletePlugin');
 
+const AttachmentSchema = new mongoose.Schema({
+  originalName: { type: String, required: true },
+  mimeType:     { type: String, required: true },
+  sizeBytes:    { type: Number, required: true },
+  buffer:       { type: Buffer, required: true },
+  uploadedAt:   { type: Date, default: Date.now },
+});
+
 const IncomeItemSchema = new mongoose.Schema({
   itemRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
   name: { type: String, required: true },
@@ -88,6 +96,8 @@ const IncomeSchema = new mongoose.Schema({
   net_received_payment: { type: Number, default: 0 },
   amountPaid: { type: Number, default: 0 },
   balanceDue: { type: Number, default: 0 },
+
+  attachments: [AttachmentSchema],
 
 }, { timestamps: true });
 

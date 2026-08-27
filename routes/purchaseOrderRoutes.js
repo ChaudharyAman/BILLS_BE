@@ -10,6 +10,7 @@ router.post('/:id/convert', protect, authorize('purchaseOrders', 'approve'), pur
 router.post('/:id/receive', protect, authorize('purchaseOrders', 'approve'), purchaseOrderController.markPurchaseOrderReceived);
 router.put('/:id/status', protect, authorize('purchaseOrders', 'approve'), purchaseOrderController.updatePurchaseOrderStatus);
 router.get('/:id', protect, authorize('purchaseOrders', 'view'), purchaseOrderController.getPurchaseOrderById);
+router.get('/:id/attachments/:attachmentId', protect, authorize('purchaseOrders', 'view'), purchaseOrderController.getPurchaseOrderAttachment);
 router.put('/:id', protect, authorize('purchaseOrders', 'edit'), purchaseOrderController.updatePurchaseOrder);
 router.delete('/:id', protect, authorize('purchaseOrders', 'delete'), purchaseOrderController.deletePurchaseOrder);
 

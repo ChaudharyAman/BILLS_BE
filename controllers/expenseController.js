@@ -6,6 +6,7 @@ const CashLedgerEntry = require('../models/CashLedgerEntry');
 const { recordCashMovement, roundTwo } = require('../utils/cashLedgerHelper');
 const escapeRegex = require('../utils/escapeRegex');
 const { updateBudgetSpent, checkBudgetWarning } = require('./budgetController');
+const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
 
 async function syncExpenseCashMovement(expense, paymentDate = new Date(), session = null) {
   if (!expense || !expense.user || !expense._id) return;
@@ -212,7 +213,7 @@ exports.getExpenses = async (req, res) => {
 
     const total = await Expense.countDocuments(query);
     const expensesQuery = Expense.find(query)
-      .select('-items -terms -privateNotes')
+      .select('-items -terms -privateNotes -attachments.buffer')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent')
       .lean()
@@ -511,7 +512,8 @@ exports.createExpense = async (req, res) => {
       tds_rate,
       tds_amount,
       tds_nature,
-      net_vendor_payment: payableAmount
+      net_vendor_payment: payableAmount,
+      attachments: processIncomingAttachments(req.body.attachments, []),
     });
 
     if (expense.category) await updateBudgetSpent(expense.category, companyId);
@@ -536,6 +538,7 @@ exports.getExpenseById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Expense not found' });
     
     const expense = await Expense.findOne({ _id: req.params.id, user: companyId })
+      .select('-attachments.buffer')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent');
 
@@ -718,6 +721,10 @@ exports.updateExpense = async (req, res) => {
       expense[key] = updateData[key];
     });
 
+    if (req.body.attachments !== undefined) {
+      expense.attachments = processIncomingAttachments(req.body.attachments, expense.attachments);
+    }
+
     // Also update camelCase TDS fields directly to keep in sync
     expense.tdsApplicable = finalTdsApplicable;
     expense.tdsSection = ['194C', '194J', '194I', '194A', 'Manual'].includes(finalTdsSection) ? finalTdsSection : 'Manual';
@@ -728,6 +735,7 @@ exports.updateExpense = async (req, res) => {
     await expense.save();
 
     expense = await Expense.findOne({ _id: expense._id, user: companyId })
+      .select('-attachments.buffer')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent');
 
@@ -745,6 +753,27 @@ exports.updateExpense = async (req, res) => {
       return res.status(422).json({ message: error.message });
     }
     res.status(error.statusCode || 500).json({ message: error.message || 'Server Error updating expense' });
+  }
+};
+
+// @desc    Get expense attachment file stream
+// @route   GET /api/expenses/:id/attachments/:attachmentId
+// @access  Private
+exports.getExpenseAttachment = async (req, res) => {
+  try {
+    const companyId = req.companyId || req.user?._id;
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Expense not found' });
+
+    const expense = await Expense.findOne({ _id: req.params.id, user: companyId });
+    if (!expense) return res.status(404).json({ message: 'Expense not found' });
+
+    const attachment = expense.attachments.id(req.params.attachmentId) || expense.attachments[req.params.attachmentId];
+    if (!attachment) return res.status(404).json({ message: 'Attachment not found' });
+
+    return streamAttachment(res, attachment);
+  } catch (error) {
+    console.error('getExpenseAttachment error:', error);
+    res.status(500).json({ message: error.message });
   }
 };
 
