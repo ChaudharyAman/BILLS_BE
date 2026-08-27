@@ -23,12 +23,12 @@ exports.getSettings = async (req, res) => {
     if (!companyId) {
         return res.status(401).json({ message: 'Not authorized' });
     }
-    let settings = await Settings.findOne({ user: companyId }).populate('user', 'username email phone');
+    let settings = await Settings.findOne({ user: companyId }).populate('user', 'username email phone avatar');
     if (!settings) {
       settings = new Settings({ user: companyId });
       await settings.save();
       // Re-fetch to populate after creation
-      settings = await Settings.findById(settings._id).populate('user', 'username email phone');
+      settings = await Settings.findById(settings._id).populate('user', 'username email phone avatar');
     }
     // Return masked secrets — these are write-only fields
     res.json(maskIntegrationSecrets(settings));
