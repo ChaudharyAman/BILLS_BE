@@ -5,10 +5,13 @@ const {
   createExpense,
   getExpenseById,
   getExpenseAttachment,
+  getVendorAccountStatement,
   updateExpense,
   deleteExpense
 } = require('../controllers/expenseController');
-const { protect, authorize } = require('../middleware/authMiddleware');
+const { protect, authorize, premium } = require('../middleware/authMiddleware');
+
+router.get('/accounts/statements', protect, authorize('expenses', 'view'), premium, getVendorAccountStatement);
 
 router.route('/')
   .get(protect, authorize('expenses', 'view'), getExpenses)

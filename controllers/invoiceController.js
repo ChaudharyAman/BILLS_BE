@@ -704,6 +704,7 @@ exports.createInvoice = async (req, res) => {
         grandTotal,
         advancePaid: finalAdvance,
         balanceDue: finalBalance,
+        paymentDate: req.body.paymentDate ? new Date(req.body.paymentDate) : (finalAdvance > 0 ? (date || new Date()) : null),
         status: finalStatus,
         shippingAddress: resolvedShippingAddress,
         transport,
@@ -988,6 +989,11 @@ exports.updateInvoice = async (req, res) => {
     invoice.grandTotal = grandTotal;
     invoice.advancePaid = finalAdvance;
     invoice.balanceDue = finalBalance;
+    if (req.body.paymentDate !== undefined) {
+      invoice.paymentDate = req.body.paymentDate ? new Date(req.body.paymentDate) : null;
+    } else if (finalAdvance > 0 && !invoice.paymentDate) {
+      invoice.paymentDate = date || new Date();
+    }
     invoice.shippingAddress = resolvedShippingAddress;
     invoice.transport = transport;
     invoice.bankDetails = bankDetails;

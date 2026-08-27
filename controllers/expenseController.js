@@ -811,3 +811,60 @@ exports.deleteExpense = async (req, res) => {
     res.status(500).json({ message: 'Server Error deleting expense' });
   }
 };
+
+// @desc    Get Vendor Account Statement
+// @route   GET /api/expenses/accounts/statements
+// @access  Private (Premium)
+exports.getVendorAccountStatement = async (req, res) => {
+  try {
+    const companyId = req.companyId || req.user._id;
+    const { vendorId, startDate, endDate } = req.query;
+
+    if (!vendorId) {
+      return res.status(400).json({ message: 'vendorId is required for an account statement.' });
+    }
+
+    const matchStage = {
+      user: new mongoose.Types.ObjectId(String(companyId)),
+      "vendor.vendorRef": new mongoose.Types.ObjectId(String(vendorId)),
+      status: { $in: ['PAID', 'PARTIAL', 'UNPAID'] },
+      isDeleted: { $ne: true },
+    };
+
+    if (startDate || endDate) {
+      matchStage.date = {};
+      if (startDate) matchStage.date.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        matchStage.date.$lte = end;
+      }
+    }
+
+    const expenses = await Expense.find(matchStage)
+      .sort({ date: 1 })
+      .select('expenseNumber date paymentMethod grandTotal amountPaid balanceDue status terms privateNotes items category')
+      .populate('category', 'name')
+      .lean();
+
+    const totals = await Expense.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: null,
+          totalBilled: { $sum: "$grandTotal" },
+          totalPaid: { $sum: { $ifNull: ["$amountPaid", { $subtract: ["$grandTotal", "$balanceDue"] }] } },
+          totalBalance: { $sum: "$balanceDue" }
+        }
+      }
+    ]);
+
+    const summary = totals.length > 0 ? totals[0] : { totalBilled: 0, totalPaid: 0, totalBalance: 0 };
+    delete summary._id;
+
+    res.json({ summary, expenses });
+  } catch (error) {
+    console.error('Error fetching Vendor Account Statement:', error);
+    res.status(500).json({ message: 'Error fetching Vendor Account Statement', error: error.message });
+  }
+};

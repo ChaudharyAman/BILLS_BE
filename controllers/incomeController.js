@@ -333,6 +333,7 @@ exports.createIncome = async (req, res) => {
       tds_rate,
       tds_amount,
       amountPaid,
+      paymentDate,
       status
     } = req.body;
 
@@ -407,6 +408,7 @@ exports.createIncome = async (req, res) => {
       tds_rate: Number(tds_rate) || 0,
       tds_amount: Number(tds_amount) || 0,
       amountPaid: Number(amountPaid) || 0,
+      paymentDate: paymentDate ? new Date(paymentDate) : (Number(amountPaid) > 0 || status === 'PAID' ? (date || new Date()) : null),
       attachments: processIncomingAttachments(req.body.attachments, []),
     });
 
@@ -506,7 +508,8 @@ exports.updateIncome = async (req, res) => {
       tds_section,
       tds_rate,
       tds_amount,
-      amountPaid
+      amountPaid,
+      paymentDate
     } = req.body;
 
     let resolvedVendor = undefined;
@@ -604,6 +607,7 @@ exports.updateIncome = async (req, res) => {
       tds_rate: tds_rate !== undefined ? Number(tds_rate) : income.tds_rate,
       tds_amount: tdsAmt,
       amountPaid: paidAmt,
+      paymentDate: paymentDate !== undefined ? (paymentDate ? new Date(paymentDate) : null) : (paidAmt > 0 && !income.paymentDate ? (date || income.date || new Date()) : income.paymentDate),
       net_received_payment: netReceived,
       balanceDue: balDue
     };

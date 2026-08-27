@@ -96,6 +96,7 @@ const IncomeSchema = new mongoose.Schema({
   net_received_payment: { type: Number, default: 0 },
   amountPaid: { type: Number, default: 0 },
   balanceDue: { type: Number, default: 0 },
+  paymentDate: { type: Date, default: null },
 
   attachments: [AttachmentSchema],
 
