@@ -45,8 +45,8 @@ const computeStatutoryAndTax = ({
   // 2. Gratuity Calculation
   const gratuity = gratuityEnabled ? roundAmount(basicMaster * config.gratuityRate) : 0;
 
-  // 3. LWF Calculation — deducted semi-annually (June/Month 6 & Dec/Month 12) unless set to monthly
-  const isLwfCycleMonth = !src._month || src._month % 6 === 0 || config.lwfFrequency === 'monthly';
+  // 3. LWF Calculation — Labour Welfare Fund currently only supports the statutory semi-annual (June/December, month % 6 === 0) cycle
+  const isLwfCycleMonth = !src._month || src._month % 6 === 0;
   const lwfEmployer = (lwfEnabled && gross > 0 && isLwfCycleMonth) ? roundAmount(config.lwfEmployer) : 0;
   const lwfEmployee = (lwfEnabled && gross > 0 && isLwfCycleMonth) ? roundAmount(config.lwfEmployee) : 0;
 

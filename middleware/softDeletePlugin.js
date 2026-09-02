@@ -9,7 +9,6 @@ const UNIQUE_FIELDS_MAP = {
   Role: ['name'],
   Project: ['code'],
   Category: ['name'],
-  PayrollComponent: ['name'],
   Income: ['incomeNumber'],
   Expense: ['expenseNumber'],
   LeaveType: ['name', 'code']

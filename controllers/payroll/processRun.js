@@ -34,6 +34,25 @@ const processPayroll = async (req, res) => {
     if (!isAsync) {
       const { processBatchJob } = require('../../workers/payrollWorker');
       const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+      if (mongoose.connection.readyState === 1) {
+        await PayrollBatchRun.create({
+          jobId,
+          user: tenantUserId,
+          month: Number(month),
+          year: Number(year),
+          saveAsDraft: Boolean(saveAsDraft),
+          status: 'processing',
+          total: employeePayloads.length,
+          processed: 0,
+          progressPercent: 0,
+          success: [],
+          errors: [],
+          skippedNoActivity: [],
+          startedAt: new Date(),
+        }).catch(err => console.error('Error creating synchronous PayrollBatchRun:', err));
+      }
+
       const batchResult = await processBatchJob({
         jobId,
         userId: tenantUserId,
@@ -69,7 +88,11 @@ const processPayroll = async (req, res) => {
 const getBatchJobStatus = async (req, res) => {
   try {
     const { jobId } = req.params;
-    const batchRun = await PayrollBatchRun.findOne({ jobId, user: req.user._id });
+    const tenantUserId = req.companyId || req.user._id;
+    const batchRun = await PayrollBatchRun.findOne({
+      jobId,
+      user: { $in: [req.user._id, tenantUserId].filter(Boolean) }
+    });
     if (!batchRun) {
       return res.status(404).json({ message: 'Payroll batch job not found' });
     }
