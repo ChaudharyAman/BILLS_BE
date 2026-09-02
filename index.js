@@ -84,7 +84,6 @@ app.use('/api/reimbursements', require('./routes/reimbursementRoutes'));
 app.use('/api/leaves', require('./routes/leaveRoutes'));
 app.use('/api/payroll', require('./routes/payrollRoutes'));
 app.use('/api/payroll-variable-transactions', require('./routes/payrollVariableTransactionRoutes'));
-app.use('/api/payroll-components', require('./routes/payrollComponentRoutes'));
 app.use('/api/roles', require('./routes/roleRoutes'));
 app.use('/api/budgets', require('./routes/budgetRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));

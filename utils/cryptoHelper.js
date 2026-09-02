@@ -243,7 +243,28 @@ exports.decryptPIIField = (ciphertext) => {
   try {
     return exports.decryptPayload({ salt, iv, authTag, data }, secret);
   } catch (err) {
+    // If configured secret fails (e.g. key changed), try dev fallback secret for dev/migrated records
+    const fallbackSecret = 'dev-pii-encryption-key-32-bytes-long!!';
+    if (secret !== fallbackSecret) {
+      try {
+        return exports.decryptPayload({ salt, iv, authTag, data }, fallbackSecret);
+      } catch (_) {
+        // Fallback also failed
+      }
+    }
     console.error('Failed to decrypt PII field:', err.message);
     return ciphertext;
   }
+};
+
+exports.decryptEmployeePII = (doc) => {
+  if (!doc) return doc;
+  if (doc.panNumber) doc.panNumber = exports.decryptPIIField(doc.panNumber);
+  if (doc.uanNumber) doc.uanNumber = exports.decryptPIIField(doc.uanNumber);
+  if (doc.aadharNumber) doc.aadharNumber = exports.decryptPIIField(doc.aadharNumber);
+  if (doc.esiNumber) doc.esiNumber = exports.decryptPIIField(doc.esiNumber);
+  if (doc.bankDetails && doc.bankDetails.accountNumber) {
+    doc.bankDetails.accountNumber = exports.decryptPIIField(doc.bankDetails.accountNumber);
+  }
+  return doc;
 };

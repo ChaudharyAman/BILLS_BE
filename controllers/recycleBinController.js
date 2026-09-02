@@ -17,14 +17,13 @@ const Role = require('../models/Role');
 const ReimbursementClaim = require('../models/ReimbursementClaim');
 const RecurringTransaction = require('../models/RecurringTransaction');
 const Payroll = require('../models/Payroll');
-const PayrollComponent = require('../models/PayrollComponent');
 const PayrollVariableTransaction = require('../models/PayrollVariableTransaction');
 const LeaveRequest = require('../models/LeaveRequest');
 const BankStatement = require('../models/BankStatement');
 const Loan = require('../models/Loan');
 
 const MODELS_MAP = {
-  Invoice, Quote, Proforma, PurchaseOrder, Expense, Income, Client, Item, Employee, Project, Asset, Liability, Budget, Category, Department, Role, ReimbursementClaim, RecurringTransaction, Payroll, PayrollComponent, PayrollVariableTransaction, LeaveRequest, BankStatement, Loan
+  Invoice, Quote, Proforma, PurchaseOrder, Expense, Income, Client, Item, Employee, Project, Asset, Liability, Budget, Category, Department, Role, ReimbursementClaim, RecurringTransaction, Payroll, PayrollVariableTransaction, LeaveRequest, BankStatement, Loan
 };
 
 function getDisplayName(doc, type) {
@@ -68,8 +67,6 @@ function getDisplayName(doc, type) {
       return `Recurring Transaction: ${doc.description || 'Unnamed'}`;
     case 'Payroll':
       return `Payroll: Month ${doc.month}/${doc.year}`;
-    case 'PayrollComponent':
-      return `Payroll Component: ${doc.name || 'Unnamed'}`;
     case 'PayrollVariableTransaction':
       return `Payroll Var Transaction: ${doc.description || 'Unnamed'}`;
     case 'LeaveRequest':

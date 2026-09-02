@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const Employee = require('../models/Employee');
 const Department = require('../models/Department');
 const Payroll = require('../models/Payroll');
-const PayrollConfig = require('../models/PayrollConfig');
+const { getOrCreateConfig } = require('./payroll/common');
 const Expense = require('../models/Expense');
 const Loan = require('../models/Loan');
 const ReimbursementClaim = require('../models/ReimbursementClaim');
@@ -11,6 +11,8 @@ const escapeRegex = require('../utils/escapeRegex');
 const { XLSX, setHeaderStyle, sendWorkbook } = require('../utils/excel');
 const { buildMasterSalaryStructure, roundAmount } = require('../utils/payrollMath');
 const { appendSalaryRevisionIfChanged } = require('../utils/salaryRevisionHelper');
+const { PT_STATE_LIST } = require('../utils/professionalTaxSlabs');
+const { decryptEmployeePII } = require('../utils/cryptoHelper');
 
 const toCamelCase = (str) => {
   return str
@@ -57,14 +59,21 @@ const standardAliases = new Set([
   'AADHAR', 'AADHAR NO', 'AADHAR NUMBER',
   'UAN', 'UAN NUMBER',
   'TAX REGIME',
-  'PF ENABLED',
-  'ESI ENABLED',
-  'PT ENABLED',
-  'LWF ENABLED',
-  'GRATUITY ENABLED',
-  'INCLUDE PF IN CTC',
-  'INCLUDE GRATUITY IN CTC',
-  'USE SALARY COMPONENTS', 'USE_SALARY_COMPONENTS',
+  'PF ENABLED', 'PFENABLED', 'PF_ENABLED',
+  'TDS ENABLED', 'TDSENABLED', 'TDS_ENABLED',
+  'ESI ENABLED', 'ESIENABLED', 'ESI_ENABLED',
+  'PT ENABLED', 'PTENABLED', 'PT_ENABLED',
+  'PT STATE', 'PROFESSIONAL TAX STATE', 'PTSTATE', 'PT_STATE',
+  'LWF ENABLED', 'LWFENABLED', 'LWF_ENABLED',
+  'GRATUITY ENABLED', 'GRATUITYENABLED', 'GRATUITY_ENABLED',
+  'INCLUDE PF IN CTC', 'INCLUDEPFINCTC', 'INCLUDE_PF_IN_CTC',
+  'INCLUDE GRATUITY IN CTC', 'INCLUDEGRATUITYINCTC', 'INCLUDE_GRATUITY_IN_CTC',
+  'USE SALARY COMPONENTS', 'USE_SALARY_COMPONENTS', 'USESALARYCOMPONENTS',
+  'COMPENSATION TYPE', 'COMPENSATIONTYPE', 'COMPENSATION_TYPE',
+  'PAY FREQUENCY', 'PAYFREQUENCY', 'PAY_FREQUENCY',
+  'ATTENDANCE MODE', 'ATTENDANCEMODE', 'ATTENDANCE_MODE',
+  'COMPENSATION MODEL', 'COMPENSATIONMODEL', 'COMPENSATION_MODEL',
+  'PAYMENT BASIS', 'PAYMENTBASIS', 'PAYMENT_BASIS',
   'ANNUAL CTC', 'ANNUAL_CTC',
   'GROSS SALARY', 'GROSS_SALARY',
   'EMPLOYER PF', 'EMPLOYER_PF',
@@ -88,11 +97,6 @@ const standardAliases = new Set([
   'HOURLY RATE', 'HOURLYRATE', 'HOURLY_RATE'
 ]);
 
-const getOrCreateConfig = async (userId) => {
-  let config = await PayrollConfig.findOne({ user: userId });
-  if (!config) config = await PayrollConfig.create({ user: userId });
-  return config;
-};
 
 const validateDepartment = async (departmentId, userId) => {
   if (!departmentId) return null;
@@ -306,6 +310,13 @@ const buildExcelColumns = (config, rootCustomKeys = []) => {
   columns.push({ header: 'TDS Enabled', group: 'Statutory Toggles', key: 'tdsEnabled', sample: 'Yes' });
   columns.push({ header: 'ESI Enabled', group: 'Statutory Toggles', key: 'esiEnabled', sample: 'No' });
   columns.push({ header: 'PT Enabled', group: 'Statutory Toggles', key: 'ptEnabled', sample: 'No' });
+  columns.push({
+    header: 'PT State',
+    group: 'Statutory Toggles',
+    key: 'ptState',
+    sample: 'KA',
+    getValue: (employee) => employee?.ptState || ''
+  });
   columns.push({ header: 'LWF Enabled', group: 'Statutory Toggles', key: 'lwfEnabled', sample: 'No' });
   columns.push({ header: 'Gratuity Enabled', group: 'Statutory Toggles', key: 'gratuityEnabled', sample: 'No' });
   columns.push({ header: 'Include PF in CTC', group: 'Statutory Toggles', key: 'includePfInCTC', sample: 'No' });
@@ -755,6 +766,8 @@ exports.getEmployees = async (req, res) => {
       .limit(limit)
       .lean();
 
+    employees.forEach(decryptEmployeePII);
+
     res.json({ data: employees, total, page, limit, totalPages: Math.ceil(total / limit) });
   } catch (error) {
     console.error('Error fetching employees:', error);
@@ -1076,7 +1089,7 @@ exports.importEmployees = async (req, res) => {
     }
 
     const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', range: rangeStart });
-    const config = await getOrCreateConfig(companyId);
+    const config = await getOrCreateConfig(companyId, new Date());
 
     let imported = 0;
     let skipped = 0;
@@ -1209,15 +1222,30 @@ exports.importEmployees = async (req, res) => {
       const taxRegime = ['old', 'new'].includes(taxRegimeRaw) ? taxRegimeRaw : 'new';
 
       // Statutory toggles
-      const pfEnabled = parseYesNo(getCellValue(rawRow, ['PF ENABLED']));
-      const tdsEnabled = parseYesNo(getCellValue(rawRow, ['TDS ENABLED']));
-      const esiEnabled = parseYesNo(getCellValue(rawRow, ['ESI ENABLED']));
-      const ptEnabled = parseYesNo(getCellValue(rawRow, ['PT ENABLED']));
-      const lwfEnabled = parseYesNo(getCellValue(rawRow, ['LWF ENABLED']));
-      const gratuityEnabled = parseYesNo(getCellValue(rawRow, ['GRATUITY ENABLED']));
-      const includePfInCTC = parseYesNo(getCellValue(rawRow, ['INCLUDE PF IN CTC']));
-      const includeGratuityInCTC = parseYesNo(getCellValue(rawRow, ['INCLUDE GRATUITY IN CTC']));
-      const useSalaryComponents = parseYesNo(getCellValue(rawRow, ['USE SALARY COMPONENTS', 'USE_SALARY_COMPONENTS']));
+      const pfEnabled = parseYesNo(getCellValue(rawRow, ['PF ENABLED', 'PFENABLED', 'PF_ENABLED']));
+      const tdsEnabled = parseYesNo(getCellValue(rawRow, ['TDS ENABLED', 'TDSENABLED', 'TDS_ENABLED']));
+      const esiEnabled = parseYesNo(getCellValue(rawRow, ['ESI ENABLED', 'ESIENABLED', 'ESI_ENABLED']));
+      const ptEnabled = parseYesNo(getCellValue(rawRow, ['PT ENABLED', 'PTENABLED', 'PT_ENABLED']));
+      const rawPtState = String(getCellValue(rawRow, ['PT STATE', 'PROFESSIONAL TAX STATE', 'PTSTATE', 'PT_STATE']) || '').trim();
+      let ptState = '';
+      let ptStateInvalid = false;
+      if (rawPtState) {
+        const upper = rawPtState.toUpperCase();
+        const matchedState = PT_STATE_LIST.find(s =>
+          (s.code && s.code.toUpperCase() === upper) ||
+          (s.name && s.name.toUpperCase() === upper)
+        );
+        if (matchedState && matchedState.code) {
+          ptState = matchedState.code.toUpperCase();
+        } else {
+          ptStateInvalid = true;
+        }
+      }
+      const lwfEnabled = parseYesNo(getCellValue(rawRow, ['LWF ENABLED', 'LWFENABLED', 'LWF_ENABLED']));
+      const gratuityEnabled = parseYesNo(getCellValue(rawRow, ['GRATUITY ENABLED', 'GRATUITYENABLED', 'GRATUITY_ENABLED']));
+      const includePfInCTC = parseYesNo(getCellValue(rawRow, ['INCLUDE PF IN CTC', 'INCLUDEPFINCTC', 'INCLUDE_PF_IN_CTC']));
+      const includeGratuityInCTC = parseYesNo(getCellValue(rawRow, ['INCLUDE GRATUITY IN CTC', 'INCLUDEGRATUITYINCTC', 'INCLUDE_GRATUITY_IN_CTC']));
+      const useSalaryComponents = parseYesNo(getCellValue(rawRow, ['USE SALARY COMPONENTS', 'USE_SALARY_COMPONENTS', 'USESALARYCOMPONENTS']));
 
       const isIntern = employmentType === 'intern';
       // Resolve effective compensation type for statutory flag defaults
@@ -1346,7 +1374,7 @@ exports.importEmployees = async (req, res) => {
         status,
         monthlyCTC: isHourly ? 0 : monthlyCTC,
         payType,
-        compensationType,
+        compensationType: effectiveCompType || 'monthly_salary',
         payFrequency,
         attendanceMode,
         hourlyRate: isHourly ? hourlyRate : 0,
@@ -1362,15 +1390,16 @@ exports.importEmployees = async (req, res) => {
         ...(basicOverride > 0 && { basic: basicOverride }),
         ...(hraOverride > 0 && { hra: hraOverride }),
         taxRegime,
-        pfEnabled: pfEnabledVal,
-        tdsEnabled: tdsEnabledVal,
-        esiEnabled: esiEnabledVal,
-        ptEnabled: ptEnabledVal,
-        lwfEnabled: lwfEnabledVal,
-        gratuityEnabled: gratuityEnabledVal,
-        includePfInCTC: includePfInCTCVal,
-        includeGratuityInCTC: includeGratuityInCTCVal,
-        useSalaryComponents: useSalaryComponentsVal,
+        pfEnabled: Boolean(pfEnabledVal),
+        tdsEnabled: Boolean(tdsEnabledVal),
+        esiEnabled: Boolean(esiEnabledVal),
+        ptEnabled: Boolean(ptEnabledVal),
+        ptState: ptState || '',
+        lwfEnabled: Boolean(lwfEnabledVal),
+        gratuityEnabled: Boolean(gratuityEnabledVal),
+        includePfInCTC: Boolean(includePfInCTCVal),
+        includeGratuityInCTC: Boolean(includeGratuityInCTCVal),
+        useSalaryComponents: Boolean(useSalaryComponentsVal),
         address: {
           line1: addressLine1,
           line2: addressLine2,
@@ -1433,7 +1462,7 @@ exports.importEmployees = async (req, res) => {
           });
           if (!isSalaryComp) {
             const camelKey = toCamelCase(key);
-            if (camelKey) {
+            if (camelKey && !(camelKey in payload)) {
               let val = rawRow[key];
               if (typeof val === 'string' && (val.startsWith('{') || val.startsWith('['))) {
                 try {
@@ -1457,6 +1486,8 @@ exports.importEmployees = async (req, res) => {
       if (!monthlyCTC) rowWarnings.push('No CTC specified');
       if (!panNumber) rowWarnings.push('PAN missing');
       if (!accountNumber) rowWarnings.push('Bank account missing');
+      if (ptStateInvalid) rowWarnings.push(`Invalid PT State "${rawPtState}". Must be a valid Indian state name or 2-letter code`);
+      if (ptEnabledVal && !ptState) rowWarnings.push('PT Enabled but no PT State set — professional tax will not be calculated automatically');
 
       try {
         let created;
@@ -1557,13 +1588,15 @@ exports.exportEmployeesExcel = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const config = await getOrCreateConfig(companyId);
+    employees.forEach(decryptEmployeePII);
+
+    const config = await getOrCreateConfig(companyId, new Date());
 
     const standardKeys = new Set([
       '_id', 'user', 'employeeId', 'firstName', 'lastName', 'email', 'phone', 'dateOfBirth', 'gender',
       'address', 'designation', 'department', 'joiningDate', 'location', 'dateOfLeaving', 'employmentType',
       'status', 'monthlyCTC', 'flexiAmount', 'broadband', 'petrol', 'lta', 'employerNPS', 'insuranceAmount',
-      'joiningBonus', 'basicPercent', 'hraPercent', 'pfEnabled', 'tdsEnabled', 'esiEnabled', 'ptEnabled', 'lwfEnabled',
+      'joiningBonus', 'basicPercent', 'hraPercent', 'pfEnabled', 'tdsEnabled', 'esiEnabled', 'ptEnabled', 'ptState', 'lwfEnabled',
       'gratuityEnabled', 'includePfInCTC', 'includeGratuityInCTC', 'salaryStructure', 'deductions',
       'bankDetails', 'panNumber', 'uanNumber', 'aadharNumber', 'taxRegime', 'declarations', 'documents',
       'salaryRevisions', 'createdAt', 'updatedAt', '__v', 'payType', 'hourlyRate', 'role',
@@ -1706,7 +1739,7 @@ exports.exportEmployeesExcel = async (req, res) => {
 exports.downloadImportTemplateExcel = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const config = await getOrCreateConfig(companyId);
+    const config = await getOrCreateConfig(companyId, new Date());
     const columns = buildExcelColumns(config);
 
     // Compute Merges dynamically
@@ -1922,7 +1955,7 @@ exports.addSalaryRevision = async (req, res) => {
       return res.status(400).json({ message: valError });
     }
 
-    const config = await getOrCreateConfig(companyId);
+    const config = await getOrCreateConfig(companyId, effectiveDate || new Date());
     const previousCTC = Number(employee.monthlyCTC) || Number(employee.salaryStructure?.ctc) || 0;
     const previousHourlyRate = Number(employee.hourlyRate) || 0;
     
@@ -2311,7 +2344,7 @@ exports.updateSalaryRevision = async (req, res) => {
       return res.status(400).json({ message: valError });
     }
 
-    const config = await getOrCreateConfig(companyId);
+    const config = await getOrCreateConfig(companyId, effectiveDate || revision.effectiveDate || new Date());
 
     let revisedRole = employee.role;
     let roleDoc = null;
@@ -2573,6 +2606,7 @@ exports.deleteSalaryRevision = async (req, res) => {
         employee.tdsEnabled = newLatest.tdsEnabled !== false;
         employee.esiEnabled = newLatest.esiEnabled !== false;
         employee.ptEnabled = newLatest.ptEnabled !== false;
+        employee.ptState = newLatest.ptState || '';
         employee.lwfEnabled = newLatest.lwfEnabled !== false;
         employee.gratuityEnabled = newLatest.gratuityEnabled !== false;
         employee.includePfInCTC = newLatest.includePfInCTC === true;
@@ -2655,7 +2689,7 @@ exports.bulkSalaryRevision = async (req, res) => {
       return res.status(400).json({ message: 'Valid effectiveDate is required' });
     }
 
-    const config = await getOrCreateConfig(companyId);
+    const config = await getOrCreateConfig(companyId, parsedDate || new Date());
 
     let targetEmployees = [];
     if (Array.isArray(revisions) && revisions.length > 0) {
