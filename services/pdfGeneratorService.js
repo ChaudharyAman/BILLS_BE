@@ -21,15 +21,23 @@ function getPuppeteer() {
   return eval('require')('puppeteer');
 }
 
-function formatCurrency(val) {
-  const num = Number(val) || 0;
-  return `₹${num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function formatVal(val, showDash = true) {
+  if (val === null || val === undefined || val === '' || Number(val) === 0) {
+    return showDash ? '-' : '';
+  }
+  const n = Number(val);
+  if (isNaN(n)) return val;
+  return n.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+
+function formatCurrency(val, showDash = true) {
+  return formatVal(val, showDash);
 }
 
 function formatDisplayDate(dString) {
   if (!dString) return '-';
   const d = new Date(dString);
-  return isNaN(d.getTime()) ? '-' : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return isNaN(d.getTime()) ? '-' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
 }
 
 function computeTaxWorksheet(payroll, employee, options = {}) {
@@ -74,7 +82,8 @@ function buildPayslipHtml(payroll, employee, settings) {
   const isFnf = Boolean(payroll.isFullAndFinal || payroll.settlementType === 'full_and_final');
   const titleHeading = isFnf ? `FINAL SETTLEMENT STATEMENT — ${payPeriodLabel}` : `PAY SLIP FOR THE MONTH OF ${payPeriodLabel}`;
 
-  const taxRegimeLabel = (emp.taxRegime || empSnap.taxRegime) === 'old' ? 'OLD TAX REGIME' : 'NEW TAX REGIME';
+  const taxRegime = String(emp.taxRegime || empSnap.taxRegime || 'new').toUpperCase();
+  const taxRegimeLabel = taxRegime.includes('OLD') ? 'OLD TAX REGIME' : 'NEW TAX REGIME';
 
   // Calculations for Earnings & Deductions table
   const earningsItems = buildPayslipEarningsLineItems(payroll);
@@ -84,7 +93,8 @@ function buildPayslipHtml(payroll, employee, settings) {
     name: item.name,
     rate: item.amount,
     monthly: item.amount,
-    arrear: item.details || '-'
+    arrear: item.details || '-',
+    total: item.amount
   }));
 
   const deductions = deductionsItems.map(item => ({
@@ -92,7 +102,7 @@ function buildPayslipHtml(payroll, employee, settings) {
     amount: item.amount
   }));
 
-  const maxRows = Math.max(earnings.length, deductions.length, 8);
+  const maxRows = Math.max(earnings.length, deductions.length, 3);
 
   const totalEarningRate = earnings.reduce((sum, item) => sum + (Number(item.rate) || 0), 0);
   const totalEarningMonthly = earnings.reduce((sum, item) => sum + (Number(item.monthly) || 0), 0);
@@ -132,6 +142,22 @@ function buildPayslipHtml(payroll, employee, settings) {
   const sec24bVal = decl.section24b || 0;
   const totalVIA = sec80CCapped + sec80DVal + sec80CCDVal;
 
+  const annualPF = (payroll.deductions?.pfEmployee || 0) * 12;
+  const annualPT = (payroll.deductions?.professionalTax || 0) * 12;
+  const annualGross = worksheet.grossSalary || (totalEarningMonthly * 12);
+  const standardDeduction = worksheet.standardDeduction || (taxRegime.includes('NEW') ? 75000 : 50000);
+  const chapterVIA = totalVIA > 0 ? totalVIA : (taxRegime.includes('OLD') ? Math.min(150000, annualPF) : 0);
+  const taxableIncome = worksheet.taxableIncome !== undefined ? worksheet.taxableIncome : Math.max(0, annualGross - standardDeduction - annualPT - chapterVIA);
+
+  const worksheetEarnings = (compBreakdown.length > 0)
+    ? compBreakdown
+    : earnings.map(e => ({
+        name: e.name,
+        gross: (Number(e.monthly) || 0) * 12,
+        exempt: 0,
+        taxable: (Number(e.monthly) || 0) * 12
+      }));
+
   const monthsList = [
     { key: 4, name: 'April' },
     { key: 5, name: 'May' },
@@ -153,35 +179,39 @@ function buildPayslipHtml(payroll, employee, settings) {
     const ded = deductions[i] || null;
 
     tableRowsHtml += `
-      <tr>
-        <td style="font-weight: 600; text-align: left;">${earn ? earn.name : ''}</td>
+      <tr style="font-size: 8.5px;">
+        <td style="font-weight: 500; text-align: left;">${earn ? earn.name : ''}</td>
         <td style="text-align: right;">${earn ? formatCurrency(earn.rate) : ''}</td>
         <td style="text-align: right;">${earn ? formatCurrency(earn.monthly) : ''}</td>
-        <td style="text-align: right; color: #666;">${earn ? earn.arrear : ''}</td>
-        <td style="text-align: left;">${ded ? ded.name : ''}</td>
-        <td style="font-weight: 600; text-align: right;">${ded ? formatCurrency(ded.amount) : ''}</td>
+        <td style="text-align: center;">${earn ? earn.arrear : ''}</td>
+        <td style="text-align: right; font-weight: 600;">${earn ? formatCurrency(earn.total || earn.monthly) : ''}</td>
+        <td style="text-align: left; font-weight: 500;">${ded ? ded.name : ''}</td>
+        <td style="font-weight: 600; text-align: right; border-right: none;">${ded ? formatCurrency(ded.amount) : ''}</td>
       </tr>
     `;
   }
 
   let compBreakdownHtml = '';
-  compBreakdown.forEach(row => {
+  worksheetEarnings.forEach(row => {
     compBreakdownHtml += `
-      <tr>
+      <tr style="font-size: 8px;">
         <td style="text-align: left; font-weight: 500;">${row.name}</td>
         <td style="text-align: right;">${formatCurrency(row.gross)}</td>
-        <td style="text-align: right; color: #666;">${row.exempt ? formatCurrency(row.exempt) : '-'}</td>
-        <td style="text-align: right;">${formatCurrency(row.taxable)}</td>
+        <td style="text-align: center; color: #666;">${row.exempt ? formatCurrency(row.exempt) : '-'}</td>
+        <td style="text-align: right; border-right: none;">${formatCurrency(row.taxable)}</td>
       </tr>
     `;
   });
 
   let tdsMonthsHtml = '';
+  let totalTds = 0;
   monthsList.forEach(m => {
+    const amt = Number(tdsMonths[m.key]) || 0;
+    totalTds += amt;
     tdsMonthsHtml += `
-      <tr>
-        <td style="text-align: left; color: #4b5563;">${m.name}</td>
-        <td style="text-align: right; font-weight: 500;">${formatCurrency(tdsMonths[m.key] || 0)}</td>
+      <tr style="font-size: 8px;">
+        <td style="text-align: left; color: #000;">${m.name}</td>
+        <td style="text-align: right; font-weight: 500; border-right: none;">${formatCurrency(amt)}</td>
       </tr>
     `;
   });
@@ -203,17 +233,17 @@ function buildPayslipHtml(payroll, employee, settings) {
         background: #ffffff;
         margin: 0;
         padding: 0;
-        font-size: 9.5px;
-        line-height: 1.35;
+        font-size: 9px;
+        line-height: 1.25;
       }
       .sheet {
-        border: 1px solid #000000;
+        border: 2px solid #000000;
         width: 100%;
         box-sizing: border-box;
       }
       .header-row {
-        border-bottom: 1px solid #000000;
-        padding: 8px 12px;
+        border-bottom: 2px solid #000000;
+        padding: 6px 12px;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -226,15 +256,17 @@ function buildPayslipHtml(payroll, employee, settings) {
       }
       .brand-sub {
         font-size: 8.5px;
-        color: #374151;
+        color: #000000;
         margin-top: 1px;
       }
-      .heading-title {
-        font-size: 10.5px;
+      .heading-subbar {
+        text-align: center;
         font-weight: 800;
-        color: #0f172a;
-        margin-top: 4px;
-        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        font-size: 9.5px;
+        padding: 4px 6px;
+        border-bottom: 1px solid #000000;
+        letter-spacing: 0.03em;
       }
       .grid-table {
         width: 100%;
@@ -244,7 +276,7 @@ function buildPayslipHtml(payroll, employee, settings) {
       .grid-table td, .grid-table th {
         border-right: 1px solid #000000;
         border-bottom: 1px solid #000000;
-        padding: 3.5px 5px;
+        padding: 3px 5px;
         vertical-align: top;
         word-wrap: break-word;
       }
@@ -252,11 +284,11 @@ function buildPayslipHtml(payroll, employee, settings) {
         border-right: none;
       }
       .bg-gray {
-        background-color: #f3f4f6;
+        background-color: #f9fafb;
         font-weight: 700;
       }
       .bg-dark-section {
-        background-color: #1e293b;
+        background-color: #0f2d59;
         color: #ffffff;
         font-weight: 800;
         text-align: center;
@@ -264,29 +296,35 @@ function buildPayslipHtml(payroll, employee, settings) {
         letter-spacing: 0.05em;
         padding: 3px 6px;
         border-bottom: 1px solid #000000;
+        font-size: 8.5px;
       }
       .net-bar {
-        background-color: #f3f4f6;
+        background-color: #ffffff;
         border-bottom: 1px solid #000000;
-        padding: 6px 12px;
+        padding: 5px 12px;
         display: flex;
         justify-content: space-between;
+        align-items: center;
         font-weight: 800;
-        font-size: 11px;
+        font-size: 9.5px;
       }
       .flex-between {
         display: flex;
         justify-content: space-between;
       }
-      .text-muted { color: #4b5563; }
+      .text-muted { color: #374151; }
       .text-right { text-align: right; }
       .text-center { text-align: center; }
-      .notice-footer {
+      .footer-banner {
+        background-color: #0f2d59;
+        color: #ffffff;
+        font-weight: 800;
         text-align: center;
-        font-size: 8.5px;
-        color: #6b7280;
-        margin-top: 8px;
+        text-transform: uppercase;
         letter-spacing: 0.05em;
+        padding: 3.5px 6px;
+        font-size: 8px;
+        margin-top: 2px;
       }
     </style>
   </head>
@@ -295,80 +333,91 @@ function buildPayslipHtml(payroll, employee, settings) {
       
       <!-- Company Header Block -->
       <div class="header-row">
-        <div>
-          ${companyLogo ? `<img src="${companyLogo}" style="max-height: 36px; margin-bottom: 4px; display: block;" />` : `<span style="font-weight: 800; font-size: 14px; color: #1e293b;">${logoInitials}</span>`}
+        <div style="width: 25%; display: flex; align-items: center;">
+          ${companyLogo ? `<img src="${companyLogo}" style="max-height: 48px; max-width: 160px; object-fit: contain; display: block;" />` : `<span style="font-weight: 800; font-size: 14px; color: #1e293b;">${logoInitials}</span>`}
         </div>
-        <div style="text-align: center; flex: 1; padding: 0 10px;">
+        <div style="text-align: center; width: 75%; padding-right: 25px;">
           <div class="brand-title">${companyName}</div>
-          <div class="brand-sub">${addressLine}</div>
-          <div class="heading-title">${titleHeading}</div>
+          ${addressLine ? `<div class="brand-sub">${addressLine}</div>` : ''}
         </div>
-        <div style="font-weight: 800; font-size: 9px; text-align: right; white-space: nowrap;">
-          ${taxRegimeLabel}
-        </div>
+      </div>
+      <div class="heading-subbar">
+        ${titleHeading}
       </div>
 
       <!-- Employee Information Grid -->
       <table class="grid-table">
         <tr>
+          <!-- Col 1: Emp. Code, Name, Designation, Department, Cost Centre, DOJ -->
           <td style="width: 33.33%;">
             <div class="flex-between"><span class="text-muted">Emp. Code</span> <span style="font-weight: 700;">${empId}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Name</span> <span style="font-weight: 700;">${employeeName}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Designation</span> <span style="font-weight: 700;">${designation}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Department</span> <span style="font-weight: 700;">${deptName}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">DOJ</span> <span style="font-weight: 700;">${formatDisplayDate(emp.joiningDate || empSnap.joiningDate)}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">Name</span> <span style="font-weight: 700;">${employeeName}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">Designation</span> <span style="font-weight: 700;">${designation}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">Department</span> <span style="font-weight: 700;">${deptName}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">Cost Centre</span> <span style="font-weight: 700;">${emp.costCentre || empSnap.costCentre || 'TaaS'}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">DOJ</span> <span style="font-weight: 700;">${formatDisplayDate(emp.joiningDate || empSnap.joiningDate)}</span></div>
           </td>
-          <td style="width: 33.33%;">
+          <!-- Col 2: PF UAN No., Month Days, Gender, Payable Days -->
+          <td style="width: 25%;">
             <div class="flex-between"><span class="text-muted">PF UAN No.</span> <span style="font-weight: 700;">${emp.uanNumber || empSnap.uanNumber || 'NA'}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Location</span> <span style="font-weight: 700;">${emp.location || empSnap.location || '-'}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Payment</span> <span style="font-weight: 700;">${payroll.paymentMethod || 'Bank Transfer'}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Bank A/c</span> <span style="font-weight: 700;">${emp.bankDetails?.accountNumber || empSnap.bankAccount || '-'}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">PAN</span> <span style="font-weight: 700;">${emp.panNumber || empSnap.panNumber || '-'}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Gender</span> <span style="font-weight: 700;">${emp.gender || empSnap.gender || '-'}</span></div>
+            <div class="flex-between" style="margin-top: 12px;"><span class="text-muted">Month Days</span> <span style="font-weight: 700;">${Number(payroll.workingDays || 31).toFixed(2)}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">Gender</span> <span style="font-weight: 700;">${emp.gender || empSnap.gender || 'Male'}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">Payable Days</span> <span style="font-weight: 700;">${Number(payroll.paidDays || 31).toFixed(2)}</span></div>
           </td>
-          <td style="width: 33.34%;">
-            <div class="flex-between"><span class="text-muted">Month Days</span> <span style="font-weight: 700;">${Number(payroll.workingDays || 30).toFixed(2)}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">Payable Days</span> <span style="font-weight: 700;">${Number(payroll.paidDays || 30).toFixed(2)}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">PF No.</span> <span style="font-weight: 700;">${emp.pfNumber || emp.pfNo || empSnap.pfNumber || 'NA'}</span></div>
-            <div class="flex-between" style="margin-top: 2px;"><span class="text-muted">ESI No.</span> <span style="font-weight: 700;">${emp.esiNumber || empSnap.esiNumber || 'NA'}</span></div>
+          <!-- Col 3: Location, Payment, Bank A/c, PAN, PF No., ESI No. -->
+          <td style="width: 25%;">
+            <div class="flex-between"><span class="text-muted">Location</span> <span style="font-weight: 700;">${emp.location || empSnap.location || 'Office'}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">Payment</span> <span style="font-weight: 700;">${payroll.paymentMethod || 'Bank Transfer'}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">Bank A/c</span> <span style="font-weight: 700;">${emp.bankDetails?.accountNumber || empSnap.bankAccount || '-'}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">PAN</span> <span style="font-weight: 700;">${emp.panNumber || empSnap.panNumber || '-'}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">PF No.</span> <span style="font-weight: 700;">${emp.pfNumber || emp.pfNo || empSnap.pfNumber || 'NA'}</span></div>
+            <div class="flex-between" style="margin-top: 1.5px;"><span class="text-muted">ESI No.</span> <span style="font-weight: 700;">${emp.esiNumber || empSnap.esiNumber || 'NA'}</span></div>
+          </td>
+          <!-- Col 4: Tax Regime Badge -->
+          <td style="width: 16.67%; text-align: center; vertical-align: top; border-right: none;">
+            <div style="display: inline-block; border: 1px solid #000; padding: 2px 4px; font-weight: 800; font-size: 8px; text-transform: uppercase;">
+              ${taxRegimeLabel}
+            </div>
           </td>
         </tr>
       </table>
 
-      <!-- Earnings / Deductions Subheader -->
+      <!-- Earnings & Deductions Section Header -->
       <table class="grid-table">
-        <tr class="bg-gray text-center font-bold">
-          <td style="width: 71.428%;">Earnings</td>
-          <td style="width: 28.572%;">Deductions</td>
+        <tr class="font-bold text-center">
+          <td style="width: 58.333%; border-bottom: 1px solid #000;">Earnings</td>
+          <td style="width: 41.667%; border-bottom: 1px solid #000; border-right: none;">Deductions</td>
         </tr>
       </table>
 
-      <!-- Earnings / Deductions Column Headers -->
+      <!-- Column Titles -->
       <table class="grid-table">
-        <tr class="bg-gray font-bold text-center">
-          <td style="width: 28.571%; text-align: left;">Description</td>
-          <td style="width: 14.285%; text-align: right;">Rate</td>
-          <td style="width: 14.285%; text-align: right;">Monthly</td>
-          <td style="width: 14.287%; text-align: right;">Arrear</td>
-          <td style="width: 14.285%; text-align: left;">Description</td>
-          <td style="width: 14.287%; text-align: right;">Amount</td>
+        <tr class="font-bold text-center" style="font-size: 8.5px;">
+          <td style="width: 18%; text-align: left;">Description</td>
+          <td style="width: 9%; text-align: right;">Rate</td>
+          <td style="width: 9%; text-align: right;">Monthly</td>
+          <td style="width: 7%; text-align: center;">Arrear</td>
+          <td style="width: 15.333%; text-align: right;">Total Earning (Monthly)</td>
+          <td style="width: 25%; text-align: left;">Description</td>
+          <td style="width: 16.667%; text-align: right; border-right: none;">Amount</td>
         </tr>
         ${tableRowsHtml}
         <!-- Totals Row -->
-        <tr class="bg-gray font-bold">
+        <tr class="bg-gray font-bold" style="font-size: 8.5px;">
           <td style="text-align: left;">CTC</td>
-          <td style="text-align: right;">${formatCurrency(totalEarningRate)}</td>
           <td style="text-align: right;">${formatCurrency(totalEarningMonthly)}</td>
-          <td style="text-align: right;">-</td>
+          <td style="text-align: right;">${formatCurrency(totalEarningMonthly)}</td>
+          <td style="text-align: center;">-</td>
+          <td style="text-align: right; font-weight: 900;">${formatCurrency(totalEarningMonthly)}</td>
           <td style="text-align: left;">Total Deduction</td>
-          <td style="text-align: right;">${formatCurrency(totalDeductions)}</td>
+          <td style="text-align: right; font-weight: 900; border-right: none;">${formatCurrency(totalDeductions)}</td>
         </tr>
       </table>
 
       <!-- Net Take Home Bar -->
       <div class="net-bar">
         <span>NET TAKE HOME FOR THE MONTH</span>
-        <span style="font-size: 12px;">${formatCurrency(netTakeHome)}</span>
+        <span style="font-size: 11px; font-weight: 900;">${formatCurrency(netTakeHome)}</span>
       </div>
 
       <!-- Income Tax Worksheet Banner -->
@@ -379,109 +428,101 @@ function buildPayslipHtml(payroll, employee, settings) {
       <!-- Tax Worksheet Main Grid (3 Columns) -->
       <table class="grid-table">
         <tr>
-          <!-- Col 1-2: Component Breakdown & Tax Computations -->
-          <td style="width: 40%; padding: 0;">
+          <!-- Col 1: Component Breakdown & Tax Computations (41.67%) -->
+          <td style="width: 41.67%; padding: 0;">
             <table class="grid-table" style="border: none;">
-              <tr class="bg-gray font-bold text-center">
-                <td style="text-align: left;">Description</td>
-                <td style="text-align: right;">Gross</td>
-                <td style="text-align: right;">Exempt</td>
-                <td style="text-align: right;">Taxable</td>
+              <tr class="bg-gray font-bold text-center" style="font-size: 8px;">
+                <td style="width: 40%; text-align: left;">Description</td>
+                <td style="width: 20%; text-align: right;">Gross</td>
+                <td style="width: 15%; text-align: center;">Exempt</td>
+                <td style="width: 25%; text-align: right; border-right: none;">Taxable</td>
               </tr>
               ${compBreakdownHtml}
-              <tr class="bg-gray font-bold">
+              <tr style="font-size: 8px;"><td style="text-align: left;">Other</td><td style="text-align: center;">-</td><td style="text-align: center;">-</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr style="font-size: 8px;"><td style="text-align: left;">Bonus</td><td style="text-align: center;">-</td><td style="text-align: center;">-</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr style="font-size: 8px;"><td style="text-align: left;">Arrear</td><td style="text-align: center;">-</td><td style="text-align: center;">-</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr class="bg-gray font-bold" style="font-size: 8px; border-top: 1px solid #000;">
                 <td style="text-align: left;">Gross Salary</td>
-                <td style="text-align: right;">${formatCurrency(worksheet.grossSalary)}</td>
-                <td style="text-align: right;">-</td>
-                <td style="text-align: right;">${formatCurrency(worksheet.grossSalary)}</td>
+                <td style="text-align: right;">${formatCurrency(annualGross)}</td>
+                <td style="text-align: center;">-</td>
+                <td style="text-align: right; font-weight: 900; border-right: none;">${formatCurrency(annualGross)}</td>
               </tr>
-              <tr>
-                <td colspan="3" style="text-align: left;">Standard Deduction</td>
-                <td style="text-align: right;">${formatCurrency(worksheet.standardDeduction)}</td>
-              </tr>
-              <tr class="bg-gray font-bold">
-                <td colspan="3" style="text-align: left;">Taxable Income</td>
-                <td style="text-align: right;">${formatCurrency(worksheet.taxableIncome)}</td>
-              </tr>
-              <tr>
-                <td colspan="3" style="text-align: left;">Total Tax</td>
-                <td style="text-align: right;">${formatCurrency(worksheet.totalTax)}</td>
-              </tr>
-              <tr>
-                <td colspan="3" style="text-align: left;">Educational Cess (4%)</td>
-                <td style="text-align: right;">${formatCurrency(worksheet.cess)}</td>
-              </tr>
-              <tr class="bg-gray font-bold">
-                <td colspan="3" style="text-align: left;">Net Tax</td>
-                <td style="text-align: right;">${formatCurrency(worksheet.netTax)}</td>
-              </tr>
-              <tr>
-                <td colspan="3" style="text-align: left;">Tax Deducted Till Date</td>
-                <td style="text-align: right;">${formatCurrency(worksheet.taxDeductedTillDate)}</td>
-              </tr>
-              <tr>
-                <td colspan="3" style="text-align: left;">Tax to be Deducted</td>
-                <td style="text-align: right;">${formatCurrency(worksheet.taxToDeducted)}</td>
-              </tr>
-              <tr class="bg-gray font-bold">
-                <td colspan="3" style="text-align: left;">Tax Deduction this Month</td>
-                <td style="text-align: right;">${formatCurrency(worksheet.taxDeductionThisMonth)}</td>
-              </tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Deduction - Income from House Property (Intt)</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Standard Deduction</td><td style="text-align: right; border-right: none;">${formatCurrency(standardDeduction)}</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Previous Employer Professional Tax</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Professional Tax</td><td style="text-align: right; border-right: none;">${formatCurrency(annualPT)}</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Under Chapter VI-A</td><td style="text-align: right; border-right: none;">${formatCurrency(chapterVIA)}</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Any Other Income</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr class="bg-gray font-bold" style="font-size: 8px; border-top: 1px solid #000;"><td colspan="3" style="text-align: left;">Taxable Income</td><td style="text-align: right; font-weight: 900; border-right: none;">${formatCurrency(taxableIncome)}</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Total Tax</td><td style="text-align: right; border-right: none;">${formatCurrency(worksheet.totalTax)}</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Tax Rebate</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Surcharge</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Tax Due</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Educational Cess</td><td style="text-align: right; border-right: none;">${formatCurrency(worksheet.cess)}</td></tr>
+              <tr class="bg-gray font-bold" style="font-size: 8px;"><td colspan="3" style="text-align: left;">Net Tax</td><td style="text-align: right; border-right: none;">${formatCurrency(worksheet.netTax)}</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Tax deducted (Previous Employer)</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Tax Deducted Till date</td><td style="text-align: right; border-right: none;">${formatCurrency(worksheet.taxDeductedTillDate)}</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Tax to be Deducted</td><td style="text-align: right; border-right: none;">${formatCurrency(worksheet.taxToDeducted)}</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Tax/ Month</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr style="font-size: 8px;"><td colspan="3" style="text-align: left;">Tax on Non-Recurring Earnings</td><td style="text-align: center; border-right: none;">-</td></tr>
+              <tr class="bg-gray font-bold" style="font-size: 8px;"><td colspan="3" style="text-align: left;">Tax Deduction for this month</td><td style="text-align: right; color: #78350f; border-right: none;">${formatCurrency(worksheet.taxDeductionThisMonth)}</td></tr>
             </table>
           </td>
 
-          <!-- Col 3-4: Chapter VI-A & 80C Deductions -->
-          <td style="width: 40%; padding: 0;">
-            <div class="bg-gray font-bold text-center" style="padding: 3.5px; border-bottom: 1px solid #000000;">
+          <!-- Col 2: Chapter VI-A & 80C Deductions (33.33%) -->
+          <td style="width: 33.33%; padding: 0;">
+            <div class="bg-gray font-bold text-center" style="padding: 2.5px; border-bottom: 1px solid #000000; font-size: 8px;">
               Deduction Under Chapter VI-A
             </div>
-            <div style="padding: 4px;">
-              <div class="flex-between font-bold" style="border-bottom: 1px solid #e5e7eb; padding-bottom: 2px;">
-                <span>Investments u/s 80C</span>
-                <span>Amount</span>
-              </div>
-              <div class="flex-between text-muted" style="margin-top: 2px;"><span>Provident Fund (EPF)</span> <span>${formatCurrency(epfVal)}</span></div>
-              <div class="flex-between text-muted" style="margin-top: 2px;"><span>Public Provident Fund (PPF)</span> <span>${formatCurrency(ppfVal)}</span></div>
-              <div class="flex-between text-muted" style="margin-top: 2px;"><span>Principal - Housing Loan</span> <span>${formatCurrency(homeLoanVal)}</span></div>
-              <div class="flex-between text-muted" style="margin-top: 2px;"><span>Life Insurance Premium</span> <span>${formatCurrency(licVal)}</span></div>
-              <div class="flex-between text-muted" style="margin-top: 2px;"><span>ELSS Mutual Funds</span> <span>${formatCurrency(elssVal)}</span></div>
-              <div class="flex-between font-bold" style="border-top: 1px solid #e5e7eb; margin-top: 4px; padding-top: 2px;">
+            <div style="background-color: #f3f4f6; font-weight: 700; padding: 2px 4px; border-bottom: 1px solid #000000; font-size: 8px;">
+              Investments u/s 80C
+            </div>
+            <div style="padding: 3px; font-size: 8px;">
+              <div class="flex-between" style="margin-top: 1px;"><span>Provident Fund</span> <span>${formatVal(epfVal || annualPF, false) || '0.00'}</span></div>
+              <div class="flex-between" style="margin-top: 1px;"><span>Public Provident Fund</span> <span>${formatCurrency(ppfVal)}</span></div>
+              <div class="flex-between" style="margin-top: 1px;"><span>Principal - Housing Loan</span> <span>${formatCurrency(homeLoanVal)}</span></div>
+              <div class="flex-between" style="margin-top: 1px;"><span>Life Insurance Premium</span> <span>${formatCurrency(licVal)}</span></div>
+              <div class="flex-between" style="margin-top: 1px;"><span>Mutual Fund</span> <span>${formatCurrency(elssVal)}</span></div>
+              <div class="flex-between" style="margin-top: 1px;"><span>Atal Pension Yojna</span> <span>-</span></div>
+              <div class="flex-between font-bold bg-gray" style="border-top: 1px solid #000; margin-top: 3px; padding-top: 1px;">
                 <span>Total of Investment u/s 80C</span>
-                <span>${formatCurrency(sec80CVal)}</span>
+                <span>${formatVal(sec80CVal || annualPF, false) || '0.00'}</span>
               </div>
             </div>
 
-            <div style="border-top: 1px solid #000000; padding: 4px;">
-              <div class="flex-between font-bold" style="border-bottom: 1px solid #e5e7eb; padding-bottom: 2px;">
-                <span>Section Details</span>
-                <span>Value</span>
-              </div>
-              <div class="flex-between text-muted" style="margin-top: 2px;"><span>U/S 80C (Capped)</span> <span>${formatCurrency(sec80CCapped)}</span></div>
-              <div class="flex-between text-muted" style="margin-top: 2px;"><span>U/S 80D (Medical)</span> <span>${formatCurrency(sec80DVal)}</span></div>
-              <div class="flex-between text-muted" style="margin-top: 2px;"><span>U/S 80CCD (NPS)</span> <span>${formatCurrency(sec80CCDVal)}</span></div>
-              <div class="flex-between text-muted" style="margin-top: 2px;"><span>Interest on Housing Loan u/s 24b</span> <span>${formatCurrency(sec24bVal)}</span></div>
-              <div class="flex-between font-bold" style="border-top: 1px solid #e5e7eb; margin-top: 4px; padding-top: 2px;">
-                <span>Total Deductions Chapter VI-A</span>
-                <span>${formatCurrency(totalVIA)}</span>
-              </div>
+            <div style="border-top: 1px solid #000000; padding: 3px; font-size: 8px;">
+              <div class="flex-between" style="margin-top: 1px;"><span>U/S 80C</span> <span>${formatCurrency(sec80CCapped || annualPF)}</span></div>
+              <div class="flex-between" style="margin-top: 1px;"><span>U/S 80D</span> <span>${formatCurrency(sec80DVal)}</span></div>
+              <div class="flex-between" style="margin-top: 1px;"><span>U/S 80CCD</span> <span>${formatCurrency(sec80CCDVal)}</span></div>
+              <div class="flex-between" style="margin-top: 1px;"><span>U/S 80 G</span> <span>-</span></div>
+            </div>
+
+            <div style="border-top: 1px solid #000000; padding: 3px; font-size: 8px; background-color: #f9fafb;">
+              <div class="flex-between font-bold"><span>Total of Ded Under Chapter</span> <span>${formatCurrency(totalVIA || annualPF)}</span></div>
+              <div class="flex-between" style="margin-top: 1px;"><span>Interest on Housing Loan</span> <span>${formatCurrency(sec24bVal)}</span></div>
+              <div class="flex-between" style="margin-top: 1px;"><span>Max Allowed</span> <span>-</span></div>
             </div>
           </td>
 
-          <!-- Col 5: Month-wise TDS Detail -->
-          <td style="width: 20%; padding: 0;">
-            <div class="bg-gray font-bold text-center" style="padding: 3.5px; border-bottom: 1px solid #000000;">
+          <!-- Col 3: Month-wise TDS Detail (25%) -->
+          <td style="width: 25%; padding: 0; border-right: none;">
+            <div class="bg-gray font-bold text-center" style="padding: 2.5px; border-bottom: 1px solid #000000; font-size: 8px;">
               Tax Deducted Details
             </div>
             <table class="grid-table" style="border: none;">
-              <tr class="bg-gray font-bold text-center">
-                <td style="text-align: left;">Month</td>
-                <td style="text-align: right;">Amount</td>
+              <tr class="bg-gray font-bold text-center" style="font-size: 8px;">
+                <td style="width: 50%; text-align: left;">Month</td>
+                <td style="width: 50%; text-align: right; border-right: none;">Amount</td>
               </tr>
               ${tdsMonthsHtml}
+              <tr class="bg-gray font-bold" style="font-size: 8px; border-top: 1px solid #000;">
+                <td style="text-align: left;">Total</td>
+                <td style="text-align: right; border-right: none;">${formatCurrency(totalTds)}</td>
+              </tr>
             </table>
             <div style="border-top: 1px solid #000000; padding: 4px; background-color: #f9fafb;">
-              <div class="flex-between font-bold" style="font-size: 8.5px;">
-                <span>LEAVE BALANCE ON MONTH END</span>
+              <div class="flex-between font-bold" style="font-size: 8px;">
+                <span>LEAVE BALANCE AS ON MONTH END</span>
                 <span>${Number(payroll.leaveBalance || 0).toFixed(2)}</span>
               </div>
             </div>
@@ -490,34 +531,38 @@ function buildPayslipHtml(payroll, employee, settings) {
       </table>
 
       <!-- HRA Calculation Section -->
-      <div class="bg-dark-section">
+      <div style="background-color: #f3f4f6; font-weight: 700; padding: 2px 5px; border-bottom: 1px solid #000000; font-size: 8px;">
         HRA Calculation
       </div>
-      <table class="grid-table">
+      <table class="grid-table" style="font-size: 8px;">
         <tr class="bg-gray font-bold text-center">
-          <td>From</td>
-          <td>To</td>
-          <td>Rent Paid</td>
-          <td>Actual HRA</td>
-          <td>40/50% of Basic</td>
-          <td>Rent - 10% of Basic</td>
-          <td>Exempt HRA</td>
+          <td style="width: 8%;">From</td>
+          <td style="width: 8%;">To</td>
+          <td style="width: 17%;">Rent Paid</td>
+          <td style="width: 17%;">Actual HRA</td>
+          <td style="width: 17%;">40/50% of Basic</td>
+          <td style="width: 17%;">Rent - 10% of Basic</td>
+          <td style="width: 16%; border-right: none;">Exempt HRA</td>
         </tr>
         <tr class="text-center">
           <td>April</td>
           <td>March</td>
           <td>${formatCurrency(hraCalc.rentPaid)}</td>
-          <td>${formatCurrency(hraCalc.actualHRA)}</td>
-          <td>${formatCurrency(hraCalc.basicPercent)}</td>
+          <td>${formatCurrency(hraCalc.actualHRA || ((worksheetEarnings.find(e => e.name.toLowerCase().includes('hra'))?.gross) || 0))}</td>
+          <td>${formatCurrency(hraCalc.basicPercent || (((worksheetEarnings.find(e => e.name.toLowerCase().includes('basic'))?.gross) || 0) * 0.4))}</td>
           <td>${formatCurrency(hraCalc.rentMinusBasic10)}</td>
-          <td class="bg-gray font-bold">${formatCurrency(hraCalc.exemptHRA)}</td>
+          <td class="bg-gray font-bold" style="border-right: none;">${formatCurrency(hraCalc.exemptHRA || ((worksheetEarnings.find(e => e.name.toLowerCase().includes('hra'))?.gross) || 0))}</td>
+        </tr>
+        <tr class="bg-gray font-bold text-center">
+          <td colspan="2">Total</td>
+          <td colspan="5" style="border-right: none;">-</td>
         </tr>
       </table>
 
     </div>
 
-    <!-- Notice Footer -->
-    <div class="notice-footer">
+    <!-- Computer Generated Footer Banner -->
+    <div class="footer-banner">
       THIS IS COMPUTER GENERATED PAY SLIP - SIGNATURE NOT REQUIRED.
     </div>
   </body>

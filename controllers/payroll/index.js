@@ -10,7 +10,7 @@ const { getPayrolls, getPayrollById, updatePayroll, markPayrollAsPaid, reopenPay
 const { generatePayslip, getPayslipPdf, bulkPayslipPdf, emailPayslip } = require('./payslip');
 const { getPayrollConfig, updatePayrollConfig, calculateSalary, getCompensationTypes } = require('./config');
 const { buildPayrollWorkbook, buildPayrollInputsWorkbook, exportPayrollExcel, exportPayrollInputsExcel, getPayrollTrend, getPayrollAuditLog } = require('./reporting');
-const { syncEmployees, syncAttendance, receiveHrmsWebhook } = require('./integrations');
+const { syncEmployees, syncAttendance, receiveHrmsWebhook, publishPayslips } = require('./integrations');
 const { getOrCreateConfig } = require('./common');
 
 module.exports = {
@@ -43,6 +43,7 @@ module.exports = {
   syncEmployees,
   syncAttendance,
   receiveHrmsWebhook,
+  publishPayslips,
   __private__: {
     getOrCreateConfig,
     buildPayrollWorkbook,

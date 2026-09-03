@@ -417,7 +417,21 @@ async function processBatchJob({ jobId, userId, month, year, employeePayloads = 
       );
     }
 
-
+    // Auto-dispatch payslips to HRMS if integration enabled and not saved as draft
+    if (!saveAsDraft && settings?.integration?.enabled) {
+      (async () => {
+        try {
+          const successIds = success.map(s => s.payrollId).filter(Boolean);
+          if (successIds.length > 0) {
+            const payrolls = await Payroll.find({ _id: { $in: successIds } })
+              .populate({ path: 'employee', populate: { path: 'department', select: 'name code' } });
+            await hrmsSyncService.dispatchBatchPayrollResultsToHrms(payrolls, settings);
+          }
+        } catch (dispatchErr) {
+          console.error('[payrollWorker] Auto HRMS payslip dispatch error:', dispatchErr.message);
+        }
+      })();
+    }
 
     await PayrollBatchRun.updateOne(
       { jobId },

@@ -100,8 +100,45 @@ const receiveHrmsWebhook = async (req, res) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Push payslips handler (protected by JWT middleware)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const publishPayslips = async (req, res) => {
+  try {
+    const { month, year } = req.body;
+    const Settings = require('../../models/Settings');
+    const Payroll = require('../../models/Payroll');
+
+    const tenantUserId = req.companyId || req.user._id;
+    const settings = await Settings.findOne({ user: tenantUserId });
+    if (!settings?.integration?.enabled) {
+      return res.status(400).json({ message: 'TalentCIO integration is not enabled in Settings.' });
+    }
+
+    const payrolls = await Payroll.find({
+      user: tenantUserId,
+      month: Number(month),
+      year: Number(year),
+      isDeleted: { $ne: true }
+    }).populate({ path: 'employee', populate: { path: 'department', select: 'name code' } });
+
+    if (payrolls.length === 0) {
+      return res.status(404).json({ message: `No payroll records found for ${month}/${year}.` });
+    }
+
+    const result = await hrmsSyncService.dispatchBatchPayrollResultsToHrms(payrolls, settings);
+    res.json({ message: `Successfully published ${result.count} payslip(s) to TalentCIO.`, count: result.count });
+  } catch (error) {
+    const errorMsg = error.response?.data?.message || error.message;
+    console.error('Publish Payslips error:', errorMsg);
+    res.status(500).json({ message: `Failed to publish payslips: ${errorMsg}` });
+  }
+};
+
 module.exports = {
   syncEmployees,
   syncAttendance,
   receiveHrmsWebhook,
+  publishPayslips,
 };
