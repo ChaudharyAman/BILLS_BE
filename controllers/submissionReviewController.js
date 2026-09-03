@@ -125,9 +125,14 @@ function formatSubmission(sub) {
   const obj = sub.toObject ? sub.toObject({ virtuals: true }) : { ...sub };
   obj.referenceNumber = `SUB-${(sub._id || obj._id).toString().slice(-8).toUpperCase()}`;
   if (Array.isArray(obj.files)) {
-    obj.files = obj.files.map((f) => {
+    obj.files = obj.files.map((f, idx) => {
       const plainFile = f.toObject ? f.toObject() : { ...f };
       delete plainFile.buffer;
+      if (idx === 0 && !plainFile.parsedData && obj.parsedData) {
+        plainFile.parsedData = obj.parsedData;
+      }
+      plainFile.status = plainFile.status || (obj.status === 'approved' ? 'approved' : 'pending');
+      plainFile.resultingRecord = plainFile.resultingRecord || (obj.status === 'approved' ? obj.resultingRecord : null);
       return plainFile;
     });
   }
@@ -361,6 +366,57 @@ exports.getSubmissionById = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// POST /api/submissions/:id/files/:fileIndex/parse
+// On-demand parser for a single file in a multi-file submission
+// ─────────────────────────────────────────────────────────────────────────────
+exports.parseSubmissionFile = async (req, res) => {
+  try {
+    const companyId = req.companyId || req.user._id;
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Submission not found' });
+    }
+
+    const submission = await PublicSubmission.findOne({
+      _id:  req.params.id,
+      user: companyId,
+    });
+
+    if (!submission) {
+      return res.status(404).json({ message: 'Submission not found' });
+    }
+
+    const fileIndex = parseInt(req.params.fileIndex, 10);
+    const file = submission.files?.[fileIndex];
+
+    if (!file || !file.buffer) {
+      return res.status(404).json({ message: 'File not found' });
+    }
+
+    const { parseFile } = require('./publicSubmissionController');
+    const parsed = await parseFile({
+      buffer: file.buffer,
+      originalname: file.originalName,
+      mimetype: file.mimeType,
+      size: file.sizeBytes,
+    }, submission.suggestedCategory || 'expense');
+
+    file.parsedData = parsed;
+    submission.markModified('files');
+    await submission.save();
+
+    return res.json({
+      success: true,
+      fileIndex,
+      parsedData: parsed,
+      submission: formatSubmission(submission),
+    });
+  } catch (error) {
+    console.error('[Submission] parseSubmissionFile error:', error.message);
+    return res.status(500).json({ message: 'Failed to parse file' });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/submissions/:id/files/:fileIndex
 // Serves a single file buffer as a download. Scoped to companyId.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -387,9 +443,10 @@ exports.getSubmissionFile = async (req, res) => {
       return res.status(404).json({ message: 'File not found' });
     }
 
-    res.set('Content-Type', file.mimeType || 'application/octet-stream');
-    res.set('Content-Disposition', `inline; filename="${file.originalName}"`);
-    res.set('Content-Length', file.sizeBytes);
+    const mime = file.mimeType || 'application/pdf';
+    res.set('Content-Type', mime);
+    res.set('Content-Disposition', `inline; filename="${encodeURIComponent(file.originalName)}"`);
+    res.set('Content-Length', file.buffer.length);
     return res.send(file.buffer);
   } catch (error) {
     console.error('[Submission] getSubmissionFile error:', error.message);
@@ -421,11 +478,20 @@ exports.editParsedData = async (req, res) => {
       });
     }
 
-    const before = { ...submission.parsedData };
     const incoming = req.body.parsedData;
+    const fileIndex = req.body.fileIndex !== undefined ? parseInt(req.body.fileIndex, 10) : undefined;
 
     if (incoming && typeof incoming === 'object') {
-      submission.parsedData = { ...submission.parsedData, ...incoming };
+      if (fileIndex !== undefined && submission.files?.[fileIndex]) {
+        submission.files[fileIndex].parsedData = {
+          ...(submission.files[fileIndex].parsedData || {}),
+          ...incoming,
+        };
+        submission.markModified('files');
+      }
+      if (fileIndex === undefined || fileIndex === 0) {
+        submission.parsedData = { ...submission.parsedData, ...incoming };
+      }
     }
     if (req.body.suggestedCategory) {
       submission.suggestedCategory = req.body.suggestedCategory;
@@ -438,7 +504,7 @@ exports.editParsedData = async (req, res) => {
       actorId:      req.user._id,
       action:       'SUBMISSION_EDITED',
       submissionId: submission._id,
-      changes:      { before, after: submission.parsedData },
+      changes:      { fileIndex, after: incoming },
     });
 
     return res.json({
@@ -453,9 +519,11 @@ exports.editParsedData = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/submissions/:id/approve
-// Body: { category, ...fieldOverrides }
-// Creates the real Expense/Invoice/Income/PO record via internal helpers.
-// Sets resultingRecord + status=approved.
+// Body: { category, fileIndex?, mode?, ...fieldOverrides }
+// Supports:
+//   1. fileIndex: approves just that specific file in the drawer
+//   2. mode: 'all-individual': approves each file as its own record
+//   3. default (consolidated): approves all files into 1 record
 // ─────────────────────────────────────────────────────────────────────────────
 exports.approveSubmission = async (req, res) => {
   try {
@@ -470,7 +538,7 @@ exports.approveSubmission = async (req, res) => {
     });
     if (!submission) return res.status(404).json({ message: 'Submission not found' });
 
-    if (submission.status === 'approved') {
+    if (submission.status === 'approved' && req.body.fileIndex === undefined) {
       return res.status(400).json({ message: 'This submission has already been approved.' });
     }
 
@@ -480,53 +548,144 @@ exports.approveSubmission = async (req, res) => {
       return res.status(400).json({ message: `Invalid category "${category}". Must be one of: ${validCategories.join(', ')}` });
     }
 
-    // Load user settings for document numbering prefixes
     const settings = await Settings.findOne({ user: companyId }).lean();
-    const parsedData = submission.parsedData || {};
-    const overrides  = req.body.overrides   || {};
+    const overrides = req.body.overrides || {};
+    const fileIndex = req.body.fileIndex !== undefined ? parseInt(req.body.fileIndex, 10) : undefined;
+    const mode = req.body.mode;
 
-    let record;
-    let collectionName;
+    const createRecordForData = async (data, customOverrides = {}) => {
+      let rec, coll;
+      switch (category) {
+        case 'expense':
+          rec = await createExpenseFromSubmission(companyId, data, customOverrides, settings);
+          coll = 'expenses';
+          break;
+        case 'invoice':
+          rec = await createInvoiceFromSubmission(companyId, data, customOverrides, settings);
+          coll = 'invoices';
+          break;
+        case 'income':
+          rec = await createIncomeFromSubmission(companyId, data, customOverrides, settings);
+          coll = 'incomes';
+          break;
+        case 'purchaseorder':
+          rec = await createPurchaseOrderFromSubmission(companyId, data, customOverrides, settings);
+          coll = 'purchaseorders';
+          break;
+        default:
+          throw new Error('Unknown category');
+      }
+      return { record: rec, collectionName: coll };
+    };
 
-    switch (category) {
-      case 'expense':
-        record = await createExpenseFromSubmission(companyId, parsedData, overrides, settings);
-        collectionName = 'expenses';
-        break;
-      case 'invoice':
-        record = await createInvoiceFromSubmission(companyId, parsedData, overrides, settings);
-        collectionName = 'invoices';
-        break;
-      case 'income':
-        record = await createIncomeFromSubmission(companyId, parsedData, overrides, settings);
-        collectionName = 'incomes';
-        break;
-      case 'purchaseorder':
-        record = await createPurchaseOrderFromSubmission(companyId, parsedData, overrides, settings);
-        collectionName = 'purchaseorders';
-        break;
-      default:
-        return res.status(400).json({ message: 'Unknown category' });
+    // Mode 1: Approve all files as separate records
+    if (mode === 'all-individual' && Array.isArray(submission.files) && submission.files.length > 1) {
+      const results = [];
+      for (let i = 0; i < submission.files.length; i++) {
+        const f = submission.files[i];
+        if (f.status === 'approved') continue;
+        const fileData = f.parsedData || (i === 0 ? submission.parsedData : {});
+        const { record, collectionName } = await createRecordForData(fileData);
+        f.status = 'approved';
+        f.resultingRecord = { collection: collectionName, recordId: record._id };
+        results.push({ fileIndex: i, collection: collectionName, recordId: record._id });
+      }
+
+      submission.status = 'approved';
+      submission.decidedBy = req.user._id;
+      submission.decidedAt = new Date();
+      if (results[0]) {
+        submission.resultingRecord = { collection: results[0].collection, recordId: results[0].recordId };
+      }
+      submission.markModified('files');
+      await submission.save();
+
+      await writeAuditLog({
+        userId: submission.user,
+        actorId: req.user._id,
+        action: 'SUBMISSION_APPROVED_ALL_INDIVIDUAL',
+        submissionId: submission._id,
+        changes: { category, count: results.length, results },
+      });
+
+      return res.json({
+        success: true,
+        data: formatSubmission(submission),
+        createdCount: results.length,
+        resultingRecord: submission.resultingRecord,
+        message: `Approved ${results.length} files as individual ${category} records.`,
+      });
     }
 
-    // Update submission
-    submission.status          = 'approved';
-    submission.decidedBy       = req.user._id;
-    submission.decidedAt       = new Date();
+    // Mode 2: Approve a single file in the drawer
+    if (fileIndex !== undefined && submission.files?.[fileIndex]) {
+      const targetFile = submission.files[fileIndex];
+      if (targetFile.status === 'approved') {
+        return res.status(400).json({ message: 'This file has already been approved.' });
+      }
+
+      const fileData = targetFile.parsedData || (fileIndex === 0 ? submission.parsedData : {});
+      const { record, collectionName } = await createRecordForData(fileData, overrides);
+
+      targetFile.status = 'approved';
+      targetFile.resultingRecord = { collection: collectionName, recordId: record._id };
+
+      const allApproved = submission.files.every(f => f.status === 'approved');
+      if (allApproved) {
+        submission.status = 'approved';
+        submission.decidedBy = req.user._id;
+        submission.decidedAt = new Date();
+        submission.resultingRecord = { collection: collectionName, recordId: record._id };
+      }
+      submission.markModified('files');
+      await submission.save();
+
+      await writeAuditLog({
+        userId: submission.user,
+        actorId: req.user._id,
+        action: 'SUBMISSION_FILE_APPROVED',
+        submissionId: submission._id,
+        changes: { fileIndex, category, resultingRecord: { collection: collectionName, recordId: record._id } },
+      });
+
+      return res.json({
+        success: true,
+        fileIndex,
+        data: formatSubmission(submission),
+        resultingRecord: { collection: collectionName, recordId: record._id },
+        allApproved,
+        message: `File "${targetFile.originalName}" approved and ${category} record created.`,
+      });
+    }
+
+    // Mode 3: Consolidated (approve all files into one single record)
+    const parsedData = submission.parsedData || {};
+    const { record, collectionName } = await createRecordForData(parsedData, overrides);
+
+    submission.status = 'approved';
+    submission.decidedBy = req.user._id;
+    submission.decidedAt = new Date();
     submission.resultingRecord = { collection: collectionName, recordId: record._id };
+    if (Array.isArray(submission.files)) {
+      submission.files.forEach(f => {
+        f.status = 'approved';
+        f.resultingRecord = { collection: collectionName, recordId: record._id };
+      });
+      submission.markModified('files');
+    }
     await submission.save();
 
-    // Audit log
     await writeAuditLog({
-      userId:       submission.user,
-      actorId:      req.user._id,
-      action:       'SUBMISSION_APPROVED',
+      userId: submission.user,
+      actorId: req.user._id,
+      action: 'SUBMISSION_APPROVED',
       submissionId: submission._id,
-      changes:      { category, resultingRecord: { collection: collectionName, recordId: record._id } },
+      changes: { category, resultingRecord: { collection: collectionName, recordId: record._id } },
     });
 
     return res.json({
       success: true,
+      data: formatSubmission(submission),
       resultingRecord: { collection: collectionName, recordId: record._id },
       message: `Submission approved and ${category} record created.`,
     });
@@ -620,5 +779,138 @@ exports.requestChanges = async (req, res) => {
   } catch (error) {
     console.error('[Submission] requestChanges error:', error.message);
     return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/submissions/:id/split
+// Splits a multi-file submission into individual submissions so each invoice
+// can be reviewed, edited, and approved independently.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.splitSubmission = async (req, res) => {
+  try {
+    const companyId = req.companyId || req.user._id;
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Submission not found' });
+    }
+
+    const submission = await PublicSubmission.findOne({
+      _id: req.params.id,
+      user: companyId,
+    });
+    if (!submission) return res.status(404).json({ message: 'Submission not found' });
+
+    if (submission.status === 'approved') {
+      return res.status(400).json({ message: 'Cannot split an already-approved submission.' });
+    }
+
+    const files = submission.files || [];
+    if (files.length <= 1) {
+      return res.status(400).json({ message: 'This submission only contains one file and cannot be split.' });
+    }
+
+    const { parseFile, guessSuggestedCategory } = require('./publicSubmissionController');
+    const settings = await Settings.findOne({ user: companyId }).lean();
+    const allowed = settings?.publicSubmissions?.allowedCategories || ['expense'];
+
+    // Keep file 0 on the existing submission
+    const primaryFile = files[0];
+    const secondaryFiles = files.slice(1);
+
+    submission.files = [primaryFile];
+    await submission.save();
+
+    // Create a separate submission for each secondary file
+    const createdSubmissions = [];
+    for (const file of secondaryFiles) {
+      const fileForParsing = {
+        buffer: file.buffer,
+        originalname: file.originalName,
+        mimetype: file.mimeType,
+        size: file.sizeBytes,
+      };
+
+      const parsedData = await parseFile(fileForParsing, submission.suggestedCategory || 'expense');
+      const suggestedCategory = guessSuggestedCategory(allowed, parsedData, file.mimeType);
+
+      const newSub = await PublicSubmission.create({
+        user: submission.user,
+        submitterName: submission.submitterName,
+        submitterEmail: submission.submitterEmail,
+        submitterPhone: submission.submitterPhone,
+        submitterNote: submission.submitterNote,
+        files: [file],
+        parsedData,
+        suggestedCategory,
+        status: 'pending',
+        ipAddress: submission.ipAddress,
+      });
+      createdSubmissions.push(newSub);
+    }
+
+    await writeAuditLog({
+      userId: submission.user,
+      actorId: req.user._id,
+      action: 'SUBMISSION_SPLIT',
+      submissionId: submission._id,
+      changes: {
+        originalSubmissionId: submission._id,
+        createdCount: createdSubmissions.length,
+        totalFiles: files.length,
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: `Successfully split into ${files.length} individual submissions.`,
+      count: files.length,
+    });
+  } catch (error) {
+    console.error('[Submission] splitSubmission error:', error.message);
+    return res.status(500).json({ message: 'Server error splitting submission' });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/submissions/:id/files/:fileIndex
+// Removes a single file from a multi-file submission.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.removeSubmissionFile = async (req, res) => {
+  try {
+    const companyId = req.companyId || req.user._id;
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Submission not found' });
+    }
+
+    const submission = await PublicSubmission.findOne({
+      _id: req.params.id,
+      user: companyId,
+    });
+    if (!submission) return res.status(404).json({ message: 'Submission not found' });
+
+    if (submission.status === 'approved') {
+      return res.status(400).json({ message: 'Cannot remove files from an approved submission.' });
+    }
+
+    const fileIndex = parseInt(req.params.fileIndex, 10);
+    if (isNaN(fileIndex) || fileIndex < 0 || fileIndex >= (submission.files || []).length) {
+      return res.status(404).json({ message: 'File index not found.' });
+    }
+
+    if (submission.files.length <= 1) {
+      return res.status(400).json({ message: 'Cannot remove the only file from this submission.' });
+    }
+
+    submission.files.splice(fileIndex, 1);
+    await submission.save();
+
+    return res.json({
+      success: true,
+      message: 'File removed from submission.',
+      data: formatSubmission(submission),
+    });
+  } catch (error) {
+    console.error('[Submission] removeSubmissionFile error:', error.message);
+    return res.status(500).json({ message: 'Server error removing file' });
   }
 };

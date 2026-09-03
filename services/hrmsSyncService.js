@@ -784,8 +784,108 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
 
 /**
  * Sends a payroll result notification to the external HRMS after a payroll
- * record is marked as paid. Non-blocking — the caller should fire this without
- * awaiting. Failures are logged but never surfaced to the user response.
+ * record is marked as paid.
+ */
+const buildPayrollResultPayload = async (payroll, settings) => {
+  const employeeCode =
+    payroll.employeeSnapshot?.employeeId ||
+    payroll.employee?.employeeId         ||
+    String(payroll.employee?._id || payroll.employee || '');
+
+  const email =
+    payroll.employeeSnapshot?.email ||
+    payroll.employee?.email ||
+    '';
+
+  let payslipPdfBase64 = null;
+  try {
+    const { generateSinglePayslipPdf, getStoredPayslipPath } = require('./pdfGeneratorService');
+    const fs = require('fs');
+    const storedPath = getStoredPayslipPath(payroll._id);
+    let pdfBuf = null;
+    if (fs.existsSync(storedPath)) {
+      pdfBuf = fs.readFileSync(storedPath);
+    } else {
+      pdfBuf = await generateSinglePayslipPdf({ payroll, settings });
+      try { fs.writeFileSync(storedPath, pdfBuf); } catch (_) {}
+    }
+    if (pdfBuf) {
+      payslipPdfBase64 = pdfBuf.toString('base64');
+    }
+  } catch (pdfErr) {
+    console.warn('[hrmsSyncService] Payslip PDF generation for HRMS skipped:', pdfErr.message);
+  }
+
+  let earningsLineItems = [];
+  let deductionsLineItems = [];
+  let taxWorksheet = null;
+  try {
+    const { buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems, buildTaxWorksheet } = require('../utils/payrollMath');
+    earningsLineItems = buildPayslipEarningsLineItems(payroll);
+    deductionsLineItems = buildPayslipDeductionsLineItems(payroll);
+    taxWorksheet = payroll.taxWorksheet || buildTaxWorksheet({ payroll, employee: payroll.employee });
+  } catch (mathErr) {
+    console.warn('[hrmsSyncService] Payslip line item calculation warning:', mathErr.message);
+  }
+
+  const companyAddress = settings?.address || {};
+  const addressParts = [
+    companyAddress.line1,
+    companyAddress.city,
+    companyAddress.state,
+    companyAddress.zip
+  ].filter(Boolean);
+  const formattedAddress = addressParts.join(', ');
+
+  const empSnap = payroll.employeeSnapshot || {};
+  const emp = payroll.employee || {};
+  const taxRegime = (empSnap.taxRegime || emp.taxRegime || 'new').toUpperCase();
+
+  return {
+    employeeCode,
+    email,
+    month: payroll.month,
+    year: payroll.year,
+    status: payroll.status === 'draft' ? 'draft' : 'paid',
+    netSalary: payroll.netSalary || 0,
+    grossSalary: payroll.earnings?.totalEarnings || 0,
+    totalDeductions: payroll.deductions?.totalDeductions || 0,
+    paidDate: payroll.paymentDate || new Date(),
+    workingDays: payroll.workingDays !== undefined ? payroll.workingDays : 31,
+    paidDays: payroll.paidDays !== undefined ? payroll.paidDays : 31,
+    companyName: settings?.companyName || '',
+    companyAddress: formattedAddress,
+    companyLogo: settings?.logoUrl || '',
+    taxRegime,
+    earningsLineItems,
+    deductionsLineItems,
+    taxWorksheet,
+    breakdown: {
+      basic: payroll.earnings?.basic || 0,
+      hra: payroll.earnings?.hra || 0,
+      flexiAmount: payroll.earnings?.flexiAmount || 0,
+      specialAllowance: payroll.earnings?.specialAllowance || 0,
+      broadband: payroll.earnings?.broadband || 0,
+      petrol: payroll.earnings?.petrol || 0,
+      lta: payroll.earnings?.lta || 0,
+      conveyance: payroll.earnings?.conveyance || 0,
+      medicalAllowance: payroll.earnings?.medicalAllowance || 0,
+      overtime: payroll.earnings?.overtime || 0,
+      pf: payroll.deductions?.pfEmployee || 0,
+      esi: payroll.deductions?.esiEmployee || 0,
+      tds: payroll.deductions?.tds || 0,
+      pt: payroll.deductions?.professionalTax || 0,
+      advanceDeduction: payroll.deductions?.advanceDeduction || 0,
+      insuranceDeduction: payroll.deductions?.insuranceEmployee || 0,
+      lwf: payroll.deductions?.lwfEmployee || 0,
+      ...(payroll.earnings?.earningsMap || {}),
+    },
+    ...(payslipPdfBase64 ? { payslipPdfBase64 } : {}),
+  };
+};
+
+/**
+ * Dispatches a single payroll result notification to the external HRMS.
  *
  * @param {Object} payroll  - Mongoose Payroll document (fully populated)
  * @param {Object} settings - Mongoose Settings document for this user
@@ -797,56 +897,89 @@ exports.dispatchPayrollResultToHrms = async (payroll, settings) => {
   if (!apiUrl || !apiKey || !externalTenantId || !webhookSecret) return;
 
   const crypto = require('crypto');
-
-  const employeeCode =
-    payroll.employeeSnapshot?.employeeId ||
-    payroll.employee?.employeeId         ||
-    String(payroll.employee?._id || payroll.employee || '');
+  const result = await buildPayrollResultPayload(payroll, settings);
 
   const payload = {
-    event:    'payroll.paid',
+    event: 'payroll.result',
     tenantId: externalTenantId,
     timestamp: new Date().toISOString(),
-    payrollResult: {
-      employeeCode,
-      month:           payroll.month,
-      year:            payroll.year,
-      status:          'paid',
-      netSalary:       payroll.netSalary                     || 0,
-      grossSalary:     payroll.earnings?.totalEarnings        || 0,
-      totalDeductions: payroll.deductions?.totalDeductions   || 0,
-      paidDate:        payroll.paymentDate,
-      breakdown: {
-        basic: payroll.earnings?.basic          || 0,
-        hra:   payroll.earnings?.hra            || 0,
-        pf:    payroll.deductions?.pfEmployee   || 0,
-        esi:   payroll.deductions?.esiEmployee  || 0,
-        tds:   payroll.deductions?.tds          || 0,
-        pt:    payroll.deductions?.professionalTax || 0,
-        lwf:   payroll.deductions?.lwfEmployee  || 0,
-      },
-    },
+    payrollResult: result,
   };
 
   const payloadStr = JSON.stringify(payload);
-  const tsHeader = String(Math.floor(Date.now() / 1000)); // Unix seconds
-  // HMAC input must match verifyMultiTenantWebhook: timestamp + '.' + rawBody
+  const tsHeader = String(Math.floor(Date.now() / 1000));
   const signature = crypto
     .createHmac('sha256', webhookSecret)
     .update(`${tsHeader}.${payloadStr}`)
     .digest('hex');
 
   try {
-    await axios.post(`${apiUrl.replace(/\/$/, '')}/api/v1/payroll-result`, payload, {
+    await axios.post(`${apiUrl.replace(/\/$/, '')}/api/v1/payroll-result`, payloadStr, {
+      params: { tenantId: externalTenantId },
       headers: {
-        'Content-Type':        'application/json',
-        'Authorization':       `Bearer ${apiKey}`,
-        'x-hrms-timestamp':    tsHeader,
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'x-hrms-timestamp': tsHeader,
         'x-mybills-signature': signature,
       },
-      timeout: 10000,
+      timeout: 30000,
+      maxContentLength: 50 * 1024 * 1024,
+      maxBodyLength: 50 * 1024 * 1024,
     });
   } catch (err) {
     console.error('[hrmsSyncService] dispatchPayrollResultToHrms failed:', err.message);
+  }
+};
+
+/**
+ * Dispatches batch payroll results & payslips to the external HRMS.
+ *
+ * @param {Array} payrolls  - Array of Mongoose Payroll documents
+ * @param {Object} settings - Mongoose Settings document for this user
+ */
+exports.dispatchBatchPayrollResultsToHrms = async (payrolls = [], settings) => {
+  if (!settings?.integration?.enabled || payrolls.length === 0) return { count: 0 };
+
+  const { apiUrl, apiKey, externalTenantId, webhookSecret } = settings.integration;
+  if (!apiUrl || !apiKey || !externalTenantId || !webhookSecret) return { count: 0 };
+
+  const crypto = require('crypto');
+  const results = [];
+  for (const pr of payrolls) {
+    const item = await buildPayrollResultPayload(pr, settings);
+    results.push(item);
+  }
+
+  const payload = {
+    event: 'payroll.processed',
+    tenantId: externalTenantId,
+    timestamp: new Date().toISOString(),
+    payrollResults: results,
+  };
+
+  const payloadStr = JSON.stringify(payload);
+  const tsHeader = String(Math.floor(Date.now() / 1000));
+  const signature = crypto
+    .createHmac('sha256', webhookSecret)
+    .update(`${tsHeader}.${payloadStr}`)
+    .digest('hex');
+
+  try {
+    const response = await axios.post(`${apiUrl.replace(/\/$/, '')}/api/v1/payroll-result`, payloadStr, {
+      params: { tenantId: externalTenantId },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'x-hrms-timestamp': tsHeader,
+        'x-mybills-signature': signature,
+      },
+      timeout: 60000,
+      maxContentLength: 100 * 1024 * 1024,
+      maxBodyLength: 100 * 1024 * 1024,
+    });
+    return { count: results.length, data: response.data };
+  } catch (err) {
+    console.error('[hrmsSyncService] dispatchBatchPayrollResultsToHrms failed:', err.response?.data || err.message);
+    throw err;
   }
 };

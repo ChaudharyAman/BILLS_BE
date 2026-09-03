@@ -11,6 +11,12 @@ const SubmissionFileSchema = new mongoose.Schema({
   sizeBytes:    { type: Number, required: true },
   buffer:       { type: Buffer, required: true },
   uploadedAt:   { type: Date,   default: Date.now },
+  parsedData:   { type: mongoose.Schema.Types.Mixed, default: null },
+  status:       { type: String, default: 'pending' },
+  resultingRecord: {
+    collection: { type: String, default: null },
+    recordId:   { type: mongoose.Schema.Types.ObjectId, default: null },
+  },
 }, { _id: false });
 
 // ── Main schema ──────────────────────────────────────────────────────────────

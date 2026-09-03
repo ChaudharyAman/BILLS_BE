@@ -265,3 +265,6 @@ exports.createSubmission = async (req, res) => {
     });
   }
 };
+
+exports.parseFile = parseFile;
+exports.guessSuggestedCategory = guessSuggestedCategory;

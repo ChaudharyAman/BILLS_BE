@@ -27,6 +27,7 @@ const {
   syncEmployees,
   syncAttendance,
   receiveHrmsWebhook,
+  publishPayslips,
   getCompensationTypes,
   processFullAndFinalSettlement,
   getBatchJobStatus,
@@ -48,6 +49,7 @@ router.post('/bulk-payslip-pdf', authorize('payroll', 'view'), bulkPayslipPdf);
 // Protected integration routes
 router.post('/integration/sync-employees', authorize('payroll', 'edit'), syncEmployees);
 router.get('/integration/attendance-sync', authorize('payroll', 'view'), syncAttendance);
+router.post('/integration/publish-payslips', authorize('payroll', 'approve'), publishPayslips);
 
 // Configuration routes
 router.get('/config', authorize('payroll', 'view'), getPayrollConfig);
