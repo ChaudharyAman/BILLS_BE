@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 const { syncExpiredSubscription } = require('../utils/subscriptionLifecycle');
+const escapeRegex = require('../utils/escapeRegex');
 
 // Generate JWT Token
 const generateToken = (user) => {
@@ -50,12 +51,16 @@ const buildAuthResponse = (req) => {
 const getCookieOptions = (req) => {
   const origin = req.get('origin') || '';
   const isLocalhost = origin.includes('localhost') || origin.includes('127.0.0.1');
+  const isHttps = req.secure || req.protocol === 'https' || req.get('x-forwarded-proto') === 'https';
   const envSameSite = process.env.COOKIE_SAME_SITE?.toLowerCase();
-  const sameSite = envSameSite || (isLocalhost ? 'lax' : 'none');
+  
+  // Browsers drop cookies if Secure is true over plain HTTP.
+  const secure = Boolean(isHttps && !isLocalhost);
+  const sameSite = envSameSite || (secure ? 'none' : 'lax');
   
   return {
     httpOnly: true,
-    secure: !isLocalhost,
+    secure,
     sameSite,
     maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
   };
@@ -76,11 +81,16 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { username, password } = req.body;
+    const cleanUsername = String(username || '').trim();
+
+    if (!cleanUsername || !password) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
 
     const user = await User.findOne({ 
         $or: [
-            { username: username }, 
-            { email: username.toLowerCase() }
+            { username: { $regex: new RegExp(`^${escapeRegex(cleanUsername)}$`, 'i') } }, 
+            { email: cleanUsername.toLowerCase() }
         ] 
     });
 

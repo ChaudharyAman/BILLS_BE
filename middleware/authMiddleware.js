@@ -4,20 +4,36 @@ const AccessRole = require('../models/AccessRole');
 const { syncExpiredSubscription } = require('../utils/subscriptionLifecycle');
 
 const protect = async (req, res, next) => {
-  let token;
-
+  const candidateTokens = [];
   if (req.cookies && req.cookies.token) {
-    token = req.cookies.token;
-  } else if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
-    token = req.headers.authorization.split(' ')[1];
+    candidateTokens.push(req.cookies.token);
+  }
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+    candidateTokens.push(req.headers.authorization.split(' ')[1]);
   }
 
-  if (!token) {
+  if (candidateTokens.length === 0) {
     return res.status(401).json({ message: 'Not authorized, no token' });
   }
 
+  let decoded = null;
+  let token = null;
+
+  for (const candidate of candidateTokens) {
+    try {
+      decoded = jwt.verify(candidate, process.env.JWT_SECRET);
+      token = candidate;
+      break;
+    } catch (err) {
+      // Continue to next candidate (e.g. if cookie was expired but fresh Bearer token is provided)
+    }
+  }
+
+  if (!decoded) {
+    return res.status(401).json({ message: 'Not authorized, token invalid or expired' });
+  }
+
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     req.user = await User.findById(decoded.id)
       .select('-password')
