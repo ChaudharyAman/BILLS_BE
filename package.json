@@ -12,6 +12,7 @@
     "test:system": "node scripts/run-complete-system-tests.js",
     "test:load": "node scripts/load-test-payroll-processing.js",
     "promote:admin": "node scripts/promote-admin.js",
+    "seed:admin": "node scripts/seed-admin.js",
     "cleanup:incomes": "node scripts/cleanup-unpaid-incomes.js"
   },
   "keywords": [],
