@@ -759,7 +759,7 @@ exports.createInvoice = async (req, res) => {
     }
     let finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
     if (finalBalance === 0 && finalStatus !== 'DRAFT' && finalStatus !== 'CANCELLED') {
-      finalStatus = 'PAID';
+      finalStatus = finalStatus === 'RECEIVED' ? 'RECEIVED' : 'PAID';
     } else if (finalBalance > 0 && finalAdvance > 0 && finalStatus !== 'CANCELLED') {
       finalStatus = 'PARTIAL';
     }
@@ -1042,7 +1042,7 @@ exports.updateInvoice = async (req, res) => {
     }
     let finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
     if (finalBalance === 0 && finalStatus !== 'DRAFT' && finalStatus !== 'CANCELLED') {
-      finalStatus = 'PAID';
+      finalStatus = finalStatus === 'RECEIVED' ? 'RECEIVED' : 'PAID';
     } else if (finalBalance > 0 && finalAdvance > 0 && finalStatus !== 'CANCELLED') {
       finalStatus = 'PARTIAL';
     }
