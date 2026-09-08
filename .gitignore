@@ -83,4 +83,5 @@ scripts/
 scripts
 
 # Local Tests
-tests/unit/submissionReviewController.test.js
+tests/unit/submissionReviewController.test.js
+tests/unit/invoiceFixes.test.js
