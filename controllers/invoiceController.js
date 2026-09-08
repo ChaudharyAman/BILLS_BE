@@ -35,7 +35,7 @@ async function syncInvoiceCashMovement(invoice, paymentDate = new Date(), sessio
   const status = invoice.status || 'DRAFT';
 
   let paidAmount = 0;
-  if (status === 'PAID') {
+  if (status === 'PAID' || status === 'RECEIVED') {
     paidAmount = Math.max(0, roundTwo(grandTotal - finalTds));
   } else if (status === 'PARTIAL') {
     paidAmount = Math.max(0, roundTwo(Number(invoice.advancePaid) || 0));
@@ -411,16 +411,22 @@ exports.getInvoices = async (req, res) => {
 
       const clientIds = matchedClients.map(c => c._id);
 
-      // Search either by invoice number OR matching clients
+      // Search by invoice number, matched client reference, or embedded client name / GSTIN
       query.$or = [
         { invoiceNo: { $regex: safeSearch, $options: 'i' } },
-        { 'client.clientRef': { $in: clientIds } }
+        { 'client.clientRef': { $in: clientIds } },
+        { 'client.name': { $regex: safeSearch, $options: 'i' } },
+        { 'client.gstin': { $regex: safeSearch, $options: 'i' } }
       ];
     }
 
     // Status Filter
     if (status) {
-      query.status = status;
+      if (status === 'RECEIVED' || status === 'PAID') {
+        query.status = { $in: ['PAID', 'RECEIVED'] };
+      } else {
+        query.status = status;
+      }
     }
 
     // Invoice Type Filter
@@ -476,14 +482,94 @@ exports.getInvoices = async (req, res) => {
       invoicesQuery.skip(skip).limit(limit);
     }
 
-    const invoices = await invoicesQuery;
+    const aggMatch = {
+      ...query,
+      user: new mongoose.Types.ObjectId(String(companyId)),
+      isDeleted: { $ne: true }
+    };
+
+    const [invoices, summaryAgg] = await Promise.all([
+      invoicesQuery,
+      Invoice.aggregate([
+        { $match: aggMatch },
+        {
+          $group: {
+            _id: null,
+            totalAmount: { $sum: '$grandTotal' },
+            totalTax: { $sum: '$taxTotal' },
+            totalTds: { $sum: '$tds' },
+            totalReceived: {
+              $sum: {
+                $cond: [
+                  { $in: ['$status', ['PAID', 'RECEIVED']] },
+                  { $subtract: ['$grandTotal', { $ifNull: ['$tds', 0] }] },
+                  { $ifNull: ['$advancePaid', 0] }
+                ]
+              }
+            },
+            totalPending: {
+              $sum: {
+                $cond: [
+                  { $in: ['$status', ['PAID', 'RECEIVED']] },
+                  0,
+                  { $ifNull: ['$balanceDue', { $subtract: ['$grandTotal', { $ifNull: ['$advancePaid', 0] }] }] }
+                ]
+              }
+            },
+            overdueAmount: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $not: [{ $in: ['$status', ['PAID', 'RECEIVED', 'CANCELLED']] }] },
+                      { $lt: ['$dueDate', new Date()] }
+                    ]
+                  },
+                  { $ifNull: ['$balanceDue', { $subtract: ['$grandTotal', { $ifNull: ['$advancePaid', 0] }] }] },
+                  0
+                ]
+              }
+            },
+            overdueCount: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $not: [{ $in: ['$status', ['PAID', 'RECEIVED', 'CANCELLED']] }] },
+                      { $lt: ['$dueDate', new Date()] }
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            }
+          }
+        }
+      ]).catch((err) => {
+        console.error('Invoice summary aggregation error:', err);
+        return [];
+      })
+    ]);
+
+    const summary = summaryAgg[0] || {
+      totalAmount: 0,
+      totalTax: 0,
+      totalTds: 0,
+      totalReceived: 0,
+      totalPending: 0,
+      overdueAmount: 0,
+      overdueCount: 0
+    };
+    delete summary._id;
 
     res.json({
       data: invoices,
       total,
       page: exportAll ? 1 : page,
       limit: exportAll ? total : limit,
-      totalPages: exportAll ? 1 : Math.ceil(total / limit)
+      totalPages: exportAll ? 1 : Math.ceil(total / limit),
+      summary
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -668,12 +754,12 @@ exports.createInvoice = async (req, res) => {
 
     let finalStatus = status || 'DRAFT';
     let finalAdvance = Number(advancePaid) || 0;
-    if (finalStatus === 'PAID') {
+    if (finalStatus === 'PAID' || finalStatus === 'RECEIVED') {
       finalAdvance = grandTotal - finalTds;
     }
     let finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
     if (finalBalance === 0 && finalStatus !== 'DRAFT' && finalStatus !== 'CANCELLED') {
-      finalStatus = 'PAID';
+      finalStatus = finalStatus === 'RECEIVED' ? 'RECEIVED' : 'PAID';
     } else if (finalBalance > 0 && finalAdvance > 0 && finalStatus !== 'CANCELLED') {
       finalStatus = 'PARTIAL';
     }
@@ -951,12 +1037,12 @@ exports.updateInvoice = async (req, res) => {
 
     let finalStatus = status || invoice.status || 'DRAFT';
     let finalAdvance = Number(advancePaid) || 0;
-    if (finalStatus === 'PAID') {
+    if (finalStatus === 'PAID' || finalStatus === 'RECEIVED') {
       finalAdvance = grandTotal - finalTds;
     }
     let finalBalance = Math.max(0, grandTotal - finalAdvance - finalTds);
     if (finalBalance === 0 && finalStatus !== 'DRAFT' && finalStatus !== 'CANCELLED') {
-      finalStatus = 'PAID';
+      finalStatus = finalStatus === 'RECEIVED' ? 'RECEIVED' : 'PAID';
     } else if (finalBalance > 0 && finalAdvance > 0 && finalStatus !== 'CANCELLED') {
       finalStatus = 'PARTIAL';
     }
@@ -1158,6 +1244,66 @@ exports.deleteInvoice = async (req, res) => {
   }
 };
 
+// ─── BULK DELETE invoices ───────────────────────────────────────────────────
+exports.bulkDeleteInvoices = async (req, res) => {
+  try {
+    const companyId = req.companyId || req.user._id;
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'No invoice IDs provided' });
+    }
+
+    const userObj = await User.findById(companyId);
+    const isPro = userObj?.subscription?.plan === 'pro' && userObj?.subscription?.status === 'active';
+    if (!isPro) {
+      return res.status(403).json({ message: 'Free users cannot delete documents. Please upgrade to Pro.' });
+    }
+
+    const validIds = ids.filter(id => mongoose.Types.ObjectId.isValid(id));
+    const invoices = await Invoice.find({ _id: { $in: validIds }, user: companyId });
+    if (!invoices.length) {
+      return res.status(404).json({ message: 'No matching invoices found' });
+    }
+
+    for (const invoice of invoices) {
+      const oldPoId = invoice.purchaseOrderRef;
+      const oldGrandTotal = invoice.grandTotal;
+      const isOldActive = ACTIVE_INVOICE_STATUSES.includes(invoice.status || 'DRAFT');
+
+      if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId) && isOldActive) {
+        const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, user: companyId });
+        if (oldPo) {
+          oldPo.billedAmount = Math.max(0, roundToTwo((oldPo.billedAmount || 0) - oldGrandTotal));
+          if (oldPo.billedAmount >= oldPo.grandTotal) {
+            oldPo.status = 'BILLED';
+          } else if (oldPo.billedAmount > 0) {
+            oldPo.status = 'PARTIAL';
+          } else {
+            oldPo.status = 'RECEIVED';
+          }
+          await oldPo.save();
+        }
+      }
+
+      await removeIncomeForInvoice(invoice._id, invoice.user);
+    }
+
+    const matchedIds = invoices.map(inv => inv._id);
+    await Invoice.updateMany(
+      { _id: { $in: matchedIds }, user: companyId },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
+    await CashLedgerEntry.updateMany(
+      { sourceModel: 'Invoice', sourceId: { $in: matchedIds }, user: companyId },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
+
+    res.json({ message: `Successfully deleted ${matchedIds.length} invoice(s)` });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // ─── UPDATE invoice status ───────────────────────────────────────────────────
 exports.updateInvoiceStatus = async (req, res) => {
   try {
@@ -1177,7 +1323,7 @@ exports.updateInvoiceStatus = async (req, res) => {
 
     invoice.status = status;
 
-    if (status === 'PAID') {
+    if (status === 'PAID' || status === 'RECEIVED') {
       invoice.advancePaid = grandTotal - finalTds;
       invoice.balanceDue = 0;
     } else if (status === 'UNPAID' || status === 'SENT') {

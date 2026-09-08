@@ -81,3 +81,7 @@ SYSTEM_TEST_REPORT.md
 # Scripts & Local Tools
 scripts/
 scripts
+
+# Local Tests
+tests/unit/submissionReviewController.test.js
+tests/unit/invoiceFixes.test.js

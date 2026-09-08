@@ -31,11 +31,13 @@ const PublicSubmissionSchema = new mongoose.Schema({
     index: true,
   },
 
-  // ── Submitter identity (all optional — unauthenticated external party) ──
-  submitterName:  { type: String, default: '' },
-  submitterEmail: { type: String, default: '' },
-  submitterPhone: { type: String, default: '' },
-  submitterNote:  { type: String, default: '' },
+  // ── Submitter identity ──
+  submitterName:     { type: String, default: '' },
+  submitterEmail:    { type: String, default: '' },
+  submitterPhone:    { type: String, default: '' },
+  submitterNote:     { type: String, default: '' },
+  submitterAvatar:   { type: String, default: '' },
+  isGoogleVerified:  { type: Boolean, default: false },
 
   // ── Uploaded files ──────────────────────────────────────────────────────
   files: [SubmissionFileSchema],

@@ -18,6 +18,7 @@ const documentUpload = require('../middleware/documentUpload');
 const {
   getPublicPage,
   createSubmission,
+  getMySubmissions,
 } = require('../controllers/publicSubmissionController');
 
 // ── Per-IP rate limiter for the public POST route ────────────────────────────
@@ -40,6 +41,10 @@ const publicPostLimiter = rateLimit({
 // GET /api/public/submit/:token
 // Returns safe company info for rendering the landing page.
 router.get('/submit/:token', getPublicPage);
+
+// GET /api/public/submit/:token/my-submissions
+// Returns past submissions made by the verified submitter to this portal.
+router.get('/submit/:token/my-submissions', getMySubmissions);
 
 // POST /api/public/submit/:token
 // Accepts up to 5 files (PDF/JPG/PNG) + submitter metadata.

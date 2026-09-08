@@ -43,19 +43,35 @@ async function resolveParty({
   }
 
   const name = String(partyName || '').trim();
-  if (!name) return null;
+  const gstinClean = partyGST ? String(partyGST).trim().toUpperCase() : null;
+  const panClean = partyPAN ? String(partyPAN).trim().toUpperCase() : null;
 
-  const escaped = escapeRegex(name).replace(/\s+/g, '\\s+');
-  const regex   = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
+  if (!name && !gstinClean && !panClean) return null;
 
-  const existing = await ClientModel.findOne({ user: userId, name: { $regex: regex } });
+  let existing = null;
+  if (gstinClean) {
+    existing = await ClientModel.findOne({ user: userId, gstin: gstinClean });
+  }
+  if (!existing && panClean) {
+    existing = await ClientModel.findOne({ user: userId, pan: panClean });
+  }
+  if (!existing && name) {
+    const escaped = escapeRegex(name).replace(/\s+/g, '\\s+');
+    const regex   = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
+    existing = await ClientModel.findOne({ user: userId, name: { $regex: regex } });
+  }
+
   if (existing) {
     let dirty = false;
     if (isVendor && !existing.isVendor)   { existing.isVendor = true; dirty = true; }
     if (isClient && !existing.isClient)   { existing.isClient = true; dirty = true; }
-    if (!existing.gstin && partyGST) {
-      existing.gstin = String(partyGST).trim().toUpperCase();
+    if (!existing.gstin && gstinClean) {
+      existing.gstin = gstinClean;
       existing.gstTreatment = 'Registered Business';
+      dirty = true;
+    }
+    if (!existing.pan && panClean) {
+      existing.pan = panClean;
       dirty = true;
     }
     if (dirty) await existing.save();
@@ -143,12 +159,43 @@ function formatSubmission(sub) {
 // ── Internal create helpers ───────────────────────────────────────────────────
 // These call the same logic the Express controllers use, without needing req/res.
 
-async function createExpenseFromSubmission(userId, parsedData, overrides, settings) {
+function formatLineItems(rawItems = [], grandTotal = 0, defaultItemName = 'Item') {
+  let items = (rawItems || []).map((item) => {
+    const qty = Number(item.quantity || item.qty || 1);
+    const rate = Number(item.price || item.rate || 0);
+    const amount = Number(item.amount !== undefined && item.amount !== null ? item.amount : (qty * rate));
+    return {
+      name:      String(item.name || defaultItemName).trim(),
+      qty:       qty > 0 ? qty : 1,
+      unit:      item.unit || 'PCS',
+      rate,
+      taxRate:   Number(item.gst || item.taxRate || 0),
+      taxAmount: Number(item.taxAmount || 0),
+      amount,
+    };
+  });
+
+  if (items.length === 0 && grandTotal > 0) {
+    items = [{
+      name:      defaultItemName,
+      qty:       1,
+      unit:      'PCS',
+      rate:      grandTotal,
+      taxRate:   0,
+      taxAmount: 0,
+      amount:    grandTotal,
+    }];
+  }
+  return items;
+}
+
+async function createExpenseFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Vendor') {
   const Expense    = getExpense();
 
+  const vendorName = String(overrides?.vendorName || parsedData?.vendorName || fallbackName || 'Vendor').trim();
   const vendor = await resolveParty({
     userId,
-    partyName: parsedData?.vendorName || '',
+    partyName: vendorName,
     partyGST:  parsedData?.vendorGST  || '',
     isVendor: true, isClient: false,
   });
@@ -157,36 +204,32 @@ async function createExpenseFromSubmission(userId, parsedData, overrides, settin
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
+  const balanceDue = overrides?.balanceDue !== undefined ? Number(overrides.balanceDue) : grandTotal;
 
   const expense = await Expense.create({
     user: userId,
     expenseNumber: overrides?.expenseNumber || docNumber,
     date:          overrides?.date          || parsedData?.invoiceDate || new Date(),
-    vendor:        vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: parsedData?.vendorName || '' },
-    items:         (overrides?.items || parsedData?.items || []).map((item) => ({
-      name:     item.name || 'Item',
-      qty:      Number(item.quantity || item.qty || 1),
-      unit:     item.unit || '',
-      rate:     Number(item.price || item.rate || 0),
-      taxRate:  Number(item.gst   || item.taxRate || 0),
-      taxAmount: 0,
-      amount:   Number(item.amount || 0),
-    })),
+    vendor:        vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: vendorName },
+    items:         formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'Expense Item'),
     subTotal,
     taxTotal,
     grandTotal,
+    balanceDue,
     status: 'UNPAID',
+    attachments: attachments || [],
     privateNotes: `Imported from public submission`,
   });
   return expense;
 }
 
-async function createInvoiceFromSubmission(userId, parsedData, overrides, settings) {
+async function createInvoiceFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Customer') {
   const Invoice = getInvoice();
 
+  const clientName = String(overrides?.clientName || parsedData?.clientName || fallbackName || 'Customer').trim();
   const client = await resolveParty({
     userId,
-    partyName: parsedData?.clientName || '',
+    partyName: clientName,
     partyGST:  parsedData?.clientGST  || '',
     isVendor: false, isClient: true,
   });
@@ -195,37 +238,36 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
+  const balanceDue = overrides?.balanceDue !== undefined ? Number(overrides.balanceDue) : grandTotal;
+  const roundOff   = overrides?.roundOff !== undefined ? Number(overrides.roundOff) : Number(parsedData?.roundOff || 0);
 
   const invoice = await Invoice.create({
     user: userId,
     invoiceNo:   overrides?.invoiceNo || parsedData?.invoiceNumber || docNumber,
     date:        overrides?.date      || parsedData?.invoiceDate   || new Date(),
     dueDate:     overrides?.dueDate   || parsedData?.dueDate       || null,
-    client:      client ? { clientRef: client._id, name: client.name } : { name: parsedData?.clientName || '' },
-    items:       (overrides?.items || parsedData?.items || []).map((item) => ({
-      name:    item.name || 'Item',
-      qty:     Number(item.quantity || item.qty || 1),
-      unit:    item.unit || '',
-      rate:    Number(item.price || item.rate || 0),
-      taxRate: Number(item.gst   || item.taxRate || 0),
-      taxAmount: 0,
-      amount:  Number(item.amount || 0),
-    })),
+    client:      client ? { clientRef: client._id, name: client.name } : { name: clientName },
+    items:       formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'Invoice Item'),
     subTotal,
     taxTotal,
     grandTotal,
+    totalAmount: grandTotal,
+    balanceDue,
+    roundOff,
     status: 'DRAFT',
+    attachments: attachments || [],
     notes: `Imported from public submission`,
   });
   return invoice;
 }
 
-async function createIncomeFromSubmission(userId, parsedData, overrides, settings) {
+async function createIncomeFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Customer') {
   const Income = getIncome();
 
+  const clientName = String(overrides?.clientName || parsedData?.clientName || parsedData?.vendorName || fallbackName || 'Customer').trim();
   const client = await resolveParty({
     userId,
-    partyName: parsedData?.clientName || parsedData?.vendorName || '',
+    partyName: clientName,
     partyGST:  parsedData?.clientGST  || '',
     isVendor: false, isClient: true,
   });
@@ -234,36 +276,32 @@ async function createIncomeFromSubmission(userId, parsedData, overrides, setting
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
+  const balanceDue = overrides?.balanceDue !== undefined ? Number(overrides.balanceDue) : grandTotal;
 
   const income = await Income.create({
     user: userId,
     incomeNumber: overrides?.incomeNumber || docNumber,
     date:         overrides?.date         || parsedData?.invoiceDate || new Date(),
-    client:       client ? { clientRef: client._id, name: client.name } : { name: parsedData?.clientName || '' },
-    items:        (overrides?.items || parsedData?.items || []).map((item) => ({
-      name:    item.name || 'Item',
-      qty:     Number(item.quantity || item.qty || 1),
-      unit:    item.unit || '',
-      rate:    Number(item.price || item.rate || 0),
-      taxRate: Number(item.gst   || item.taxRate || 0),
-      taxAmount: 0,
-      amount:  Number(item.amount || 0),
-    })),
+    client:       client ? { clientRef: client._id, name: client.name } : { name: clientName },
+    items:        formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'Income Item'),
     subTotal,
     taxTotal,
     grandTotal,
+    balanceDue,
     status: 'UNPAID',
+    attachments: attachments || [],
     privateNotes: `Imported from public submission`,
   });
   return income;
 }
 
-async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, settings) {
+async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Vendor') {
   const PurchaseOrder = getPurchaseOrder();
 
+  const vendorName = String(overrides?.vendorName || parsedData?.vendorName || fallbackName || 'Vendor').trim();
   const vendor = await resolveParty({
     userId,
-    partyName: parsedData?.vendorName || '',
+    partyName: vendorName,
     partyGST:  parsedData?.vendorGST  || '',
     isVendor: true, isClient: false,
   });
@@ -277,20 +315,13 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
     user: userId,
     poNumber:    overrides?.poNumber || docNumber,
     date:        overrides?.date     || parsedData?.invoiceDate || new Date(),
-    vendor:      vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: parsedData?.vendorName || '' },
-    items:       (overrides?.items || parsedData?.items || []).map((item) => ({
-      name:    item.name || 'Item',
-      qty:     Number(item.quantity || item.qty || 1),
-      unit:    item.unit || '',
-      rate:    Number(item.price || item.rate || 0),
-      taxRate: Number(item.gst   || item.taxRate || 0),
-      taxAmount: 0,
-      amount:  Number(item.amount || 0),
-    })),
+    vendor:      vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: vendorName },
+    items:       formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'PO Item'),
     subTotal,
     taxTotal,
     grandTotal,
     status: 'DRAFT',
+    attachments: attachments || [],
     notes: `Imported from public submission`,
   });
   return po;
@@ -299,7 +330,7 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/submissions
 // Paginated list filtered by companyId.
-// File buffers are excluded. Pending count included in response.
+// File buffers are excluded. Pending count and submitters summary included in response.
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getSubmissions = async (req, res) => {
   try {
@@ -312,7 +343,41 @@ exports.getSubmissions = async (req, res) => {
     const query = { user: companyId };
     if (status) query.status = status;
 
-    const [submissions, total, pendingCount] = await Promise.all([
+    let submittersParam = req.query.submitters || req.query.submitter;
+    let submitterList = [];
+    if (Array.isArray(submittersParam)) {
+      submitterList = submittersParam.map((s) => String(s).trim()).filter(Boolean);
+    } else if (typeof submittersParam === 'string' && submittersParam.trim()) {
+      submitterList = submittersParam.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+
+    if (submitterList.length > 0) {
+      const orConditions = [];
+      for (const item of submitterList) {
+        if (item.toLowerCase() === 'anonymous') {
+          orConditions.push({
+            $and: [
+              { $or: [{ submitterName: '' }, { submitterName: null }, { submitterName: 'Anonymous' }] },
+              { $or: [{ submitterEmail: '' }, { submitterEmail: null }] },
+            ],
+          });
+        } else if (item.includes('@')) {
+          orConditions.push({ submitterEmail: item.toLowerCase() });
+        } else {
+          orConditions.push(
+            { submitterName: item },
+            { submitterEmail: item.toLowerCase() }
+          );
+        }
+      }
+      if (orConditions.length > 0) {
+        query.$or = orConditions;
+      }
+    }
+
+    const companyObjectId = new mongoose.Types.ObjectId(companyId.toString());
+
+    const [submissions, total, pendingCount, submittersAggregation] = await Promise.all([
       PublicSubmission.find(query)
         .select('-files.buffer -ipAddress')   // never send buffer or IP over the wire
         .sort({ createdAt: -1 })
@@ -321,15 +386,122 @@ exports.getSubmissions = async (req, res) => {
         .lean({ virtuals: true }),
       PublicSubmission.countDocuments(query),
       status ? PublicSubmission.countDocuments({ user: companyId, status: 'pending' }) : Promise.resolve(null),
+      PublicSubmission.aggregate([
+        { $match: { user: companyObjectId } },
+        {
+          $group: {
+            _id: {
+              $cond: [
+                { $and: [{ $ne: ['$submitterEmail', null] }, { $ne: ['$submitterEmail', ''] }] },
+                { $toLower: '$submitterEmail' },
+                {
+                  $cond: [
+                    { $and: [{ $ne: ['$submitterName', null] }, { $ne: ['$submitterName', ''] }] },
+                    '$submitterName',
+                    'Anonymous'
+                  ]
+                }
+              ]
+            },
+            name: { $first: '$submitterName' },
+            email: { $first: '$submitterEmail' },
+            avatar: { $first: '$submitterAvatar' },
+            isGoogleVerified: { $max: '$isGoogleVerified' },
+            totalSubmissions: { $sum: 1 },
+            pendingCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] }
+            },
+            needsChangesCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'needs-changes'] }, 1, 0] }
+            },
+            approvedCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'approved'] }, 1, 0] }
+            },
+            rejectedCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'rejected'] }, 1, 0] }
+            },
+            totalAmount: {
+              $sum: {
+                $cond: [
+                  { $and: [{ $ne: ['$parsedData.grandTotal', null] }, { $gt: ['$parsedData.grandTotal', 0] }] },
+                  '$parsedData.grandTotal',
+                  0
+                ]
+              }
+            },
+            latestSubmissionAt: { $max: '$createdAt' }
+          }
+        },
+        { $sort: { latestSubmissionAt: -1 } }
+      ]),
     ]);
 
+    // Deduplicate / merge submitters if the same user submitted with/without email
+    const submitterMap = new Map();
+    for (const s of submittersAggregation || []) {
+      const name = (s.name || '').trim();
+      const email = (s.email || '').trim().toLowerCase();
+
+      let existingKey = null;
+      if (email) {
+        existingKey = email;
+      } else if (name && name.toLowerCase() !== 'anonymous') {
+        for (const [k, val] of submitterMap.entries()) {
+          if (val.name && val.name.toLowerCase() === name.toLowerCase()) {
+            existingKey = k;
+            break;
+          }
+        }
+        if (!existingKey) existingKey = name;
+      } else {
+        existingKey = 'Anonymous';
+      }
+
+      if (submitterMap.has(existingKey)) {
+        const existing = submitterMap.get(existingKey);
+        if (!existing.email && email) existing.email = email;
+        if (!existing.avatar && s.avatar) existing.avatar = s.avatar;
+        if (s.isGoogleVerified) existing.isGoogleVerified = true;
+        existing.keys.push(s._id);
+        existing.totalSubmissions += (s.totalSubmissions || 0);
+        existing.pendingCount += (s.pendingCount || 0);
+        existing.needsChangesCount += (s.needsChangesCount || 0);
+        existing.approvedCount += (s.approvedCount || 0);
+        existing.rejectedCount += (s.rejectedCount || 0);
+        existing.totalAmount += (s.totalAmount || 0);
+        if (new Date(s.latestSubmissionAt) > new Date(existing.latestSubmissionAt)) {
+          existing.latestSubmissionAt = s.latestSubmissionAt;
+        }
+      } else {
+        submitterMap.set(existingKey, {
+          key: s._id,
+          keys: [s._id],
+          name: name || (email ? email.split('@')[0] : 'Anonymous'),
+          email: email,
+          avatar: s.avatar || '',
+          isGoogleVerified: !!s.isGoogleVerified,
+          totalSubmissions: s.totalSubmissions || 0,
+          pendingCount: s.pendingCount || 0,
+          needsChangesCount: s.needsChangesCount || 0,
+          approvedCount: s.approvedCount || 0,
+          rejectedCount: s.rejectedCount || 0,
+          totalAmount: s.totalAmount || 0,
+          latestSubmissionAt: s.latestSubmissionAt,
+        });
+      }
+    }
+
+    const submitters = Array.from(submitterMap.values());
+
     return res.json({
-      data:         submissions.map(formatSubmission),
+      data:            submissions.map(formatSubmission),
       total,
       page,
       limit,
-      totalPages:   Math.ceil(total / limit),
-      pendingCount: pendingCount ?? total,
+      totalPages:      Math.ceil(total / limit),
+      pendingCount:    pendingCount ?? total,
+      totalSubmitters: submitters.length,
+      submitters,
     });
   } catch (error) {
     console.error('[Submission] getSubmissions error:', error.message);
@@ -401,6 +573,9 @@ exports.parseSubmissionFile = async (req, res) => {
     }, submission.suggestedCategory || 'expense');
 
     file.parsedData = parsed;
+    if (fileIndex === 0) {
+      submission.parsedData = parsed;
+    }
     submission.markModified('files');
     await submission.save();
 
@@ -553,23 +728,35 @@ exports.approveSubmission = async (req, res) => {
     const fileIndex = req.body.fileIndex !== undefined ? parseInt(req.body.fileIndex, 10) : undefined;
     const mode = req.body.mode;
 
-    const createRecordForData = async (data, customOverrides = {}) => {
+    const fileToAttachment = (f) => {
+      if (!f || !f.buffer) return null;
+      return {
+        originalName: f.originalName || 'file',
+        mimeType:     f.mimeType || 'application/pdf',
+        sizeBytes:    f.sizeBytes || (f.buffer ? f.buffer.length : 0),
+        buffer:       f.buffer,
+        uploadedAt:   f.uploadedAt || new Date(),
+      };
+    };
+
+    const createRecordForData = async (data, customOverrides = {}, fileAttachments = []) => {
+      const fallbackName = submission.submitterName || (category === 'invoice' || category === 'income' ? 'Customer' : 'Vendor');
       let rec, coll;
       switch (category) {
         case 'expense':
-          rec = await createExpenseFromSubmission(companyId, data, customOverrides, settings);
+          rec = await createExpenseFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
           coll = 'expenses';
           break;
         case 'invoice':
-          rec = await createInvoiceFromSubmission(companyId, data, customOverrides, settings);
+          rec = await createInvoiceFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
           coll = 'invoices';
           break;
         case 'income':
-          rec = await createIncomeFromSubmission(companyId, data, customOverrides, settings);
+          rec = await createIncomeFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
           coll = 'incomes';
           break;
         case 'purchaseorder':
-          rec = await createPurchaseOrderFromSubmission(companyId, data, customOverrides, settings);
+          rec = await createPurchaseOrderFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
           coll = 'purchaseorders';
           break;
         default:
@@ -580,12 +767,29 @@ exports.approveSubmission = async (req, res) => {
 
     // Mode 1: Approve all files as separate records
     if (mode === 'all-individual' && Array.isArray(submission.files) && submission.files.length > 1) {
+      const { parseFile } = require('./publicSubmissionController');
       const results = [];
       for (let i = 0; i < submission.files.length; i++) {
         const f = submission.files[i];
         if (f.status === 'approved') continue;
+
+        // Auto-extract if parsedData is missing but buffer exists
+        if (!f.parsedData && f.buffer) {
+          try {
+            f.parsedData = await parseFile({
+              buffer: f.buffer,
+              originalname: f.originalName,
+              mimetype: f.mimeType,
+              size: f.sizeBytes,
+            }, category);
+          } catch (pErr) {
+            console.warn(`[Approve All] Auto-parse failed for file ${i}:`, pErr.message);
+          }
+        }
+
         const fileData = f.parsedData || (i === 0 ? submission.parsedData : {});
-        const { record, collectionName } = await createRecordForData(fileData);
+        const att = fileToAttachment(f);
+        const { record, collectionName } = await createRecordForData(fileData, {}, att ? [att] : []);
         f.status = 'approved';
         f.resultingRecord = { collection: collectionName, recordId: record._id };
         results.push({ fileIndex: i, collection: collectionName, recordId: record._id });
@@ -625,7 +829,8 @@ exports.approveSubmission = async (req, res) => {
       }
 
       const fileData = targetFile.parsedData || (fileIndex === 0 ? submission.parsedData : {});
-      const { record, collectionName } = await createRecordForData(fileData, overrides);
+      const att = fileToAttachment(targetFile);
+      const { record, collectionName } = await createRecordForData(fileData, overrides, att ? [att] : []);
 
       targetFile.status = 'approved';
       targetFile.resultingRecord = { collection: collectionName, recordId: record._id };
@@ -660,7 +865,10 @@ exports.approveSubmission = async (req, res) => {
 
     // Mode 3: Consolidated (approve all files into one single record)
     const parsedData = submission.parsedData || {};
-    const { record, collectionName } = await createRecordForData(parsedData, overrides);
+    const allAttachments = (submission.files || [])
+      .map(fileToAttachment)
+      .filter(Boolean);
+    const { record, collectionName } = await createRecordForData(parsedData, overrides, allAttachments);
 
     submission.status = 'approved';
     submission.decidedBy = req.user._id;
@@ -830,8 +1038,20 @@ exports.splitSubmission = async (req, res) => {
         size: file.sizeBytes,
       };
 
-      const parsedData = await parseFile(fileForParsing, submission.suggestedCategory || 'expense');
+      const parsedData = (file.parsedData && Object.keys(file.parsedData).length > 0)
+        ? file.parsedData
+        : await parseFile(fileForParsing, submission.suggestedCategory || 'expense');
       const suggestedCategory = guessSuggestedCategory(allowed, parsedData, file.mimeType);
+
+      const fileForNewSub = {
+        originalName: file.originalName,
+        mimeType:     file.mimeType,
+        sizeBytes:    file.sizeBytes,
+        buffer:       file.buffer,
+        uploadedAt:   file.uploadedAt || new Date(),
+        parsedData,
+        status:       'pending',
+      };
 
       const newSub = await PublicSubmission.create({
         user: submission.user,
@@ -839,7 +1059,7 @@ exports.splitSubmission = async (req, res) => {
         submitterEmail: submission.submitterEmail,
         submitterPhone: submission.submitterPhone,
         submitterNote: submission.submitterNote,
-        files: [file],
+        files: [fileForNewSub],
         parsedData,
         suggestedCategory,
         status: 'pending',
@@ -902,6 +1122,10 @@ exports.removeSubmissionFile = async (req, res) => {
     }
 
     submission.files.splice(fileIndex, 1);
+    if (fileIndex === 0 && submission.files.length > 0) {
+      submission.parsedData = submission.files[0].parsedData || {};
+    }
+    submission.markModified('files');
     await submission.save();
 
     return res.json({

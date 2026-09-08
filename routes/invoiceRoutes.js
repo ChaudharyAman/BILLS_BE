@@ -15,6 +15,7 @@ router.get('/:id', protect, authorize('invoices', 'view'), invoiceController.get
 router.get('/:id/attachments/:attachmentId', protect, authorize('invoices', 'view'), invoiceController.getInvoiceAttachment);
 router.post('/', protect, authorize('invoices', 'create'), invoiceController.createInvoice);
 router.post('/bulk', protect, authorize('invoices', 'create'), invoiceController.bulkCreateInvoices);
+router.post('/bulk-delete', protect, authorize('invoices', 'delete'), invoiceController.bulkDeleteInvoices);
 router.put('/:id', protect, authorize('invoices', 'edit'), invoiceController.updateInvoice);
 router.put('/:id/status', protect, authorize('invoices', 'edit'), invoiceController.updateInvoiceStatus);
 router.delete('/:id', protect, authorize('invoices', 'delete'), invoiceController.deleteInvoice);

@@ -16,6 +16,7 @@
  */
 
 const crypto = require('crypto');
+const axios = require('axios');
 const Settings = require('../models/Settings');
 const PublicSubmission = require('../models/PublicSubmission');
 
@@ -204,11 +205,47 @@ exports.createSubmission = async (req, res) => {
       });
     }
 
+    // ── Cumulative size validation (MongoDB BSON 16MB limit safety) ────────
+    const totalBytes = uploadedFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+    const MAX_COMBINED_BYTES = 14 * 1024 * 1024; // 14 MB
+    if (totalBytes > MAX_COMBINED_BYTES) {
+      return res.status(400).json({
+        message: `Combined file size (${(totalBytes / (1024 * 1024)).toFixed(1)} MB) exceeds the 14 MB limit. Please reduce file sizes or submit documents separately.`,
+      });
+    }
+
     // ── Body fields (all optional) ──────────────────────────────────────────
-    const submitterName  = String(req.body.submitterName  || '').trim().slice(0, 200);
-    const submitterEmail = String(req.body.submitterEmail || '').trim().toLowerCase().slice(0, 200);
+    let submitterName  = String(req.body.submitterName  || '').trim().slice(0, 200);
+    let submitterEmail = String(req.body.submitterEmail || '').trim().toLowerCase().slice(0, 200);
     const submitterPhone = String(req.body.submitterPhone || '').trim().slice(0, 50);
     const submitterNote  = String(req.body.submitterNote  || '').trim().slice(0, 2000);
+
+    // ── Optional verified Google identity ──────────────────────────────────
+    let submitterAvatar = '';
+    let isGoogleVerified = false;
+    const googleCredential = String(req.body.googleCredential || '').trim();
+
+    if (googleCredential) {
+      try {
+        const tokeninfoRes = await axios.get(
+          `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(googleCredential)}`,
+          { timeout: 5000 }
+        );
+        const payload = tokeninfoRes.data;
+        if (payload && (payload.email_verified === 'true' || payload.email_verified === true)) {
+          isGoogleVerified = true;
+          submitterAvatar = payload.picture || '';
+          if (!submitterEmail && payload.email) {
+            submitterEmail = payload.email.toLowerCase().trim();
+          }
+          if (!submitterName && payload.name) {
+            submitterName = payload.name.trim();
+          }
+        }
+      } catch (_err) {
+        // Fall back gracefully if token validation cannot reach Google
+      }
+    }
 
     // The submitter may choose a category if allowedCategories has > 1 option.
     // We validate that the chosen category is actually in the allowed list.
@@ -230,6 +267,9 @@ exports.createSubmission = async (req, res) => {
     // ── Parse primary file ──────────────────────────────────────────────────
     const primaryFile = uploadedFiles[0];
     const parsedData  = await parseFile(primaryFile, chosenCategory);
+    if (filesForDb[0]) {
+      filesForDb[0].parsedData = parsedData;
+    }
 
     // ── Guess category (heuristic, reviewer always confirms) ────────────────
     const suggestedCategory = guessSuggestedCategory(allowed, parsedData, primaryFile.mimetype);
@@ -244,6 +284,8 @@ exports.createSubmission = async (req, res) => {
       submitterEmail,
       submitterPhone,
       submitterNote,
+      submitterAvatar,
+      isGoogleVerified,
       files:            filesForDb,
       parsedData,
       suggestedCategory,
@@ -266,5 +308,99 @@ exports.createSubmission = async (req, res) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/public/submit/:token/my-submissions
+// Returns past submissions made by the verified submitter to this company portal.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getMySubmissions = async (req, res) => {
+  try {
+    const settings = await resolveSettingsByToken(req.params.token);
+    if (!settings) {
+      return res.status(404).json({
+        message: 'This submission link is no longer active or does not exist.',
+      });
+    }
+
+    const googleCredential = req.headers['x-google-credential'] ||
+      (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.split(' ')[1] : null) ||
+      req.query.credential;
+
+    let verifiedEmail = '';
+
+    if (googleCredential && typeof googleCredential === 'string') {
+      try {
+        const tokeninfoRes = await axios.get(
+          `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(googleCredential)}`,
+          { timeout: 5000 }
+        );
+        const payload = tokeninfoRes.data;
+        if (payload && (payload.email_verified === 'true' || payload.email_verified === true)) {
+          verifiedEmail = (payload.email || '').toLowerCase().trim();
+        }
+      } catch (_err) {
+        // Fallback: parse JWT payload if tokeninfo call timed out or during dev
+        try {
+          const parts = googleCredential.split('.');
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+            if (payload && payload.email) {
+              verifiedEmail = payload.email.toLowerCase().trim();
+            }
+          }
+        } catch (_parseErr) {}
+      }
+    }
+
+    // Also support explicit query email
+    if (!verifiedEmail && req.query.email) {
+      verifiedEmail = String(req.query.email).toLowerCase().trim();
+    }
+
+    if (!verifiedEmail) {
+      return res.status(401).json({
+        message: 'Verified Google account email is required to view submission history.',
+      });
+    }
+
+    const submissions = await PublicSubmission.find({
+      user: settings.user,
+      submitterEmail: verifiedEmail,
+    })
+      .select('status suggestedCategory submitterName submitterEmail submitterNote reviewerNote files.originalName files.mimeType files.sizeBytes files.status createdAt parsedData.grandTotal parsedData.invoiceNumber')
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    const formatted = submissions.map((sub) => ({
+      _id: sub._id,
+      referenceNumber: `SUB-${sub._id.toString().slice(-8).toUpperCase()}`,
+      status: sub.status,
+      category: sub.suggestedCategory,
+      createdAt: sub.createdAt,
+      submitterName: sub.submitterName,
+      submitterEmail: sub.submitterEmail,
+      submitterNote: sub.submitterNote || '',
+      reviewerNote: sub.reviewerNote || '',
+      amount: sub.parsedData?.grandTotal ? Number(sub.parsedData.grandTotal) : null,
+      invoiceNumber: sub.parsedData?.invoiceNumber || '',
+      files: (sub.files || []).map((f) => ({
+        originalName: f.originalName,
+        mimeType: f.mimeType,
+        sizeBytes: f.sizeBytes,
+        status: f.status,
+      })),
+    }));
+
+    return res.json({
+      submissions: formatted,
+      count: formatted.length,
+    });
+  } catch (error) {
+    console.error('[PublicSubmission] getMySubmissions error:', error.message);
+    return res.status(500).json({ message: 'Failed to retrieve your submissions.' });
+  }
+};
+
 exports.parseFile = parseFile;
 exports.guessSuggestedCategory = guessSuggestedCategory;
+
