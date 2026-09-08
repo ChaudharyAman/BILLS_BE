@@ -32,6 +32,8 @@ app.use(cors({
     const allowedOrigins = [
       'http://localhost:5173',
       'http://localhost:5174',
+      'https://flance.in',
+      'https://www.flance.in',
       'https://bills-nu.vercel.app',
       process.env.CLIENT_URL,
     ].filter(Boolean);

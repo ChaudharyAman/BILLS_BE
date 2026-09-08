@@ -164,6 +164,7 @@ exports.getPublicPage = async (req, res) => {
       allowedCategories: ps.allowedCategories || ['expense'],
       instructionsText: ps.instructionsText || '',
       enabled: true,
+      googleClientId: process.env.GOOGLE_CLIENT_ID || '725664292682-ck24ngvdki7hs66qrvnm79lis1ov5e07.apps.googleusercontent.com',
     });
   } catch (error) {
     console.error('[PublicSubmission] getPublicPage error:', error.message);
