@@ -204,6 +204,15 @@ exports.createSubmission = async (req, res) => {
       });
     }
 
+    // ── Cumulative size validation (MongoDB BSON 16MB limit safety) ────────
+    const totalBytes = uploadedFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+    const MAX_COMBINED_BYTES = 14 * 1024 * 1024; // 14 MB
+    if (totalBytes > MAX_COMBINED_BYTES) {
+      return res.status(400).json({
+        message: `Combined file size (${(totalBytes / (1024 * 1024)).toFixed(1)} MB) exceeds the 14 MB limit. Please reduce file sizes or submit documents separately.`,
+      });
+    }
+
     // ── Body fields (all optional) ──────────────────────────────────────────
     const submitterName  = String(req.body.submitterName  || '').trim().slice(0, 200);
     const submitterEmail = String(req.body.submitterEmail || '').trim().toLowerCase().slice(0, 200);

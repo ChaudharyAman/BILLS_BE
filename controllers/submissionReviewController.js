@@ -143,12 +143,13 @@ function formatSubmission(sub) {
 // ── Internal create helpers ───────────────────────────────────────────────────
 // These call the same logic the Express controllers use, without needing req/res.
 
-async function createExpenseFromSubmission(userId, parsedData, overrides, settings) {
+async function createExpenseFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Vendor') {
   const Expense    = getExpense();
 
+  const vendorName = String(overrides?.vendorName || parsedData?.vendorName || fallbackName || 'Vendor').trim();
   const vendor = await resolveParty({
     userId,
-    partyName: parsedData?.vendorName || '',
+    partyName: vendorName,
     partyGST:  parsedData?.vendorGST  || '',
     isVendor: true, isClient: false,
   });
@@ -157,12 +158,13 @@ async function createExpenseFromSubmission(userId, parsedData, overrides, settin
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
+  const balanceDue = overrides?.balanceDue !== undefined ? Number(overrides.balanceDue) : grandTotal;
 
   const expense = await Expense.create({
     user: userId,
     expenseNumber: overrides?.expenseNumber || docNumber,
     date:          overrides?.date          || parsedData?.invoiceDate || new Date(),
-    vendor:        vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: parsedData?.vendorName || '' },
+    vendor:        vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: vendorName },
     items:         (overrides?.items || parsedData?.items || []).map((item) => ({
       name:     item.name || 'Item',
       qty:      Number(item.quantity || item.qty || 1),
@@ -175,18 +177,21 @@ async function createExpenseFromSubmission(userId, parsedData, overrides, settin
     subTotal,
     taxTotal,
     grandTotal,
+    balanceDue,
     status: 'UNPAID',
+    attachments: attachments || [],
     privateNotes: `Imported from public submission`,
   });
   return expense;
 }
 
-async function createInvoiceFromSubmission(userId, parsedData, overrides, settings) {
+async function createInvoiceFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Customer') {
   const Invoice = getInvoice();
 
+  const clientName = String(overrides?.clientName || parsedData?.clientName || fallbackName || 'Customer').trim();
   const client = await resolveParty({
     userId,
-    partyName: parsedData?.clientName || '',
+    partyName: clientName,
     partyGST:  parsedData?.clientGST  || '',
     isVendor: false, isClient: true,
   });
@@ -195,13 +200,14 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
+  const balanceDue = overrides?.balanceDue !== undefined ? Number(overrides.balanceDue) : grandTotal;
 
   const invoice = await Invoice.create({
     user: userId,
     invoiceNo:   overrides?.invoiceNo || parsedData?.invoiceNumber || docNumber,
     date:        overrides?.date      || parsedData?.invoiceDate   || new Date(),
     dueDate:     overrides?.dueDate   || parsedData?.dueDate       || null,
-    client:      client ? { clientRef: client._id, name: client.name } : { name: parsedData?.clientName || '' },
+    client:      client ? { clientRef: client._id, name: client.name } : { name: clientName },
     items:       (overrides?.items || parsedData?.items || []).map((item) => ({
       name:    item.name || 'Item',
       qty:     Number(item.quantity || item.qty || 1),
@@ -214,18 +220,22 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
     subTotal,
     taxTotal,
     grandTotal,
+    totalAmount: grandTotal,
+    balanceDue,
     status: 'DRAFT',
+    attachments: attachments || [],
     notes: `Imported from public submission`,
   });
   return invoice;
 }
 
-async function createIncomeFromSubmission(userId, parsedData, overrides, settings) {
+async function createIncomeFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Customer') {
   const Income = getIncome();
 
+  const clientName = String(overrides?.clientName || parsedData?.clientName || parsedData?.vendorName || fallbackName || 'Customer').trim();
   const client = await resolveParty({
     userId,
-    partyName: parsedData?.clientName || parsedData?.vendorName || '',
+    partyName: clientName,
     partyGST:  parsedData?.clientGST  || '',
     isVendor: false, isClient: true,
   });
@@ -234,12 +244,13 @@ async function createIncomeFromSubmission(userId, parsedData, overrides, setting
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
+  const balanceDue = overrides?.balanceDue !== undefined ? Number(overrides.balanceDue) : grandTotal;
 
   const income = await Income.create({
     user: userId,
     incomeNumber: overrides?.incomeNumber || docNumber,
     date:         overrides?.date         || parsedData?.invoiceDate || new Date(),
-    client:       client ? { clientRef: client._id, name: client.name } : { name: parsedData?.clientName || '' },
+    client:       client ? { clientRef: client._id, name: client.name } : { name: clientName },
     items:        (overrides?.items || parsedData?.items || []).map((item) => ({
       name:    item.name || 'Item',
       qty:     Number(item.quantity || item.qty || 1),
@@ -252,18 +263,21 @@ async function createIncomeFromSubmission(userId, parsedData, overrides, setting
     subTotal,
     taxTotal,
     grandTotal,
+    balanceDue,
     status: 'UNPAID',
+    attachments: attachments || [],
     privateNotes: `Imported from public submission`,
   });
   return income;
 }
 
-async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, settings) {
+async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Vendor') {
   const PurchaseOrder = getPurchaseOrder();
 
+  const vendorName = String(overrides?.vendorName || parsedData?.vendorName || fallbackName || 'Vendor').trim();
   const vendor = await resolveParty({
     userId,
-    partyName: parsedData?.vendorName || '',
+    partyName: vendorName,
     partyGST:  parsedData?.vendorGST  || '',
     isVendor: true, isClient: false,
   });
@@ -277,7 +291,7 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
     user: userId,
     poNumber:    overrides?.poNumber || docNumber,
     date:        overrides?.date     || parsedData?.invoiceDate || new Date(),
-    vendor:      vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: parsedData?.vendorName || '' },
+    vendor:      vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: vendorName },
     items:       (overrides?.items || parsedData?.items || []).map((item) => ({
       name:    item.name || 'Item',
       qty:     Number(item.quantity || item.qty || 1),
@@ -291,6 +305,7 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
     taxTotal,
     grandTotal,
     status: 'DRAFT',
+    attachments: attachments || [],
     notes: `Imported from public submission`,
   });
   return po;
@@ -401,6 +416,9 @@ exports.parseSubmissionFile = async (req, res) => {
     }, submission.suggestedCategory || 'expense');
 
     file.parsedData = parsed;
+    if (fileIndex === 0) {
+      submission.parsedData = parsed;
+    }
     submission.markModified('files');
     await submission.save();
 
@@ -553,23 +571,35 @@ exports.approveSubmission = async (req, res) => {
     const fileIndex = req.body.fileIndex !== undefined ? parseInt(req.body.fileIndex, 10) : undefined;
     const mode = req.body.mode;
 
-    const createRecordForData = async (data, customOverrides = {}) => {
+    const fileToAttachment = (f) => {
+      if (!f || !f.buffer) return null;
+      return {
+        originalName: f.originalName || 'file',
+        mimeType:     f.mimeType || 'application/pdf',
+        sizeBytes:    f.sizeBytes || (f.buffer ? f.buffer.length : 0),
+        buffer:       f.buffer,
+        uploadedAt:   f.uploadedAt || new Date(),
+      };
+    };
+
+    const createRecordForData = async (data, customOverrides = {}, fileAttachments = []) => {
+      const fallbackName = submission.submitterName || (category === 'invoice' || category === 'income' ? 'Customer' : 'Vendor');
       let rec, coll;
       switch (category) {
         case 'expense':
-          rec = await createExpenseFromSubmission(companyId, data, customOverrides, settings);
+          rec = await createExpenseFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
           coll = 'expenses';
           break;
         case 'invoice':
-          rec = await createInvoiceFromSubmission(companyId, data, customOverrides, settings);
+          rec = await createInvoiceFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
           coll = 'invoices';
           break;
         case 'income':
-          rec = await createIncomeFromSubmission(companyId, data, customOverrides, settings);
+          rec = await createIncomeFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
           coll = 'incomes';
           break;
         case 'purchaseorder':
-          rec = await createPurchaseOrderFromSubmission(companyId, data, customOverrides, settings);
+          rec = await createPurchaseOrderFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
           coll = 'purchaseorders';
           break;
         default:
@@ -580,12 +610,29 @@ exports.approveSubmission = async (req, res) => {
 
     // Mode 1: Approve all files as separate records
     if (mode === 'all-individual' && Array.isArray(submission.files) && submission.files.length > 1) {
+      const { parseFile } = require('./publicSubmissionController');
       const results = [];
       for (let i = 0; i < submission.files.length; i++) {
         const f = submission.files[i];
         if (f.status === 'approved') continue;
+
+        // Auto-extract if parsedData is missing but buffer exists
+        if (!f.parsedData && f.buffer) {
+          try {
+            f.parsedData = await parseFile({
+              buffer: f.buffer,
+              originalname: f.originalName,
+              mimetype: f.mimeType,
+              size: f.sizeBytes,
+            }, category);
+          } catch (pErr) {
+            console.warn(`[Approve All] Auto-parse failed for file ${i}:`, pErr.message);
+          }
+        }
+
         const fileData = f.parsedData || (i === 0 ? submission.parsedData : {});
-        const { record, collectionName } = await createRecordForData(fileData);
+        const att = fileToAttachment(f);
+        const { record, collectionName } = await createRecordForData(fileData, {}, att ? [att] : []);
         f.status = 'approved';
         f.resultingRecord = { collection: collectionName, recordId: record._id };
         results.push({ fileIndex: i, collection: collectionName, recordId: record._id });
@@ -625,7 +672,8 @@ exports.approveSubmission = async (req, res) => {
       }
 
       const fileData = targetFile.parsedData || (fileIndex === 0 ? submission.parsedData : {});
-      const { record, collectionName } = await createRecordForData(fileData, overrides);
+      const att = fileToAttachment(targetFile);
+      const { record, collectionName } = await createRecordForData(fileData, overrides, att ? [att] : []);
 
       targetFile.status = 'approved';
       targetFile.resultingRecord = { collection: collectionName, recordId: record._id };
@@ -660,7 +708,10 @@ exports.approveSubmission = async (req, res) => {
 
     // Mode 3: Consolidated (approve all files into one single record)
     const parsedData = submission.parsedData || {};
-    const { record, collectionName } = await createRecordForData(parsedData, overrides);
+    const allAttachments = (submission.files || [])
+      .map(fileToAttachment)
+      .filter(Boolean);
+    const { record, collectionName } = await createRecordForData(parsedData, overrides, allAttachments);
 
     submission.status = 'approved';
     submission.decidedBy = req.user._id;
