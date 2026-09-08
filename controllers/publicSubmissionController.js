@@ -239,6 +239,9 @@ exports.createSubmission = async (req, res) => {
     // ── Parse primary file ──────────────────────────────────────────────────
     const primaryFile = uploadedFiles[0];
     const parsedData  = await parseFile(primaryFile, chosenCategory);
+    if (filesForDb[0]) {
+      filesForDb[0].parsedData = parsedData;
+    }
 
     // ── Guess category (heuristic, reviewer always confirms) ────────────────
     const suggestedCategory = guessSuggestedCategory(allowed, parsedData, primaryFile.mimetype);

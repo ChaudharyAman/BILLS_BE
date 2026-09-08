@@ -43,19 +43,35 @@ async function resolveParty({
   }
 
   const name = String(partyName || '').trim();
-  if (!name) return null;
+  const gstinClean = partyGST ? String(partyGST).trim().toUpperCase() : null;
+  const panClean = partyPAN ? String(partyPAN).trim().toUpperCase() : null;
 
-  const escaped = escapeRegex(name).replace(/\s+/g, '\\s+');
-  const regex   = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
+  if (!name && !gstinClean && !panClean) return null;
 
-  const existing = await ClientModel.findOne({ user: userId, name: { $regex: regex } });
+  let existing = null;
+  if (gstinClean) {
+    existing = await ClientModel.findOne({ user: userId, gstin: gstinClean });
+  }
+  if (!existing && panClean) {
+    existing = await ClientModel.findOne({ user: userId, pan: panClean });
+  }
+  if (!existing && name) {
+    const escaped = escapeRegex(name).replace(/\s+/g, '\\s+');
+    const regex   = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
+    existing = await ClientModel.findOne({ user: userId, name: { $regex: regex } });
+  }
+
   if (existing) {
     let dirty = false;
     if (isVendor && !existing.isVendor)   { existing.isVendor = true; dirty = true; }
     if (isClient && !existing.isClient)   { existing.isClient = true; dirty = true; }
-    if (!existing.gstin && partyGST) {
-      existing.gstin = String(partyGST).trim().toUpperCase();
+    if (!existing.gstin && gstinClean) {
+      existing.gstin = gstinClean;
       existing.gstTreatment = 'Registered Business';
+      dirty = true;
+    }
+    if (!existing.pan && panClean) {
+      existing.pan = panClean;
       dirty = true;
     }
     if (dirty) await existing.save();
@@ -143,6 +159,36 @@ function formatSubmission(sub) {
 // ── Internal create helpers ───────────────────────────────────────────────────
 // These call the same logic the Express controllers use, without needing req/res.
 
+function formatLineItems(rawItems = [], grandTotal = 0, defaultItemName = 'Item') {
+  let items = (rawItems || []).map((item) => {
+    const qty = Number(item.quantity || item.qty || 1);
+    const rate = Number(item.price || item.rate || 0);
+    const amount = Number(item.amount !== undefined && item.amount !== null ? item.amount : (qty * rate));
+    return {
+      name:      String(item.name || defaultItemName).trim(),
+      qty:       qty > 0 ? qty : 1,
+      unit:      item.unit || 'PCS',
+      rate,
+      taxRate:   Number(item.gst || item.taxRate || 0),
+      taxAmount: Number(item.taxAmount || 0),
+      amount,
+    };
+  });
+
+  if (items.length === 0 && grandTotal > 0) {
+    items = [{
+      name:      defaultItemName,
+      qty:       1,
+      unit:      'PCS',
+      rate:      grandTotal,
+      taxRate:   0,
+      taxAmount: 0,
+      amount:    grandTotal,
+    }];
+  }
+  return items;
+}
+
 async function createExpenseFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Vendor') {
   const Expense    = getExpense();
 
@@ -165,15 +211,7 @@ async function createExpenseFromSubmission(userId, parsedData, overrides, settin
     expenseNumber: overrides?.expenseNumber || docNumber,
     date:          overrides?.date          || parsedData?.invoiceDate || new Date(),
     vendor:        vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: vendorName },
-    items:         (overrides?.items || parsedData?.items || []).map((item) => ({
-      name:     item.name || 'Item',
-      qty:      Number(item.quantity || item.qty || 1),
-      unit:     item.unit || '',
-      rate:     Number(item.price || item.rate || 0),
-      taxRate:  Number(item.gst   || item.taxRate || 0),
-      taxAmount: 0,
-      amount:   Number(item.amount || 0),
-    })),
+    items:         formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'Expense Item'),
     subTotal,
     taxTotal,
     grandTotal,
@@ -201,6 +239,7 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
   const balanceDue = overrides?.balanceDue !== undefined ? Number(overrides.balanceDue) : grandTotal;
+  const roundOff   = overrides?.roundOff !== undefined ? Number(overrides.roundOff) : Number(parsedData?.roundOff || 0);
 
   const invoice = await Invoice.create({
     user: userId,
@@ -208,20 +247,13 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
     date:        overrides?.date      || parsedData?.invoiceDate   || new Date(),
     dueDate:     overrides?.dueDate   || parsedData?.dueDate       || null,
     client:      client ? { clientRef: client._id, name: client.name } : { name: clientName },
-    items:       (overrides?.items || parsedData?.items || []).map((item) => ({
-      name:    item.name || 'Item',
-      qty:     Number(item.quantity || item.qty || 1),
-      unit:    item.unit || '',
-      rate:    Number(item.price || item.rate || 0),
-      taxRate: Number(item.gst   || item.taxRate || 0),
-      taxAmount: 0,
-      amount:  Number(item.amount || 0),
-    })),
+    items:       formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'Invoice Item'),
     subTotal,
     taxTotal,
     grandTotal,
     totalAmount: grandTotal,
     balanceDue,
+    roundOff,
     status: 'DRAFT',
     attachments: attachments || [],
     notes: `Imported from public submission`,
@@ -251,15 +283,7 @@ async function createIncomeFromSubmission(userId, parsedData, overrides, setting
     incomeNumber: overrides?.incomeNumber || docNumber,
     date:         overrides?.date         || parsedData?.invoiceDate || new Date(),
     client:       client ? { clientRef: client._id, name: client.name } : { name: clientName },
-    items:        (overrides?.items || parsedData?.items || []).map((item) => ({
-      name:    item.name || 'Item',
-      qty:     Number(item.quantity || item.qty || 1),
-      unit:    item.unit || '',
-      rate:    Number(item.price || item.rate || 0),
-      taxRate: Number(item.gst   || item.taxRate || 0),
-      taxAmount: 0,
-      amount:  Number(item.amount || 0),
-    })),
+    items:        formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'Income Item'),
     subTotal,
     taxTotal,
     grandTotal,
@@ -292,15 +316,7 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
     poNumber:    overrides?.poNumber || docNumber,
     date:        overrides?.date     || parsedData?.invoiceDate || new Date(),
     vendor:      vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: vendorName },
-    items:       (overrides?.items || parsedData?.items || []).map((item) => ({
-      name:    item.name || 'Item',
-      qty:     Number(item.quantity || item.qty || 1),
-      unit:    item.unit || '',
-      rate:    Number(item.price || item.rate || 0),
-      taxRate: Number(item.gst   || item.taxRate || 0),
-      taxAmount: 0,
-      amount:  Number(item.amount || 0),
-    })),
+    items:       formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'PO Item'),
     subTotal,
     taxTotal,
     grandTotal,
@@ -881,8 +897,20 @@ exports.splitSubmission = async (req, res) => {
         size: file.sizeBytes,
       };
 
-      const parsedData = await parseFile(fileForParsing, submission.suggestedCategory || 'expense');
+      const parsedData = (file.parsedData && Object.keys(file.parsedData).length > 0)
+        ? file.parsedData
+        : await parseFile(fileForParsing, submission.suggestedCategory || 'expense');
       const suggestedCategory = guessSuggestedCategory(allowed, parsedData, file.mimeType);
+
+      const fileForNewSub = {
+        originalName: file.originalName,
+        mimeType:     file.mimeType,
+        sizeBytes:    file.sizeBytes,
+        buffer:       file.buffer,
+        uploadedAt:   file.uploadedAt || new Date(),
+        parsedData,
+        status:       'pending',
+      };
 
       const newSub = await PublicSubmission.create({
         user: submission.user,
@@ -890,7 +918,7 @@ exports.splitSubmission = async (req, res) => {
         submitterEmail: submission.submitterEmail,
         submitterPhone: submission.submitterPhone,
         submitterNote: submission.submitterNote,
-        files: [file],
+        files: [fileForNewSub],
         parsedData,
         suggestedCategory,
         status: 'pending',
@@ -953,6 +981,10 @@ exports.removeSubmissionFile = async (req, res) => {
     }
 
     submission.files.splice(fileIndex, 1);
+    if (fileIndex === 0 && submission.files.length > 0) {
+      submission.parsedData = submission.files[0].parsedData || {};
+    }
+    submission.markModified('files');
     await submission.save();
 
     return res.json({
