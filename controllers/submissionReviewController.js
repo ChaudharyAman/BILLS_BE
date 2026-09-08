@@ -330,7 +330,7 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/submissions
 // Paginated list filtered by companyId.
-// File buffers are excluded. Pending count included in response.
+// File buffers are excluded. Pending count and submitters summary included in response.
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getSubmissions = async (req, res) => {
   try {
@@ -343,7 +343,41 @@ exports.getSubmissions = async (req, res) => {
     const query = { user: companyId };
     if (status) query.status = status;
 
-    const [submissions, total, pendingCount] = await Promise.all([
+    let submittersParam = req.query.submitters || req.query.submitter;
+    let submitterList = [];
+    if (Array.isArray(submittersParam)) {
+      submitterList = submittersParam.map((s) => String(s).trim()).filter(Boolean);
+    } else if (typeof submittersParam === 'string' && submittersParam.trim()) {
+      submitterList = submittersParam.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+
+    if (submitterList.length > 0) {
+      const orConditions = [];
+      for (const item of submitterList) {
+        if (item.toLowerCase() === 'anonymous') {
+          orConditions.push({
+            $and: [
+              { $or: [{ submitterName: '' }, { submitterName: null }, { submitterName: 'Anonymous' }] },
+              { $or: [{ submitterEmail: '' }, { submitterEmail: null }] },
+            ],
+          });
+        } else if (item.includes('@')) {
+          orConditions.push({ submitterEmail: item.toLowerCase() });
+        } else {
+          orConditions.push(
+            { submitterName: item },
+            { submitterEmail: item.toLowerCase() }
+          );
+        }
+      }
+      if (orConditions.length > 0) {
+        query.$or = orConditions;
+      }
+    }
+
+    const companyObjectId = new mongoose.Types.ObjectId(companyId.toString());
+
+    const [submissions, total, pendingCount, submittersAggregation] = await Promise.all([
       PublicSubmission.find(query)
         .select('-files.buffer -ipAddress')   // never send buffer or IP over the wire
         .sort({ createdAt: -1 })
@@ -352,15 +386,122 @@ exports.getSubmissions = async (req, res) => {
         .lean({ virtuals: true }),
       PublicSubmission.countDocuments(query),
       status ? PublicSubmission.countDocuments({ user: companyId, status: 'pending' }) : Promise.resolve(null),
+      PublicSubmission.aggregate([
+        { $match: { user: companyObjectId } },
+        {
+          $group: {
+            _id: {
+              $cond: [
+                { $and: [{ $ne: ['$submitterEmail', null] }, { $ne: ['$submitterEmail', ''] }] },
+                { $toLower: '$submitterEmail' },
+                {
+                  $cond: [
+                    { $and: [{ $ne: ['$submitterName', null] }, { $ne: ['$submitterName', ''] }] },
+                    '$submitterName',
+                    'Anonymous'
+                  ]
+                }
+              ]
+            },
+            name: { $first: '$submitterName' },
+            email: { $first: '$submitterEmail' },
+            avatar: { $first: '$submitterAvatar' },
+            isGoogleVerified: { $max: '$isGoogleVerified' },
+            totalSubmissions: { $sum: 1 },
+            pendingCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] }
+            },
+            needsChangesCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'needs-changes'] }, 1, 0] }
+            },
+            approvedCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'approved'] }, 1, 0] }
+            },
+            rejectedCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'rejected'] }, 1, 0] }
+            },
+            totalAmount: {
+              $sum: {
+                $cond: [
+                  { $and: [{ $ne: ['$parsedData.grandTotal', null] }, { $gt: ['$parsedData.grandTotal', 0] }] },
+                  '$parsedData.grandTotal',
+                  0
+                ]
+              }
+            },
+            latestSubmissionAt: { $max: '$createdAt' }
+          }
+        },
+        { $sort: { latestSubmissionAt: -1 } }
+      ]),
     ]);
 
+    // Deduplicate / merge submitters if the same user submitted with/without email
+    const submitterMap = new Map();
+    for (const s of submittersAggregation || []) {
+      const name = (s.name || '').trim();
+      const email = (s.email || '').trim().toLowerCase();
+
+      let existingKey = null;
+      if (email) {
+        existingKey = email;
+      } else if (name && name.toLowerCase() !== 'anonymous') {
+        for (const [k, val] of submitterMap.entries()) {
+          if (val.name && val.name.toLowerCase() === name.toLowerCase()) {
+            existingKey = k;
+            break;
+          }
+        }
+        if (!existingKey) existingKey = name;
+      } else {
+        existingKey = 'Anonymous';
+      }
+
+      if (submitterMap.has(existingKey)) {
+        const existing = submitterMap.get(existingKey);
+        if (!existing.email && email) existing.email = email;
+        if (!existing.avatar && s.avatar) existing.avatar = s.avatar;
+        if (s.isGoogleVerified) existing.isGoogleVerified = true;
+        existing.keys.push(s._id);
+        existing.totalSubmissions += (s.totalSubmissions || 0);
+        existing.pendingCount += (s.pendingCount || 0);
+        existing.needsChangesCount += (s.needsChangesCount || 0);
+        existing.approvedCount += (s.approvedCount || 0);
+        existing.rejectedCount += (s.rejectedCount || 0);
+        existing.totalAmount += (s.totalAmount || 0);
+        if (new Date(s.latestSubmissionAt) > new Date(existing.latestSubmissionAt)) {
+          existing.latestSubmissionAt = s.latestSubmissionAt;
+        }
+      } else {
+        submitterMap.set(existingKey, {
+          key: s._id,
+          keys: [s._id],
+          name: name || (email ? email.split('@')[0] : 'Anonymous'),
+          email: email,
+          avatar: s.avatar || '',
+          isGoogleVerified: !!s.isGoogleVerified,
+          totalSubmissions: s.totalSubmissions || 0,
+          pendingCount: s.pendingCount || 0,
+          needsChangesCount: s.needsChangesCount || 0,
+          approvedCount: s.approvedCount || 0,
+          rejectedCount: s.rejectedCount || 0,
+          totalAmount: s.totalAmount || 0,
+          latestSubmissionAt: s.latestSubmissionAt,
+        });
+      }
+    }
+
+    const submitters = Array.from(submitterMap.values());
+
     return res.json({
-      data:         submissions.map(formatSubmission),
+      data:            submissions.map(formatSubmission),
       total,
       page,
       limit,
-      totalPages:   Math.ceil(total / limit),
-      pendingCount: pendingCount ?? total,
+      totalPages:      Math.ceil(total / limit),
+      pendingCount:    pendingCount ?? total,
+      totalSubmitters: submitters.length,
+      submitters,
     });
   } catch (error) {
     console.error('[Submission] getSubmissions error:', error.message);
