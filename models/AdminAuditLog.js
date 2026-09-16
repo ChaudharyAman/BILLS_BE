@@ -26,6 +26,7 @@ const AdminAuditLogSchema = new mongoose.Schema({
       'SUPERADMIN_PROMOTION',
       'SUPERADMIN_DEMOTION',
       'RESET_USER_PASSWORD',
+      'UPDATE_USER_MODULES',
     ],
   },
   targetType: {

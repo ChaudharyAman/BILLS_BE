@@ -266,12 +266,17 @@ const createAccessRole = async (req, res) => {
       return res.status(400).json({ message: 'A role with this name already exists in your company' });
     }
 
-    // Build permissions map
+    // Build permissions map scoped to organization enabled modules
     const permMap = new Map();
     const inputPerms = permissions || {};
+    const isModuleAllowed = (mod) => {
+      if (!req.ownerUser?.enabledModules || !Array.isArray(req.ownerUser.enabledModules)) return true;
+      return req.ownerUser.enabledModules.includes(mod);
+    };
 
     for (const mod of AccessRole.SYSTEM_MODULES) {
-      const item = inputPerms[mod] || {};
+      const isAllowed = isModuleAllowed(mod);
+      const item = isAllowed ? (inputPerms[mod] || {}) : {};
       permMap.set(mod, {
         view: Boolean(item.view),
         create: Boolean(item.create),
@@ -322,9 +327,15 @@ const updateAccessRole = async (req, res) => {
 
     if (permissions) {
       const permMap = role.permissions || new Map();
+      const isModuleAllowed = (mod) => {
+        if (!req.ownerUser?.enabledModules || !Array.isArray(req.ownerUser.enabledModules)) return true;
+        return req.ownerUser.enabledModules.includes(mod);
+      };
+
       for (const mod of AccessRole.SYSTEM_MODULES) {
         if (permissions[mod]) {
-          const item = permissions[mod];
+          const isAllowed = isModuleAllowed(mod);
+          const item = isAllowed ? permissions[mod] : {};
           permMap.set(mod, {
             view: Boolean(item.view),
             create: Boolean(item.create),

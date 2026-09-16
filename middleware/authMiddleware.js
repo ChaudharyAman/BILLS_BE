@@ -60,19 +60,68 @@ const protect = async (req, res, next) => {
       }
     }
 
-    // Resolve permissions map
-    if (req.user.isOwner || req.user.role === 'superadmin') {
-      // Owner / superadmin has implicit full access to all modules
+    // Resolve permissions map with company enabledModules scoping
+    if (req.user.role === 'superadmin') {
+      // Superadmin has implicit full access to all modules
       const fullMap = new Map();
       for (const mod of AccessRole.SYSTEM_MODULES) {
-        fullMap.set(mod, { view: true, create: true, edit: true, delete: true, approve: true });
+        fullMap.set(mod, { view: true, create: true, edit: true, delete: true, approve: true, enabled: true });
       }
       req.permissions = fullMap;
-    } else if (req.user.accessRole && req.user.accessRole.permissions) {
-      req.permissions = req.user.accessRole.permissions;
     } else {
-      // Fail closed: no permissions granted if accessRole is missing or deleted
-      req.permissions = new Map();
+      const enabledList = Array.isArray(req.ownerUser?.enabledModules)
+        ? req.ownerUser.enabledModules
+        : AccessRole.SYSTEM_MODULES;
+      const enabledSet = new Set(enabledList);
+
+      if (req.user.isOwner) {
+        const fullMap = new Map();
+        const customPerms = req.ownerUser?.modulePermissions;
+        for (const mod of AccessRole.SYSTEM_MODULES) {
+          if (enabledSet.has(mod)) {
+            const custom = customPerms?.get ? customPerms.get(mod) : customPerms?.[mod];
+            const customObj = custom?.toObject ? custom.toObject() : (custom?._doc || custom || null);
+            if (customObj) {
+              fullMap.set(mod, {
+                view: customObj.view !== false,
+                create: customObj.create !== false,
+                edit: customObj.edit !== false,
+                delete: customObj.delete !== false,
+                approve: customObj.approve !== false,
+                enabled: true,
+              });
+            } else {
+              fullMap.set(mod, { view: true, create: true, edit: true, delete: true, approve: true, enabled: true });
+            }
+          } else {
+            fullMap.set(mod, { view: false, create: false, edit: false, delete: false, approve: false, enabled: false });
+          }
+        }
+        req.permissions = fullMap;
+      } else if (req.user.accessRole && req.user.accessRole.permissions) {
+        const rawPerms = req.user.accessRole.permissions;
+        const roleMap = new Map();
+        for (const mod of AccessRole.SYSTEM_MODULES) {
+          const modPerm = rawPerms.get ? rawPerms.get(mod) : rawPerms[mod];
+          const permObj = modPerm?.toObject ? modPerm.toObject() : (modPerm?._doc || modPerm || {});
+          if (enabledSet.has(mod) && modPerm) {
+            roleMap.set(mod, {
+              view: Boolean(permObj.view),
+              create: Boolean(permObj.create),
+              edit: Boolean(permObj.edit),
+              delete: Boolean(permObj.delete),
+              approve: Boolean(permObj.approve),
+              enabled: true,
+            });
+          } else {
+            roleMap.set(mod, { view: false, create: false, edit: false, delete: false, approve: false, enabled: false });
+          }
+        }
+        req.permissions = roleMap;
+      } else {
+        // Fail closed: no permissions granted if accessRole is missing or deleted
+        req.permissions = new Map();
+      }
     }
 
     // Keep plan state consistent: expired Pro users are auto-downgraded to free.
@@ -93,10 +142,35 @@ const protect = async (req, res, next) => {
  * @param {string} action - Action identifier ('view', 'create', 'edit', 'delete', 'approve')
  */
 const authorize = (moduleName, action) => (req, res, next) => {
-  if (req.user?.isOwner || req.user?.role === 'superadmin') {
+  if (req.user?.role === 'superadmin') {
     return next();
   }
 
+  // 1. Check company-level enabled modules
+  if (req.ownerUser?.enabledModules && Array.isArray(req.ownerUser.enabledModules)) {
+    if (!req.ownerUser.enabledModules.includes(moduleName)) {
+      return res.status(403).json({
+        message: `Forbidden: The '${moduleName}' module is disabled for your organization.`,
+      });
+    }
+  }
+
+  // 2. Company Owner Check with custom modulePermissions support
+  if (req.user?.isOwner) {
+    if (req.ownerUser?.modulePermissions) {
+      const customPerms = req.ownerUser.modulePermissions;
+      const custom = customPerms.get ? customPerms.get(moduleName) : customPerms[moduleName];
+      const customObj = custom?.toObject ? custom.toObject() : (custom?._doc || custom || null);
+      if (customObj && customObj[action] === false) {
+        return res.status(403).json({
+          message: `Forbidden: You do not have '${action}' permission for '${moduleName}'.`,
+        });
+      }
+    }
+    return next();
+  }
+
+  // 3. Team Member Permission Check
   if (!req.permissions) {
     return res.status(403).json({ message: `Forbidden: No permissions assigned.` });
   }

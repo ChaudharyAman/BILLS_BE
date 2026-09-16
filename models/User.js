@@ -104,6 +104,16 @@ const userSchema = new mongoose.Schema({
   inviteTokenExpires: {
     type: Date,
     default: null
+  },
+  // ── Company-level Enabled Modules & Permissions ──────────────────────────
+  enabledModules: {
+    type: [String],
+    default: undefined
+  },
+  modulePermissions: {
+    type: Map,
+    of: mongoose.Schema.Types.Mixed,
+    default: undefined
   }
 });
 
