@@ -87,7 +87,9 @@ exports.updateSettings = async (req, res) => {
       companyName, contactName, website, email, phone, gstin, pan,
       address, defaultTerms, defaultNotes, bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
-      defaultCurrency, timezone, dateFormat, integration
+      defaultCurrency, timezone, dateFormat, integration,
+      signatureEnabled, showSignatureOnInvoices, showSignatureOnQuotes, showSignatureOnPurchaseOrders, showLogoOnDocuments,
+      logoUrl, signatureUrl
     } = req.body;
 
     // Strip write-only secret placeholders so they are not overwritten with the mask value
@@ -106,8 +108,16 @@ exports.updateSettings = async (req, res) => {
       companyName, contactName, website, email, phone, gstin, pan,
       address, defaultTerms, defaultNotes, bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
-      defaultCurrency, timezone, dateFormat
+      defaultCurrency, timezone, dateFormat,
+      signatureEnabled: signatureEnabled !== undefined ? (signatureEnabled === true || signatureEnabled === 'true') : undefined,
+      showSignatureOnInvoices: showSignatureOnInvoices !== undefined ? (showSignatureOnInvoices === true || showSignatureOnInvoices === 'true') : undefined,
+      showSignatureOnQuotes: showSignatureOnQuotes !== undefined ? (showSignatureOnQuotes === true || showSignatureOnQuotes === 'true') : undefined,
+      showSignatureOnPurchaseOrders: showSignatureOnPurchaseOrders !== undefined ? (showSignatureOnPurchaseOrders === true || showSignatureOnPurchaseOrders === 'true') : undefined,
+      showLogoOnDocuments: showLogoOnDocuments !== undefined ? (showLogoOnDocuments === true || showLogoOnDocuments === 'true') : undefined,
     };
+
+    if (logoUrl === '') settingsUpdate.logoUrl = '';
+    if (signatureUrl === '') settingsUpdate.signatureUrl = '';
 
     // Remove undefined fields and invalid "[object Object]" strings (common in multipart/form-data submissions)
     Object.keys(settingsUpdate).forEach(key => {
