@@ -31,6 +31,11 @@ const buildAuthResponse = (req) => {
     }
   }
 
+  const AccessRole = require('../models/AccessRole');
+  const enabledModules = Array.isArray(req.ownerUser?.enabledModules)
+    ? req.ownerUser.enabledModules
+    : (Array.isArray(user.enabledModules) ? user.enabledModules : AccessRole.SYSTEM_MODULES);
+
   return {
     user: {
       _id: user._id,
@@ -45,6 +50,7 @@ const buildAuthResponse = (req) => {
       accessRole: user.accessRole,
       status: user.status || 'active',
       permissions: permissionsObj,
+      enabledModules,
     }
   };
 };

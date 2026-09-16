@@ -29,6 +29,13 @@ const SettingsSchema = new mongoose.Schema({
   logoUrl: String,
   signatureUrl: String,
 
+  // Document Appearance & Signature Display Preferences
+  signatureEnabled:              { type: Boolean, default: true },
+  showSignatureOnInvoices:       { type: Boolean, default: true },
+  showSignatureOnQuotes:         { type: Boolean, default: true },
+  showSignatureOnPurchaseOrders: { type: Boolean, default: true },
+  showLogoOnDocuments:           { type: Boolean, default: true },
+
   // Bank Details — used as snapshot on invoices
   bankDetails: {
     accountName:   String,

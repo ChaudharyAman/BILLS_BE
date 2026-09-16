@@ -101,8 +101,10 @@ const getCompanies = async (req, res) => {
     const countMap = new Map();
     teamCounts.forEach(t => countMap.set(String(t._id), t.count));
 
+    const AccessRole = require('../models/AccessRole');
     const companies = owners.map(o => ({
       ...o,
+      enabledModules: Array.isArray(o.enabledModules) ? o.enabledModules : AccessRole.SYSTEM_MODULES,
       teamMemberCount: countMap.get(String(o._id)) || 0,
     }));
 
@@ -258,7 +260,7 @@ const getAuditLogs = async (req, res) => {
 // @access  Private/Admin
 const createUser = async (req, res) => {
   try {
-    const { username, email, password, role, plan, billingCycle, endDate } = req.body;
+    const { username, email, password, role, plan, billingCycle, endDate, enabledModules, modulePermissions } = req.body;
 
     if (!username || !email || !password) {
       return res.status(400).json({ message: 'Username, email and password are required' });
@@ -287,6 +289,12 @@ const createUser = async (req, res) => {
       }
     }
 
+    const AccessRole = require('../models/AccessRole');
+    let validatedModules = undefined;
+    if (Array.isArray(enabledModules)) {
+      validatedModules = enabledModules.filter(m => AccessRole.SYSTEM_MODULES.includes(m));
+    }
+
     const user = await User.create({
       username,
       email: emailLower,
@@ -295,6 +303,8 @@ const createUser = async (req, res) => {
       subscription,
       isActive: true,
       isOwner: true,
+      enabledModules: validatedModules || AccessRole.SYSTEM_MODULES,
+      modulePermissions: modulePermissions || undefined,
     });
 
     user.companyId = user._id;
@@ -311,7 +321,7 @@ const createUser = async (req, res) => {
       'User',
       user._id,
       user.email,
-      { role: user.role, plan: subscription.plan }
+      { role: user.role, plan: subscription.plan, enabledModulesCount: user.enabledModules?.length }
     );
 
     res.status(201).json(userObj);
@@ -330,7 +340,7 @@ const createUser = async (req, res) => {
 // @access  Private/Admin
 const updateUserPlan = async (req, res) => {
   try {
-    const { plan, status, endDate, billingCycle, isActive, role } = req.body;
+    const { plan, status, endDate, billingCycle, isActive, role, enabledModules, modulePermissions } = req.body;
 
     const user = await User.findById(req.params.id);
     if (!user) {
@@ -382,11 +392,28 @@ const updateUserPlan = async (req, res) => {
 
     user.markModified('subscription');
 
+    // 3. Handle enabledModules update
+    if (enabledModules !== undefined) {
+      const AccessRole = require('../models/AccessRole');
+      if (Array.isArray(enabledModules)) {
+        user.enabledModules = enabledModules.filter(m => AccessRole.SYSTEM_MODULES.includes(m));
+        user.markModified('enabledModules');
+      }
+    }
+
+    // 4. Handle custom modulePermissions update
+    if (modulePermissions !== undefined) {
+      user.modulePermissions = modulePermissions;
+      user.markModified('modulePermissions');
+    }
+
     const updatedUser = await user.save();
 
     let action = 'UPDATE_USER_PLAN';
     if (role && role !== previousRole) {
       action = role === 'superadmin' ? 'SUPERADMIN_PROMOTION' : 'SUPERADMIN_DEMOTION';
+    } else if (enabledModules !== undefined) {
+      action = 'UPDATE_USER_MODULES';
     }
 
     await logAdminAction(
@@ -395,7 +422,15 @@ const updateUserPlan = async (req, res) => {
       'User',
       user._id,
       user.email || user.username,
-      { plan, status, billingCycle, isActive, role }
+      {
+        plan,
+        status,
+        billingCycle,
+        isActive,
+        role,
+        enabledModulesCount: updatedUser.enabledModules?.length,
+        enabledModules: updatedUser.enabledModules,
+      }
     );
 
     res.json(updatedUser);
