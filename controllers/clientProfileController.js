@@ -69,7 +69,7 @@ exports.createProfile = async (req, res) => {
       });
     }
 
-    const { name, code, clientTag, color, logoUrl } = req.body;
+    const { name, code, clientTag, color, logoUrl, isDefault } = req.body;
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ message: 'Profile name is required' });
     }
@@ -88,6 +88,11 @@ exports.createProfile = async (req, res) => {
     }
 
     const isFirstProfile = (currentProfilesCount === 0);
+    const shouldBeDefault = Boolean(isDefault) || isFirstProfile;
+
+    if (shouldBeDefault) {
+      await ClientProfile.updateMany({ owner: ownerId }, { $set: { isDefault: false } });
+    }
 
     let newProfile = null;
     try {
@@ -98,7 +103,7 @@ exports.createProfile = async (req, res) => {
         clientTag: clientTag ? String(clientTag).trim() : '',
         color: color || '#2563eb',
         logoUrl: logoUrl || '',
-        isDefault: isFirstProfile,
+        isDefault: shouldBeDefault,
         status: 'active',
       });
 
@@ -160,11 +165,15 @@ exports.updateProfile = async (req, res) => {
       return res.status(404).json({ message: 'Client profile not found or not owned by you.' });
     }
 
-    const { name, clientTag, color, logoUrl, status } = req.body;
+    const { name, clientTag, color, logoUrl, status, isDefault } = req.body;
     if (name !== undefined) profile.name = String(name).trim();
     if (clientTag !== undefined) profile.clientTag = String(clientTag).trim();
     if (color !== undefined) profile.color = String(color).trim();
     if (logoUrl !== undefined) profile.logoUrl = String(logoUrl).trim();
+    if (isDefault === true && !profile.isDefault) {
+      await ClientProfile.updateMany({ owner: ownerId }, { $set: { isDefault: false } });
+      profile.isDefault = true;
+    }
     if (status !== undefined && ['active', 'archived'].includes(status)) {
       if (status === 'archived') {
         if (profile.isDefault) {

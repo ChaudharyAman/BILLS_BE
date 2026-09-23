@@ -233,6 +233,7 @@ const InvoiceSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 InvoiceSchema.index({ user: 1, profile: 1, invoiceNo: 1 }, { unique: true, sparse: true });
+InvoiceSchema.index({ user: 1, invoiceNo: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 InvoiceSchema.index({ profile: 1, date: 1 });
 InvoiceSchema.index({ user: 1, date: 1 });
 InvoiceSchema.index({ user: 1, invoiceType: 1 });

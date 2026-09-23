@@ -1,153 +1,88 @@
 const mongoose = require('mongoose');
 
-const reconcileDatabaseIndexes = async () => {
-  const Invoice = require('./models/Invoice');
-  const PurchaseOrder = require('./models/PurchaseOrder');
-  const Payroll = require('./models/Payroll');
-
+const reconcileModelIndexes = async (Model) => {
   try {
-    // Reconcile Invoice Indexes
-    const invoiceIndexes = await Invoice.collection.indexes();
-    const staleInvoiceNoIndex = invoiceIndexes.find((index) => {
-      const keys = Object.keys(index.key || {});
-      return index.name === 'invoiceNo_1'
-        && keys.length === 1
-        && index.key.invoiceNo === 1;
-    });
+    const existingIndexes = await Model.collection.indexes();
+    for (const existing of existingIndexes) {
+      if (existing.name === '_id_') continue;
+      const keys = Object.keys(existing.key || {});
 
-    if (staleInvoiceNoIndex) {
-      await Invoice.collection.dropIndex(staleInvoiceNoIndex.name);
-      console.log('Dropped stale invoices.invoiceNo_1 index');
-    }
-
-    await Invoice.createIndexes();
-
-    // Reconcile PurchaseOrder Indexes
-    const poIndexes = await PurchaseOrder.collection.indexes();
-    const stalePoNoIndex = poIndexes.find((index) => {
-      const keys = Object.keys(index.key || {});
-      return index.name === 'poNumber_1'
-        && keys.length === 1
-        && index.key.poNumber === 1;
-    });
-
-    if (stalePoNoIndex) {
-      await PurchaseOrder.collection.dropIndex(stalePoNoIndex.name);
-      console.log('Dropped stale purchaseorders.poNumber_1 index');
-    }
-
-    await PurchaseOrder.createIndexes();
-
-    // Reconcile Payroll Indexes:
-    // Drop any old index on { user, employee, month, year } or { user, employee, month, year, isDeleted }
-    // that lacks partialFilterExpression: { isDeleted: false }.
-    // This ensures active payrolls cannot have duplicate runs (unique: true) while allowing
-    // reprocessing after soft-deleting an old payroll record.
-    try {
-      const payrollIndexes = await Payroll.collection.indexes();
-      const stalePayrollIndex = payrollIndexes.find((index) => {
-        const keys = Object.keys(index.key || {});
-        const isFourKeys = keys.length === 4
-          && index.key.user === 1
-          && index.key.employee === 1
-          && index.key.month === 1
-          && index.key.year === 1;
-
-        const isFiveKeys = keys.length === 5
-          && index.key.user === 1
-          && index.key.employee === 1
-          && index.key.month === 1
-          && index.key.year === 1
-          && index.key.isDeleted === 1;
-
-        const hasPartialFilter = index.partialFilterExpression && index.partialFilterExpression.isDeleted === false;
-
-        return (isFourKeys || isFiveKeys) && (!index.unique || !hasPartialFilter);
-      });
-
-      if (stalePayrollIndex) {
-        await Payroll.collection.dropIndex(stalePayrollIndex.name);
-        console.log(`Dropped stale payroll index: ${stalePayrollIndex.name}`);
+      // 1. Obsolete ancient single-field indexes (e.g. poNumber_1, invoiceNo_1)
+      if (keys.length === 1 && ['poNumber', 'invoiceNo', 'expenseNumber', 'quoteNo', 'proformaNo'].includes(keys[0])) {
+        console.log(`[db.js] Dropping obsolete single-key index: ${Model.collection.collectionName}.${existing.name}`);
+        await Model.collection.dropIndex(existing.name);
+        continue;
       }
 
-      await Payroll.createIndexes();
-    } catch (payrollIndexErr) {
-      if (payrollIndexErr.codeName !== 'NamespaceNotFound' && payrollIndexErr.code !== 26) {
-        console.warn('Payroll index reconciliation warning:', payrollIndexErr.message);
+      // 2. Legacy unique indexes on { user: 1, ... } or { companyId: 1, ... } that lack profile scoping
+      // Any unique index whose key starts with user/companyId, but lacks profile in its key and
+      // lacks profile in its partialFilterExpression, is the old single-tenant index that conflicts.
+      const isUserScoped = (existing.key?.user === 1 || existing.key?.companyId === 1);
+      const hasProfileInKey = 'profile' in (existing.key || {});
+      const hasProfileInFilter = existing.partialFilterExpression && ('profile' in existing.partialFilterExpression);
+
+      if (existing.unique && isUserScoped && !hasProfileInKey && !hasProfileInFilter) {
+        console.log(`[db.js] Dropping legacy unscoped unique index: ${Model.collection.collectionName}.${existing.name}`);
+        await Model.collection.dropIndex(existing.name);
+        continue;
+      }
+
+      // 3. Stale payroll index lacking isDeleted partial filter
+      if (Model.modelName === 'Payroll' && existing.unique && (!existing.partialFilterExpression || existing.partialFilterExpression.isDeleted !== false)) {
+        console.log(`[db.js] Dropping stale payroll index: ${Model.collection.collectionName}.${existing.name}`);
+        await Model.collection.dropIndex(existing.name);
+        continue;
+      }
+
+      // 4. Stale settings user_1 or non-unique profile_1
+      if (Model.modelName === 'Settings') {
+        if (existing.name === 'user_1' && existing.unique) {
+          console.log(`[db.js] Dropping stale unique settings.user_1 index`);
+          await Model.collection.dropIndex(existing.name);
+          continue;
+        }
+        if (existing.name === 'profile_1' && !existing.unique) {
+          console.log(`[db.js] Dropping stale non-unique settings.profile_1 index`);
+          await Model.collection.dropIndex(existing.name);
+          continue;
+        }
       }
     }
-
-    // Reconcile Settings Indexes (drop legacy unique user_1 index)
-    try {
-      const Settings = require('./models/Settings');
-      const settingsIndexes = await Settings.collection.indexes();
-      const staleUserIndex = settingsIndexes.find((index) => {
-        const keys = Object.keys(index.key || {});
-        return index.name === 'user_1' && keys.length === 1 && index.key.user === 1 && index.unique;
-      });
-      if (staleUserIndex) {
-        await Settings.collection.dropIndex(staleUserIndex.name);
-        console.log('Dropped stale unique settings.user_1 index');
-      }
-      const staleProfileIndex = settingsIndexes.find((index) => {
-        return index.name === 'profile_1' && !index.unique;
-      });
-      if (staleProfileIndex) {
-        await Settings.collection.dropIndex(staleProfileIndex.name);
-        console.log('Dropped stale non-unique settings.profile_1 index');
-      }
-      await Settings.createIndexes();
-    } catch (settingsIndexErr) {
-      if (settingsIndexErr.codeName !== 'NamespaceNotFound' && settingsIndexErr.code !== 26) {
-        console.warn('Settings index reconciliation warning:', settingsIndexErr.message);
-      }
+    await Model.createIndexes();
+  } catch (err) {
+    if (err.codeName !== 'NamespaceNotFound' && err.code !== 26) {
+      console.warn(`[db.js] Index reconciliation for ${Model.modelName || Model.collection?.collectionName}:`, err.message);
     }
+  }
+};
 
-    // Reconcile AccessRole Indexes (drop stale companyId_1_name_1 unique index)
-    try {
-      const AccessRole = require('./models/AccessRole');
-      const roleIndexes = await AccessRole.collection.indexes();
-      const staleRoleIndex = roleIndexes.find((index) => {
-        const keys = Object.keys(index.key || {});
-        return index.name === 'companyId_1_name_1' && keys.length === 2 && index.unique;
-      });
-      if (staleRoleIndex) {
-        await AccessRole.collection.dropIndex(staleRoleIndex.name);
-        console.log('Dropped stale accessroles.companyId_1_name_1 index');
-      }
-      await AccessRole.createIndexes();
-    } catch (roleIndexErr) {
-      if (roleIndexErr.codeName !== 'NamespaceNotFound' && roleIndexErr.code !== 26) {
-        console.warn('AccessRole index reconciliation warning:', roleIndexErr.message);
-      }
-    }
+const reconcileDatabaseIndexes = async () => {
+  const models = [
+    require('./models/Invoice'),
+    require('./models/PurchaseOrder'),
+    require('./models/Quote'),
+    require('./models/Proforma'),
+    require('./models/Expense'),
+    require('./models/Client'),
+    require('./models/Employee'),
+    require('./models/Category'),
+    require('./models/Department'),
+    require('./models/BusinessUnit'),
+    require('./models/Project'),
+    require('./models/Role'),
+    require('./models/LeaveType'),
+    require('./models/LeaveBalance'),
+    require('./models/CashAccount'),
+    require('./models/DocumentFolder'),
+    require('./models/Item'),
+    require('./models/Settings'),
+    require('./models/AccessRole'),
+    require('./models/Payroll'),
+    require('./models/PayrollConfig'),
+  ];
 
-    // Reconcile PayrollConfig Indexes (drop stale unique user_1 index)
-    try {
-      const PayrollConfig = require('./models/PayrollConfig');
-      const payrollConfigIndexes = await PayrollConfig.collection.indexes();
-      const staleUserIndex = payrollConfigIndexes.find((index) => {
-        const keys = Object.keys(index.key || {});
-        return index.name === 'user_1' && keys.length === 1 && index.unique;
-      });
-      if (staleUserIndex) {
-        await PayrollConfig.collection.dropIndex(staleUserIndex.name);
-        console.log('Dropped stale unique payrollconfigs.user_1 index');
-      }
-      await PayrollConfig.createIndexes();
-    } catch (payrollConfigIndexErr) {
-      if (payrollConfigIndexErr.codeName !== 'NamespaceNotFound' && payrollConfigIndexErr.code !== 26) {
-        console.warn('PayrollConfig index reconciliation warning:', payrollConfigIndexErr.message);
-      }
-    }
-  } catch (error) {
-    if (error.codeName === 'NamespaceNotFound' || error.code === 26) {
-      try { await Invoice.createIndexes(); } catch (_) {}
-      try { await PurchaseOrder.createIndexes(); } catch (_) {}
-      return;
-    }
-
-    throw error;
+  for (const Model of models) {
+    await reconcileModelIndexes(Model);
   }
 };
 

@@ -368,18 +368,20 @@ const markPayrollAsPaid = async (req, res) => {
     });
 
     // Background pre-generate and persist payslip PDF for fast re-downloads
-    (async () => {
-      try {
-        const Settings = require('../../models/Settings');
-        const { generateSinglePayslipPdf, getStoredPayslipPath } = require('../../services/pdfGeneratorService');
-        const fs = require('fs');
-        const settings = await Settings.findOne({ user: req.user._id }).lean();
-        const pdfBuf = await generateSinglePayslipPdf({ payroll, settings });
-        fs.writeFileSync(getStoredPayslipPath(payroll._id), pdfBuf);
-      } catch (pdfErr) {
-        console.error('Paid payroll PDF pre-generation error:', pdfErr.message);
-      }
-    })();
+    if (process.env.NODE_ENV !== 'test') {
+      (async () => {
+        try {
+          const Settings = require('../../models/Settings');
+          const { generateSinglePayslipPdf, getStoredPayslipPath } = require('../../services/pdfGeneratorService');
+          const fs = require('fs');
+          const settings = await Settings.findOne({ user: req.user._id }).lean();
+          const pdfBuf = await generateSinglePayslipPdf({ payroll, settings });
+          fs.writeFileSync(getStoredPayslipPath(payroll._id), pdfBuf);
+        } catch (pdfErr) {
+          console.error('Paid payroll PDF pre-generation error:', pdfErr.message);
+        }
+      })();
+    }
 
     // Reverse sync: notify HRMS of payroll result (fire-and-forget, non-blocking)
     (async () => {

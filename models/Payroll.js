@@ -285,7 +285,7 @@ PayrollSchema.pre('validate', function() {
 
 PayrollSchema.index(
   { user: 1, profile: 1, employee: 1, month: 1, year: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: false }, sparse: true }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 PayrollSchema.index(
   { user: 1, employee: 1, month: 1, year: 1 },
