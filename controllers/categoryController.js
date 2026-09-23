@@ -4,6 +4,7 @@ const Expense = require('../models/Expense');
 const Income = require('../models/Income');
 const Budget = require('../models/Budget');
 const RecurringTransaction = require('../models/RecurringTransaction');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 const DEFAULT_CATEGORIES = {
   expense: [
@@ -35,7 +36,7 @@ const DEFAULT_CATEGORIES = {
 
 const normalizeName = (name) => String(name || '').trim();
 
-const validateParent = async ({ userId, parent, type, categoryId }) => {
+const validateParent = async ({ req, userId, parent, type, categoryId }) => {
   if (!parent) return null;
   if (!mongoose.Types.ObjectId.isValid(parent)) {
     const error = new Error('Invalid parent category');
@@ -49,7 +50,10 @@ const validateParent = async ({ userId, parent, type, categoryId }) => {
     throw error;
   }
 
-  const parentCategory = await Category.findOne({ _id: parent, user: userId, type });
+  const parentFilter = req
+    ? { _id: parent, ...getTenantFilter(req), type }
+    : { _id: parent, user: userId, type };
+  const parentCategory = await Category.findOne(parentFilter);
   if (!parentCategory) {
     const error = new Error('Parent category not found');
     error.statusCode = 400;
@@ -135,9 +139,8 @@ exports.initializeDefaultsForUser = initializeDefaultsForUser;
 
 exports.getCategories = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const { type, parent } = req.query;
-    const query = { user: companyId };
+    const query = { ...getTenantFilter(req) };
 
     if (type) query.type = type;
     if (parent === 'root') query.parent = null;
@@ -166,12 +169,13 @@ exports.createCategory = async (req, res) => {
     }
 
     const parent = await validateParent({
+      req,
       userId: companyId,
       parent: req.body.parent || null,
       type,
     });
 
-    const category = await Category.create({
+    const category = await Category.create(attachTenant(req, {
       user: companyId,
       name,
       type,
@@ -182,7 +186,7 @@ exports.createCategory = async (req, res) => {
       isCogs: Boolean(isCogs),
       parent,
       isSystem: false,
-    });
+    }));
 
     res.status(201).json(category);
   } catch (error) {
@@ -201,7 +205,8 @@ exports.updateCategory = async (req, res) => {
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    const category = await Category.findOne({ _id: req.params.id, user: companyId });
+    const tenantFilter = getTenantFilter(req);
+    const category = await Category.findOne({ _id: req.params.id, ...tenantFilter });
     if (!category) {
       return res.status(404).json({ message: 'Category not found' });
     }
@@ -231,6 +236,7 @@ exports.updateCategory = async (req, res) => {
 
     if (Object.prototype.hasOwnProperty.call(req.body, 'parent')) {
       updateData.parent = await validateParent({
+        req,
         userId: companyId,
         parent: req.body.parent || null,
         type: updateData.type || category.type,
@@ -238,6 +244,7 @@ exports.updateCategory = async (req, res) => {
       });
     } else if (req.body.type !== undefined && req.body.type !== category.type && category.parent) {
       updateData.parent = await validateParent({
+        req,
         userId: companyId,
         parent: req.body.parent || null,
         type: updateData.type || category.type,
@@ -246,7 +253,7 @@ exports.updateCategory = async (req, res) => {
     }
 
     const updated = await Category.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...tenantFilter },
       { $set: updateData },
       { returnDocument: 'after', runValidators: true }
     ).populate('parent', 'name type color icon');
@@ -268,13 +275,14 @@ exports.deleteCategory = async (req, res) => {
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    const category = await Category.findOne({ _id: req.params.id, user: companyId });
+    const tenantFilter = getTenantFilter(req);
+    const category = await Category.findOne({ _id: req.params.id, ...tenantFilter });
     if (!category) {
       return res.status(404).json({ message: 'Category not found' });
     }
 
     // Find all child sub-categories (if any)
-    const children = await Category.find({ user: companyId, parent: category._id });
+    const children = await Category.find({ ...tenantFilter, parent: category._id });
     const categoryIdsToCheck = [category._id, ...children.map(c => c._id)];
 
     const isSubCategory = !!category.parent;
@@ -283,25 +291,25 @@ exports.deleteCategory = async (req, res) => {
     // Check if any Expenses, Incomes, Budgets, or Recurring Transactions are assigned
     const [expenseCount, incomeCount, budgetCount, recurringCount] = await Promise.all([
       Expense.countDocuments({
-        user: companyId,
+        ...tenantFilter,
         $or: [
           { category: { $in: categoryIdsToCheck } },
           { subCategory: { $in: categoryIdsToCheck } }
         ]
       }),
       Income.countDocuments({
-        user: companyId,
+        ...tenantFilter,
         $or: [
           { category: { $in: categoryIdsToCheck } },
           { subCategory: { $in: categoryIdsToCheck } }
         ]
       }),
       Budget.countDocuments({
-        user: companyId,
+        ...tenantFilter,
         category: { $in: categoryIdsToCheck }
       }).catch(() => 0),
       RecurringTransaction.countDocuments({
-        user: companyId,
+        ...tenantFilter,
         $or: [
           { category: { $in: categoryIdsToCheck } },
           { subCategory: { $in: categoryIdsToCheck } }
@@ -319,14 +327,14 @@ exports.deleteCategory = async (req, res) => {
     // Soft-delete any child sub-categories
     for (const child of children) {
       await Category.findOneAndUpdate(
-        { _id: child._id, user: companyId },
+        { _id: child._id, ...tenantFilter },
         { $set: { isDeleted: true, deletedAt: new Date() } }
       );
     }
 
     // Soft-delete the target category
     await Category.findOneAndUpdate(
-      { _id: category._id, user: companyId },
+      { _id: category._id, ...tenantFilter },
       { $set: { isDeleted: true, deletedAt: new Date() } }
     );
 
@@ -341,7 +349,7 @@ exports.initializeDefaultCategories = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
     await initializeDefaultsForUser(companyId);
-    const categories = await Category.find({ user: companyId })
+    const categories = await Category.find(getTenantFilter(req))
       .sort({ type: 1, parent: 1, name: 1 })
       .lean();
     res.status(201).json({ message: 'Default categories initialized', categories });

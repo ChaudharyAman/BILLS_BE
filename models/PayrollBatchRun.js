@@ -11,6 +11,7 @@ const mongoose = require('mongoose');
 const PayrollBatchRunSchema = new mongoose.Schema({
   jobId: { type: String, required: true, unique: true, index: true },
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   month: { type: Number, required: true },
   year: { type: Number, required: true },
   saveAsDraft: { type: Boolean, default: false },
@@ -31,6 +32,7 @@ const PayrollBatchRunSchema = new mongoose.Schema({
   completedAt: { type: Date, default: null },
 }, { timestamps: true });
 
+PayrollBatchRunSchema.index({ profile: 1, month: 1, year: 1 });
 PayrollBatchRunSchema.index({ user: 1, month: 1, year: 1 });
 
 module.exports = mongoose.model('PayrollBatchRun', PayrollBatchRunSchema);

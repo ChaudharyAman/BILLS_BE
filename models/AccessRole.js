@@ -12,7 +12,13 @@ const AccessRoleSchema = new mongoose.Schema({
   companyId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
+    required: false,
+    index: true,
+  },
+  profile: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ClientProfile',
+    required: false,
     index: true,
   },
   name: {
@@ -36,11 +42,13 @@ const AccessRoleSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
-// Ensure unique role names per company
-AccessRoleSchema.index({ companyId: 1, name: 1 }, { unique: true });
+// Ensure unique role names per profile (and per company when profile is null)
+AccessRoleSchema.index({ profile: 1, name: 1 }, { unique: true, sparse: true });
+AccessRoleSchema.index({ companyId: 1, profile: 1, name: 1 }, { unique: true, sparse: true });
 
 // Standard system role templates
 AccessRoleSchema.statics.SYSTEM_MODULES = [
+  'clientProfiles',
   'expenses',
   'income',
   'invoices',
@@ -72,7 +80,7 @@ AccessRoleSchema.statics.SYSTEM_MODULES = [
   'publicSubmissions',
 ];
 
-AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId) {
+AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId, profileId = null) {
   const modules = this.SYSTEM_MODULES;
 
   const buildPermissionMap = (view, create, edit, del, approve) => {
@@ -103,6 +111,7 @@ AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId) {
   return [
     {
       companyId,
+      profile: profileId,
       name: 'Admin',
       description: 'Full operational access across all company modules',
       isSystemRole: true,
@@ -110,6 +119,7 @@ AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId) {
     },
     {
       companyId,
+      profile: profileId,
       name: 'Manager',
       description: 'View, create, and edit operations; no delete or administrative settings access',
       isSystemRole: true,
@@ -117,6 +127,7 @@ AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId) {
     },
     {
       companyId,
+      profile: profileId,
       name: 'Accountant',
       description: 'Full access to financial, billing, and accounting modules',
       isSystemRole: true,
@@ -124,8 +135,9 @@ AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId) {
     },
     {
       companyId,
+      profile: profileId,
       name: 'Viewer',
-      description: 'Read-only access across company modules',
+      description: 'Read-only access across all enabled modules',
       isSystemRole: true,
       permissions: viewerMap,
     },

@@ -17,6 +17,7 @@ const RateCardItemSchema = new mongoose.Schema({
 
 const EmployeeSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
 
   employeeId: { type: String, required: true, trim: true },
   firstName: { type: String, required: true, trim: true },
@@ -784,6 +785,9 @@ EmployeeSchema.post('findOneAndUpdate', function (doc) {
     if (doc) decryptEmployeePII(doc);
   }
 });
+
+EmployeeSchema.index({ profile: 1, employeeId: 1 }, { sparse: true });
+EmployeeSchema.index({ user: 1, employeeId: 1 }, { sparse: true });
 
 EmployeeSchema.plugin(softDeletePlugin);
 

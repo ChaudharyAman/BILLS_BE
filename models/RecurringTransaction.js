@@ -9,6 +9,7 @@ const PartySchema = new mongoose.Schema({
 
 const RecurringTransactionSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   type: { type: String, enum: ['income', 'expense'], required: true, index: true },
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true },
   subCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
@@ -36,6 +37,7 @@ const RecurringTransactionSchema = new mongoose.Schema({
   notifyDaysBefore: { type: Number, default: 3 },
 }, { timestamps: true });
 
+RecurringTransactionSchema.index({ profile: 1, type: 1, isActive: 1, nextProcessDate: 1 });
 RecurringTransactionSchema.index({ user: 1, type: 1, isActive: 1, nextProcessDate: 1 });
 
 RecurringTransactionSchema.plugin(softDeletePlugin);

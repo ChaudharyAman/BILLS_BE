@@ -1,5 +1,6 @@
 const Client = require('../models/Client');
 const escapeRegex = require('../utils/escapeRegex');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 const mergeClientFields = (existing, incoming) => {
   if (!existing || !incoming) return;
@@ -112,8 +113,9 @@ exports.getClients = async (req, res) => {
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
+    const tenantFilter = getTenantFilter(req);
     let query = { 
-      user: companyId, 
+      ...tenantFilter, 
       $or: [{ isClient: true }, { isClient: { $exists: false } }] 
     };
 
@@ -143,14 +145,15 @@ exports.getClients = async (req, res) => {
 exports.getVendors = async (req, res) => {
   try {
     const companyId = req.companyId || req.user?._id;
-    if (!companyId) { return res.status(401).json({ message: 'Not authorized' }); }
+    if (!companyId && !req.activeProfileId) { return res.status(401).json({ message: 'Not authorized' }); }
 
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    let query = { user: companyId, isVendor: true };
+    const tenantFilter = getTenantFilter(req);
+    let query = { ...tenantFilter, isVendor: true };
     if (search) { 
       const safeSearch = escapeRegex(search);
       query.name = { $regex: safeSearch, $options: 'i' }; 
@@ -188,7 +191,7 @@ exports.createClient = async (req, res) => {
 
     if (name && typeof name === 'string') {
       const existingClient = await Client.findOne({
-        user: companyId,
+        ...getTenantFilter(req),
         name: { $regex: new RegExp("^" + escapeRegex(name.trim()) + "$", "i") }
       });
 
@@ -199,15 +202,14 @@ exports.createClient = async (req, res) => {
       }
     }
 
-    const client = new Client({
+    const client = new Client(attachTenant(req, {
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
       contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
       useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
       facebook, lst, cst, dlNo, openingBalance,
       tds_applicable, default_tds_section, default_tds_rate,
-      user: companyId
-    });
+    }));
 
     const newClient = await client.save();
     res.status(201).json(newClient);
@@ -235,7 +237,7 @@ exports.bulkCreateClients = async (req, res) => {
         }
 
         const existingClient = await Client.findOne({
-          user: companyId,
+          ...getTenantFilter(req),
           name: { $regex: new RegExp("^" + escapeRegex(clientData.name.trim()) + "$", "i") }
         });
 
@@ -244,7 +246,7 @@ exports.bulkCreateClients = async (req, res) => {
           const savedClient = await existingClient.save();
           createdClients.push(savedClient);
         } else {
-          const client = new Client({
+          const client = new Client(attachTenant(req, {
             name: clientData.name,
             email: clientData.email,
             phone: clientData.phone,
@@ -257,24 +259,18 @@ exports.bulkCreateClients = async (req, res) => {
             isVendor: clientData.isVendor,
             notes: clientData.notes,
             placeOfSupply: clientData.placeOfSupply,
-            user: companyId
-          });
+          }));
           
           const savedClient = await client.save();
           createdClients.push(savedClient);
         }
       } catch (err) {
-        errors.push({ index, client: clientData, error: err.message });
+        errors.push({ index, name: clientData?.name, error: err.message });
       }
     }
 
-    if (errors.length > 0) {
-      return res.status(207).json({ 
-        message: `Imported ${createdClients.length} clients. ${errors.length} failed.`, 
-        count: createdClients.length, 
-        clients: createdClients, 
-        errors 
-      });
+    if (errors.length > 0 && createdClients.length === 0) {
+      return res.status(400).json({ message: 'Failed to create any clients.', errors });
     }
 
     res.status(201).json({ message: `Successfully imported ${createdClients.length} clients.`, count: createdClients.length, clients: createdClients });
@@ -286,8 +282,7 @@ exports.bulkCreateClients = async (req, res) => {
 // Get client by ID
 exports.getClientById = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const client = await Client.findOne({ _id: req.params.id, user: companyId });
+    const client = await Client.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
     }
@@ -300,7 +295,6 @@ exports.getClientById = async (req, res) => {
 // Update client
 exports.updateClient = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const { 
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
@@ -323,7 +317,7 @@ exports.updateClient = async (req, res) => {
     Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
 
     const client = await Client.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...getTenantFilter(req) },
       updateData,
       { returnDocument: 'after', runValidators: true }
     );
@@ -339,8 +333,10 @@ exports.updateClient = async (req, res) => {
 // Delete client
 exports.deleteClient = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const client = await Client.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const client = await Client.findOneAndUpdate(
+      { _id: req.params.id, ...getTenantFilter(req) },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
     }

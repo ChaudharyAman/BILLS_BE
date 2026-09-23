@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const LeaveBalanceSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true, index: true },
   leaveType: { type: mongoose.Schema.Types.ObjectId, ref: 'LeaveType', required: true, index: true },
   year: { type: Number, required: true },
@@ -12,7 +13,8 @@ const LeaveBalanceSchema = new mongoose.Schema({
   closing: { type: Number, default: 0 },
 }, { timestamps: true });
 
-// Unique balance per employee, leave type, and calendar year
-LeaveBalanceSchema.index({ user: 1, employee: 1, leaveType: 1, year: 1 }, { unique: true });
+// Unique balance per profile / user, employee, leave type, and calendar year
+LeaveBalanceSchema.index({ profile: 1, employee: 1, leaveType: 1, year: 1 }, { unique: true, sparse: true });
+LeaveBalanceSchema.index({ user: 1, employee: 1, leaveType: 1, year: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('LeaveBalance', LeaveBalanceSchema);

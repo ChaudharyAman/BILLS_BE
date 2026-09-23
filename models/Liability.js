@@ -3,6 +3,7 @@ const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const LiabilitySchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   name: { type: String, required: true, trim: true },
   type: { type: String, enum: ['current', 'long-term'], required: true, index: true },
   category: {
@@ -20,6 +21,9 @@ const LiabilitySchema = new mongoose.Schema({
   dueDate: Date,
   status: { type: String, enum: ['active', 'paid', 'defaulted'], default: 'active', index: true },
 }, { timestamps: true });
+
+LiabilitySchema.index({ profile: 1, type: 1 });
+LiabilitySchema.index({ user: 1, type: 1 });
 
 LiabilitySchema.plugin(softDeletePlugin);
 

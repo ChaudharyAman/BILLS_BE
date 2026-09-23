@@ -251,6 +251,28 @@ exports.googleLogin = async (req, res) => {
 
 
 exports.me = async (req, res) => {
+  if (req.isShareToken) {
+    const isCanEdit = req.shareAccessLevel === 'CAN_EDIT' || req.shareSession?.rules?.accessLevel === 'CAN_EDIT';
+    return res.json({
+      user: {
+        _id: 'shared_viewer',
+        username: req.user.username || 'Shared Viewer',
+        email: req.user.email || '',
+        role: 'share_viewer',
+        isOwner: false,
+        isSharedViewOnly: !isCanEdit,
+        shareAccessLevel: isCanEdit ? 'CAN_EDIT' : 'VIEW_ONLY',
+        companyId: req.companyId,
+        permissions: {},
+        enabledModules: req.shareSession?.rules?.modules || [],
+      },
+      isSharedViewOnly: !isCanEdit,
+      shareAccessLevel: isCanEdit ? 'CAN_EDIT' : 'VIEW_ONLY',
+      profile: req.shareSession?.profile,
+      token: req.headers.authorization?.replace('Bearer ', '') || '',
+    });
+  }
+
   const token = generateToken(req.user);
   res.cookie('token', token, getCookieOptions(req));
   res.json({

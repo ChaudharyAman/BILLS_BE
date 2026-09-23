@@ -3,6 +3,7 @@ const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const BusinessUnitSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   name: { type: String, required: true, trim: true },
   code: { type: String, required: true, trim: true, uppercase: true },
   description: { type: String, default: '' },
@@ -12,8 +13,10 @@ const BusinessUnitSchema = new mongoose.Schema({
   isDefault: { type: Boolean, default: false },
 }, { timestamps: true });
 
-BusinessUnitSchema.index({ user: 1, name: 1 }, { unique: true });
-BusinessUnitSchema.index({ user: 1, code: 1 }, { unique: true });
+BusinessUnitSchema.index({ profile: 1, name: 1 }, { unique: true, sparse: true });
+BusinessUnitSchema.index({ profile: 1, code: 1 }, { unique: true, sparse: true });
+BusinessUnitSchema.index({ user: 1, name: 1 }, { unique: true, sparse: true });
+BusinessUnitSchema.index({ user: 1, code: 1 }, { unique: true, sparse: true });
 
 BusinessUnitSchema.plugin(softDeletePlugin);
 

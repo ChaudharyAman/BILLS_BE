@@ -87,6 +87,18 @@ const userSchema = new mongoose.Schema({
     ref: 'AccessRole',
     default: null
   },
+  profileAccess: [{
+    profile: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientProfile',
+      required: true
+    },
+    accessRole: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'AccessRole',
+      required: true
+    }
+  }],
   invitedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

@@ -11,6 +11,7 @@ const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseImportedDate } = require('../utils/dateRange');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 function processItems(items, invoiceType, isIntraState) {
   return processDocumentItems(items, { invoiceType, isIntraState, includeExcise: true });
@@ -66,13 +67,13 @@ exports.getProformas = async (req, res) => {
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    let query = { user: companyId };
+    let query = { ...getTenantFilter(req) };
 
     if (search) {
       const safeSearch = escapeRegex(search);
       const Client = require('../models/Client');
       const matchedClients = await Client.find({
-        user: companyId,
+        ...getTenantFilter(req),
         name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
@@ -114,7 +115,7 @@ exports.getProformaById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Proforma not found' });
     }
-    const proforma = await Proforma.findOne({ _id: req.params.id, user: companyId });
+    const proforma = await Proforma.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
     res.json(proforma);
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -149,7 +150,7 @@ exports.createProforma = async (req, res) => {
     }
     // -------------------------------
 
-    const client = await Client.findOne({ _id: clientRef, user: companyId });
+    const client = await Client.findOne({ _id: clientRef, ...getTenantFilter(req) });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const clientSnapshot = {
@@ -168,7 +169,7 @@ exports.createProforma = async (req, res) => {
       email: client.email || '',
     };
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const proformaPrefix = userSettings?.proformaPrefix || 'PRF';
     let proformaNo = buildCustomDocumentNumber({
       prefix: proformaPrefix,
@@ -178,7 +179,7 @@ exports.createProforma = async (req, res) => {
     });
 
     if (proformaNo) {
-      const existing = await Proforma.findOne({ user: companyId, proformaNo });
+      const existing = await Proforma.findOne({ ...getTenantFilter(req), proformaNo });
       if (existing) {
         return res.status(400).json({ message: `Proforma number "${proformaNo}" already exists.` });
       }
@@ -208,8 +209,8 @@ exports.createProforma = async (req, res) => {
       ...(poDate !== undefined ? { poDate } : {}),
     };
 
-    const proforma = new Proforma({
-      user: companyId, proformaNo, invoiceType: invoiceType || 'Tax Invoice',
+    const proforma = new Proforma(attachTenant(req, {
+      proformaNo, invoiceType: invoiceType || 'Tax Invoice',
       date, validUntil, paymentMode, paymentTerms,
       client: clientSnapshot, items: processedItems,
       subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
@@ -219,7 +220,7 @@ exports.createProforma = async (req, res) => {
       status: status || 'DRAFT', shippingAddress, transport: effectiveTransport,
       placeOfSupply: clientState, reverseCharge: !!reverseCharge, notes, terms,
       bankDetails: userSettings?.bankDetails || {},
-    });
+    }));
 
     const saved = await proforma.save();
     res.status(201).json(saved);
@@ -237,7 +238,7 @@ exports.updateProforma = async (req, res) => {
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
 
-    const proforma = await Proforma.findOne({ _id: req.params.id, user: companyId });
+    const proforma = await Proforma.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
 
     // --- Subscription Plan Check for Edits ---
@@ -276,7 +277,7 @@ exports.updateProforma = async (req, res) => {
     }
     // -----------------------------------------
 
-    const client = await Client.findOne({ _id: clientRef, user: companyId });
+    const client = await Client.findOne({ _id: clientRef, ...getTenantFilter(req) });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const clientSnapshot = {
@@ -295,7 +296,7 @@ exports.updateProforma = async (req, res) => {
       email: client.email || '',
     };
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const proformaPrefix = userSettings?.proformaPrefix || 'PRF';
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
@@ -319,7 +320,7 @@ exports.updateProforma = async (req, res) => {
     });
 
     if (requestedProformaNo && requestedProformaNo !== proforma.proformaNo) {
-      const duplicate = await Proforma.findOne({ user: companyId, proformaNo: requestedProformaNo, _id: { $ne: proforma._id } });
+      const duplicate = await Proforma.findOne({ ...getTenantFilter(req), proformaNo: requestedProformaNo, _id: { $ne: proforma._id } });
       if (duplicate) {
         return res.status(400).json({ message: `Proforma number "${requestedProformaNo}" already exists.` });
       }
@@ -354,7 +355,7 @@ exports.updateProforma = async (req, res) => {
 exports.deleteProforma = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const proforma = await Proforma.findOne({ _id: req.params.id, user: companyId });
+    const proforma = await Proforma.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
     
     // --- Subscription Check ---
@@ -372,18 +373,18 @@ exports.deleteProforma = async (req, res) => {
 exports.convertToInvoice = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const proforma = await Proforma.findOne({ _id: req.params.id, user: companyId });
+    const proforma = await Proforma.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
     if (proforma.status === 'CONVERTED') return res.status(400).json({ message: 'Already converted' });
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const counter = await Counter.findOneAndUpdate(
       { id: buildUserCounterId(companyId, 'invoiceNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
     // Fetch fresh client data to ensure correct address format specially for old proformas
-    const client = await Client.findOne({ _id: proforma.client.clientRef, user: companyId });
+    const client = await Client.findOne({ _id: proforma.client.clientRef, ...getTenantFilter(req) });
     let clientSnapshot = proforma.client;
     let resolvedShipping = proforma.shippingAddress;
 
@@ -429,8 +430,8 @@ exports.convertToInvoice = async (req, res) => {
     const finalDiscount = Number(proforma.discountTotal) || 0;
     const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount;
 
-    const invoice = new Invoice({
-      user: proforma.user, invoiceNo, invoiceType: proforma.invoiceType,
+    const invoice = new Invoice(attachTenant(req, {
+      invoiceNo, invoiceType: proforma.invoiceType,
       date: new Date(), dueDate: proforma.validUntil,
       paymentMode: proforma.paymentMode, paymentTerms: proforma.paymentTerms,
       client: clientSnapshot, items: processedItems,
@@ -443,7 +444,7 @@ exports.convertToInvoice = async (req, res) => {
       shippingAddress: resolvedShipping, transport: proforma.transport,
       placeOfSupply: proforma.placeOfSupply, reverseCharge: proforma.reverseCharge,
       notes: proforma.notes, terms: proforma.terms, status: 'DRAFT',
-    });
+    }));
 
     const savedInvoice = await invoice.save();
     let syncError = null;
@@ -716,7 +717,7 @@ exports.updateProformaStatus = async (req, res) => {
       return res.status(400).json({ message: 'Status is required' });
     }
 
-    const proforma = await Proforma.findOne({ _id: req.params.id, user: companyId });
+    const proforma = await Proforma.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!proforma) return res.status(404).json({ message: 'Proforma not found' });
     if (proforma.status === 'CONVERTED' || proforma.convertedToInvoice) {
       return res.status(400).json({ message: 'Converted proformas cannot be updated.' });

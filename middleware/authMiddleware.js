@@ -4,12 +4,15 @@ const AccessRole = require('../models/AccessRole');
 const { syncExpiredSubscription } = require('../utils/subscriptionLifecycle');
 
 const protect = async (req, res, next) => {
-  const candidateTokens = [];
-  if (req.cookies && req.cookies.token) {
-    candidateTokens.push(req.cookies.token);
+  if (req.user || req.isShareToken) {
+    return next();
   }
+  const candidateTokens = [];
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
     candidateTokens.push(req.headers.authorization.split(' ')[1]);
+  }
+  if (req.cookies && req.cookies.token) {
+    candidateTokens.push(req.cookies.token);
   }
 
   if (candidateTokens.length === 0) {
@@ -34,6 +37,46 @@ const protect = async (req, res, next) => {
   }
 
   try {
+    if (decoded.isShareToken && decoded.shareId) {
+      const ProfileShare = require('../models/ProfileShare');
+      const share = await ProfileShare.findById(decoded.shareId).populate('profile');
+      if (!share || share.status !== 'active') {
+        return res.status(401).json({ message: 'Share link has been revoked or is inactive' });
+      }
+      if (share.expiresAt && new Date(share.expiresAt) < new Date()) {
+        share.status = 'expired';
+        await share.save().catch(() => {});
+        return res.status(401).json({ message: 'Share link has expired' });
+      }
+      req.isShareToken = true;
+      req.isSharedAccess = true;
+      req.profileAccessSource = 'share';
+      req.shareAccessLevel = share.rules?.accessLevel || 'VIEW_ONLY';
+      req.isSharedViewOnly = (req.shareAccessLevel === 'VIEW_ONLY');
+      req.shareRules = share.rules;
+      req.activeProfileId = share.profile._id;
+      req.activeProfile = share.profile;
+      req.shareSession = {
+        shareId: share._id,
+        profileId: share.profile._id,
+        profile: share.profile,
+        rules: share.rules,
+      };
+      req.user = {
+        _id: null,
+        isOwner: false,
+        role: 'share_viewer',
+        username: 'Shared Viewer',
+        email: share.sharedWithEmail || '',
+      };
+      req.ownerUser = {
+        _id: share.profile.owner,
+        subscription: { plan: 'pro', status: 'active' },
+        enabledModules: AccessRole.SYSTEM_MODULES,
+      };
+      req.companyId = share.profile.owner;
+      return next();
+    }
 
     req.user = await User.findById(decoded.id)
       .select('-password')
@@ -142,6 +185,50 @@ const protect = async (req, res, next) => {
  * @param {string} action - Action identifier ('view', 'create', 'edit', 'delete', 'approve')
  */
 const authorize = (moduleName, action) => (req, res, next) => {
+  // 0. Security Guard for Share Sessions (Both VIEW_ONLY and CAN_EDIT):
+  // Must execute BEFORE the owner check so an owner accessing another profile via share cannot bypass share restrictions
+  if (req.isSharedAccess || req.isSharedViewOnly || req.profileAccessSource === 'share' || req.isShareToken) {
+    // Special handling for 'settings': documents (invoices, quotes, POs) require company branding (logo, name, address, etc.)
+    // Read-only access to 'settings' is always allowed for branding, but write operations are strictly forbidden.
+    if (moduleName === 'settings') {
+      if (action === 'view') {
+        return next();
+      }
+      return res.status(403).json({
+        message: 'Forbidden: Settings modifications are not permitted in shared mode.',
+      });
+    }
+
+    if (req.isSharedViewOnly || req.shareAccessLevel === 'VIEW_ONLY') {
+      if (action !== 'view') {
+        return res.status(403).json({
+          message: 'Forbidden: Write operations are not permitted in view-only share mode.',
+        });
+      }
+    }
+
+    const modPerm = req.permissions ? (req.permissions.get ? req.permissions.get(moduleName) : req.permissions[moduleName]) : null;
+
+    if (!modPerm || !modPerm.view) {
+      return res.status(403).json({
+        message: `Forbidden: The '${moduleName}' module is not accessible in this share.`,
+      });
+    }
+
+    if (action === 'view') {
+      return next();
+    }
+
+    // CAN_EDIT mode: check action permission
+    if (modPerm && modPerm[action] === true) {
+      return next();
+    }
+
+    return res.status(403).json({
+      message: `Forbidden: You do not have '${action}' permission for '${moduleName}' in this share.`,
+    });
+  }
+
   if (req.user?.role === 'superadmin') {
     return next();
   }
@@ -187,6 +274,9 @@ const authorize = (moduleName, action) => (req, res, next) => {
 };
 
 const admin = (req, res, next) => {
+  if (req.isSharedAccess || req.isSharedViewOnly || req.profileAccessSource === 'share') {
+    return res.status(403).json({ message: 'Forbidden: Admin operations are not accessible in shared mode.' });
+  }
   if (req.user && req.user.role === 'superadmin') {
     next();
   } else {

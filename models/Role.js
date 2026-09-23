@@ -2,7 +2,8 @@ const mongoose = require('mongoose');
 const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const RoleSchema = new mongoose.Schema({
-  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   name: { type: String, required: true, trim: true },
   description: { type: String, default: '' },
 
@@ -42,8 +43,9 @@ const RoleSchema = new mongoose.Schema({
   hraPercent: { type: Number, default: null, min: 0, max: 100 },
 }, { timestamps: true });
 
-// Ensure unique job role names per user/company
-RoleSchema.index({ user: 1, name: 1 }, { unique: true });
+// Ensure unique job role names per profile / user
+RoleSchema.index({ profile: 1, name: 1 }, { unique: true, sparse: true });
+RoleSchema.index({ user: 1, name: 1 }, { unique: true, sparse: true });
 
 RoleSchema.plugin(softDeletePlugin);
 

@@ -6,6 +6,7 @@ const Expense = require('../models/Expense');
 const Income = require('../models/Income');
 const Quote = require('../models/Quote');
 const PurchaseOrder = require('../models/PurchaseOrder');
+const { getTenantFilter, attachTenant, getTenantMatch } = require('../utils/tenantHelper');
 
 const pickBusinessUnitFields = (body) => {
   const allowedFields = ['name', 'code', 'description', 'head', 'status', 'color', 'isDefault'];
@@ -20,7 +21,7 @@ const pickBusinessUnitFields = (body) => {
   return payload;
 };
 
-const validateHead = async (head, userId) => {
+const validateHead = async (head, userId, req) => {
   if (!head) return null;
 
   if (!mongoose.Types.ObjectId.isValid(head)) {
@@ -29,7 +30,8 @@ const validateHead = async (head, userId) => {
     throw error;
   }
 
-  const employee = await Employee.findOne({ _id: head, user: userId }).select('_id').lean();
+  const filter = req ? { _id: head, ...getTenantFilter(req) } : { _id: head, user: userId };
+  const employee = await Employee.findOne(filter).select('_id').lean();
   if (!employee) {
     const error = new Error('Unit head employee not found');
     error.statusCode = 404;
@@ -41,8 +43,7 @@ const validateHead = async (head, userId) => {
 
 exports.getBusinessUnits = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const filter = { user: companyId };
+    const filter = { ...getTenantFilter(req) };
     if (req.query.status) {
       filter.status = req.query.status;
     }
@@ -67,16 +68,16 @@ exports.createBusinessUnit = async (req, res) => {
       return res.status(400).json({ message: 'Name and Code are required' });
     }
 
-    payload.head = await validateHead(payload.head, companyId);
+    payload.head = await validateHead(payload.head, companyId, req);
 
     if (payload.isDefault) {
-      await BusinessUnit.updateMany({ user: companyId }, { isDefault: false });
+      await BusinessUnit.updateMany(getTenantFilter(req), { isDefault: false });
     }
 
-    const businessUnit = await BusinessUnit.create({
+    const businessUnit = await BusinessUnit.create(attachTenant(req, {
       ...payload,
       user: companyId,
-    });
+    }));
 
     res.status(201).json(businessUnit);
   } catch (error) {
@@ -100,15 +101,17 @@ exports.updateBusinessUnit = async (req, res) => {
 
     const payload = pickBusinessUnitFields(req.body);
     if (Object.prototype.hasOwnProperty.call(payload, 'head')) {
-      payload.head = await validateHead(payload.head, companyId);
+      payload.head = await validateHead(payload.head, companyId, req);
     }
 
+    const tenantFilter = getTenantFilter(req);
+
     if (payload.isDefault) {
-      await BusinessUnit.updateMany({ user: companyId, _id: { $ne: req.params.id } }, { isDefault: false });
+      await BusinessUnit.updateMany({ ...tenantFilter, _id: { $ne: req.params.id } }, { isDefault: false });
     }
 
     const businessUnit = await BusinessUnit.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...tenantFilter },
       { $set: payload },
       { returnDocument: 'after', runValidators: true }
     ).populate('head', 'employeeId firstName lastName email');
@@ -132,20 +135,20 @@ exports.updateBusinessUnit = async (req, res) => {
 
 exports.deleteBusinessUnit = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Business unit not found' });
     }
 
     const unitId = req.params.id;
+    const tenantFilter = getTenantFilter(req);
 
     // Integrity check: Block deletion if unit is referenced by any transactions
     const [hasInvoice, hasExpense, hasIncome, hasQuote, hasPO] = await Promise.all([
-      Invoice.exists({ user: companyId, businessUnit: unitId }),
-      Expense.exists({ user: companyId, businessUnit: unitId }),
-      Income.exists({ user: companyId, businessUnit: unitId }),
-      Quote ? Quote.exists({ user: companyId, businessUnit: unitId }) : false,
-      PurchaseOrder ? PurchaseOrder.exists({ user: companyId, businessUnit: unitId }) : false,
+      Invoice.exists({ ...tenantFilter, businessUnit: unitId }),
+      Expense.exists({ ...tenantFilter, businessUnit: unitId }),
+      Income.exists({ ...tenantFilter, businessUnit: unitId }),
+      Quote ? Quote.exists({ ...tenantFilter, businessUnit: unitId }) : false,
+      PurchaseOrder ? PurchaseOrder.exists({ ...tenantFilter, businessUnit: unitId }) : false,
     ]);
 
     if (hasInvoice || hasExpense || hasIncome || hasQuote || hasPO) {
@@ -155,7 +158,7 @@ exports.deleteBusinessUnit = async (req, res) => {
     }
 
     const businessUnit = await BusinessUnit.findOneAndUpdate(
-      { _id: unitId, user: companyId },
+      { _id: unitId, ...tenantFilter },
       { $set: { isDeleted: true, deletedAt: new Date() } }
     );
 
@@ -172,12 +175,14 @@ exports.deleteBusinessUnit = async (req, res) => {
 
 exports.getBusinessUnitSummary = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Business unit not found' });
     }
 
-    const unit = await BusinessUnit.findOne({ _id: req.params.id, user: companyId })
+    const tenantFilter = getTenantFilter(req);
+    const tenantMatch = getTenantMatch(req);
+
+    const unit = await BusinessUnit.findOne({ _id: req.params.id, ...tenantFilter })
       .populate('head', 'employeeId firstName lastName email')
       .lean();
 
@@ -187,11 +192,11 @@ exports.getBusinessUnitSummary = async (req, res) => {
 
     const [invoices, expenses] = await Promise.all([
       Invoice.aggregate([
-        { $match: { user: companyId, businessUnit: new mongoose.Types.ObjectId(req.params.id), status: { $in: ['SENT', 'PAID', 'RECEIVED', 'PARTIAL'] } } },
+        { $match: { ...tenantMatch, businessUnit: new mongoose.Types.ObjectId(req.params.id), status: { $in: ['SENT', 'PAID', 'RECEIVED', 'PARTIAL'] } } },
         { $group: { _id: null, totalRevenue: { $sum: '$grandTotal' }, count: { $sum: 1 } } }
       ]),
       Expense.aggregate([
-        { $match: { user: companyId, businessUnit: new mongoose.Types.ObjectId(req.params.id), status: { $ne: 'CANCELLED' } } },
+        { $match: { ...tenantMatch, businessUnit: new mongoose.Types.ObjectId(req.params.id), status: { $ne: 'CANCELLED' } } },
         { $group: { _id: null, totalExpense: { $sum: '$grandTotal' }, count: { $sum: 1 } } }
       ])
     ]);
@@ -217,16 +222,17 @@ exports.getBusinessUnitSummary = async (req, res) => {
 
 exports.getBusinessUnitRollup = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const units = await BusinessUnit.find({ user: companyId }).lean();
+    const tenantFilter = getTenantFilter(req);
+    const tenantMatch = getTenantMatch(req);
+    const units = await BusinessUnit.find(tenantFilter).lean();
     
     const [invoiceRollup, expenseRollup] = await Promise.all([
       Invoice.aggregate([
-        { $match: { user: companyId, status: { $in: ['SENT', 'PAID', 'RECEIVED', 'PARTIAL'] } } },
+        { $match: { ...tenantMatch, status: { $in: ['SENT', 'PAID', 'RECEIVED', 'PARTIAL'] } } },
         { $group: { _id: '$businessUnit', totalRevenue: { $sum: '$grandTotal' }, count: { $sum: 1 } } }
       ]),
       Expense.aggregate([
-        { $match: { user: companyId, status: { $ne: 'CANCELLED' } } },
+        { $match: { ...tenantMatch, status: { $ne: 'CANCELLED' } } },
         { $group: { _id: '$businessUnit', totalExpense: { $sum: '$grandTotal' }, count: { $sum: 1 } } }
       ])
     ]);

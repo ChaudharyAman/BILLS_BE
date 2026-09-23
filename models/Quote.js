@@ -20,6 +20,7 @@ const QuoteItemSchema = new mongoose.Schema({
 
 const QuoteSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   quoteNo: { type: String, required: true },
   invoiceType: {
     type: String,
@@ -100,7 +101,7 @@ const QuoteSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
-QuoteSchema.index({ user: 1, quoteNo: 1 }, { unique: true });
+QuoteSchema.index({ profile: 1, quoteNo: 1 }, { unique: true, sparse: true });
 
 QuoteSchema.plugin(softDeletePlugin);
 

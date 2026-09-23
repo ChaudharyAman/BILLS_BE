@@ -9,6 +9,7 @@ const NamedAmountSchema = new mongoose.Schema({
 
 const PayrollSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true },
   month: { type: Number, required: true, min: 1, max: 12 },
   year: { type: Number, required: true },
@@ -281,8 +282,12 @@ PayrollSchema.pre('validate', function() {
 });
 
 PayrollSchema.index(
+  { profile: 1, employee: 1, month: 1, year: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false }, sparse: true }
+);
+PayrollSchema.index(
   { user: 1, employee: 1, month: 1, year: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: false } }
+  { unique: true, partialFilterExpression: { isDeleted: false }, sparse: true }
 );
 PayrollSchema.post('init', function () {
   this._originalStatus = this.status;

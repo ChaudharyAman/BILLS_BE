@@ -1,17 +1,23 @@
 const cloudinary = require('../config/cloudinary');
 const fs = require('fs');
 const Settings = require('../models/Settings');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
+const { encryptPIIField, decryptPIIField } = require('../utils/cryptoHelper');
+const { verifySmtp, sendMail } = require('../utils/mailService');
 
 // Placeholder shown to the frontend in place of real secret values
 const SECRET_MASK = '••••••••';
 
-// Mask secret integration fields so they are never sent to the client
+// Mask secret integration and SMTP fields so they are never sent to the client
 const maskIntegrationSecrets = (settingsDoc) => {
   const obj = settingsDoc.toObject ? settingsDoc.toObject() : { ...settingsDoc };
   if (obj.integration) {
     if (obj.integration.apiKey)           obj.integration.apiKey           = SECRET_MASK;
     if (obj.integration.encryptionSecret) obj.integration.encryptionSecret = SECRET_MASK;
     if (obj.integration.webhookSecret)    obj.integration.webhookSecret    = SECRET_MASK;
+  }
+  if (obj.smtp?.auth?.pass) {
+    obj.smtp.auth.pass = SECRET_MASK;
   }
   return obj;
 };
@@ -23,13 +29,44 @@ exports.getSettings = async (req, res) => {
     if (!companyId) {
         return res.status(401).json({ message: 'Not authorized' });
     }
-    let settings = await Settings.findOne({ user: companyId }).populate('user', 'username email phone avatar');
+    const tenantFilter = getTenantFilter(req);
+    let settings = await Settings.findOne(tenantFilter).populate('user', 'username email phone avatar');
+    if (!settings && req.activeProfileId && companyId) {
+      settings = await Settings.findOne({ user: companyId }).populate('user', 'username email phone avatar');
+    }
     if (!settings) {
-      settings = new Settings({ user: companyId });
+      settings = new Settings(attachTenant(req, {
+        user: companyId,
+        companyName: req.activeProfile?.name || undefined,
+      }));
       await settings.save();
       // Re-fetch to populate after creation
       settings = await Settings.findById(settings._id).populate('user', 'username email phone avatar');
     }
+
+    const isShareMode = Boolean(req.isSharedAccess || req.isSharedViewOnly || req.profileAccessSource === 'share' || req.isShareToken);
+    if (isShareMode) {
+      const sanitized = settings.toObject ? settings.toObject() : { ...settings };
+      // Completely strip sensitive credentials so they are never exposed in share sessions
+      delete sanitized.smtp;
+      delete sanitized.integration;
+      delete sanitized.publicSubmissions;
+      if (sanitized.user && typeof sanitized.user === 'object') {
+        delete sanitized.user.email;
+        delete sanitized.user.phone;
+      }
+
+      // Fallback branding from activeProfile if not configured on Settings
+      if (!sanitized.companyName && req.activeProfile?.name) {
+        sanitized.companyName = req.activeProfile.name;
+      }
+      if (!sanitized.logoUrl && req.activeProfile?.logoUrl) {
+        sanitized.logoUrl = req.activeProfile.logoUrl;
+      }
+
+      return res.json(sanitized);
+    }
+
     // Return masked secrets — these are write-only fields
     res.json(maskIntegrationSecrets(settings));
   } catch (error) {
@@ -44,7 +81,8 @@ exports.updateSettings = async (req, res) => {
     if (!companyId) {
         return res.status(401).json({ message: 'Not authorized' });
     }
-    let settings = await Settings.findOne({ user: companyId });
+    const tenantFilter = getTenantFilter(req);
+    let settings = await Settings.findOne(tenantFilter);
 
     // Handle file uploads (Logo & Signature)
     let newLogoUrl = undefined;
@@ -87,7 +125,7 @@ exports.updateSettings = async (req, res) => {
       companyName, contactName, website, email, phone, gstin, pan,
       address, defaultTerms, defaultNotes, bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
-      defaultCurrency, timezone, dateFormat, integration,
+      defaultCurrency, timezone, dateFormat, integration, smtp,
       signatureEnabled, showSignatureOnInvoices, showSignatureOnQuotes, showSignatureOnPurchaseOrders, showLogoOnDocuments,
       logoUrl, signatureUrl
     } = req.body;
@@ -101,6 +139,34 @@ exports.updateSettings = async (req, res) => {
         if (safeIntegration[field] === SECRET_MASK || safeIntegration[field] === '') {
           delete safeIntegration[field]; // leave DB value unchanged
         }
+      }
+    }
+
+    // Process custom SMTP settings with password encryption / preservation
+    let safeSmtp = undefined;
+    if (smtp !== undefined) {
+      try {
+        const parsedSmtp = typeof smtp === 'string' ? JSON.parse(smtp) : smtp;
+        safeSmtp = { ...parsedSmtp };
+        if (safeSmtp.auth) {
+          safeSmtp.auth = { ...safeSmtp.auth };
+          const existingPass = settings?.smtp?.auth?.pass;
+          if (safeSmtp.auth.pass === SECRET_MASK || !safeSmtp.auth.pass) {
+            safeSmtp.auth.pass = existingPass || '';
+          } else {
+            let passToSave = String(safeSmtp.auth.pass).trim();
+            if (/gmail|google/i.test(safeSmtp.host || '') || /^[a-zA-Z\s]{16,24}$/.test(passToSave)) {
+              const noSpace = passToSave.replace(/\s+/g, '');
+              if (noSpace.length === 16) passToSave = noSpace;
+            }
+            safeSmtp.auth.pass = encryptPIIField(passToSave);
+          }
+          if (safeSmtp.auth.user) {
+            safeSmtp.auth.user = String(safeSmtp.auth.user).trim();
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to parse smtp payload:', e.message);
       }
     }
 
@@ -130,17 +196,17 @@ exports.updateSettings = async (req, res) => {
     if (username || loginEmail) {
         const userUpdate = {};
         if (username) userUpdate.username = username;
-        if (loginEmail) userUpdate.email = loginEmail.toLowerCase();
+        if (loginEmail) userUpdate.email = loginEmail;
+
+        const checkingQuery = [];
+        if (username) checkingQuery.push({ username });
+        if (loginEmail) checkingQuery.push({ email: loginEmail });
         
         // Check for duplicates if changing
-        if (Object.keys(userUpdate).length > 0) {
+        if (checkingQuery.length > 0) {
              const User = require('../models/User'); // Lazy load to avoid circular dependency if any
              
              // Check if username/email is taken by another user
-             const checkingQuery = [];
-             if (username) checkingQuery.push({ username });
-             if (loginEmail) checkingQuery.push({ email: loginEmail.toLowerCase() });
-
              const existingUser = await User.findOne({ 
                  $or: checkingQuery,
                  _id: { $ne: req.user._id } // Exclude current logged in user
@@ -165,10 +231,11 @@ exports.updateSettings = async (req, res) => {
 
     if (!settings) {
       // Create new if not exists
-      const settingsData = { ...settingsUpdate, user: companyId };
+      const settingsData = attachTenant(req, { ...settingsUpdate, user: companyId });
       if (newLogoUrl) settingsData.logoUrl = newLogoUrl;
       if (newSignatureUrl) settingsData.signatureUrl = newSignatureUrl;
       if (safeIntegration !== undefined) settingsData.integration = safeIntegration;
+      if (safeSmtp !== undefined) settingsData.smtp = safeSmtp;
       settings = new Settings(settingsData);
     } else {
       // Update existing
@@ -181,6 +248,12 @@ exports.updateSettings = async (req, res) => {
         }
         // Assign fields to the existing integration subdocument to preserve omitted secrets
         Object.assign(settings.integration, safeIntegration);
+      }
+      if (safeSmtp !== undefined) {
+        if (!settings.smtp) {
+          settings.smtp = {};
+        }
+        Object.assign(settings.smtp, safeSmtp);
       }
     }
 
@@ -233,10 +306,14 @@ function buildPortalLink(token) {
  */
 exports.getPublicSubmissionsConfig = async (req, res) => {
   try {
+    if (req.isSharedAccess || req.isSharedViewOnly || req.profileAccessSource === 'share' || req.isShareToken) {
+      return res.status(403).json({ message: 'Forbidden: Public submissions configuration is not accessible in shared mode.' });
+    }
     const companyId = req.companyId || req.user._id;
-    let settings = await Settings.findOne({ user: companyId });
+    const tenantFilter = getTenantFilter(req);
+    let settings = await Settings.findOne(tenantFilter);
     if (!settings) {
-      settings = new Settings({ user: companyId });
+      settings = new Settings(attachTenant(req, { user: companyId }));
       await settings.save();
     }
 
@@ -264,9 +341,10 @@ exports.getPublicSubmissionsConfig = async (req, res) => {
 exports.updatePublicSubmissionsConfig = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    let settings = await Settings.findOne({ user: companyId });
+    const tenantFilter = getTenantFilter(req);
+    let settings = await Settings.findOne(tenantFilter);
     if (!settings) {
-      settings = new Settings({ user: companyId });
+      settings = new Settings(attachTenant(req, { user: companyId }));
     }
 
     if (!settings.publicSubmissions) settings.publicSubmissions = {};
@@ -341,9 +419,10 @@ exports.updatePublicSubmissionsConfig = async (req, res) => {
 exports.regeneratePublicToken = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    let settings = await Settings.findOne({ user: companyId });
+    const tenantFilter = getTenantFilter(req);
+    let settings = await Settings.findOne(tenantFilter);
     if (!settings) {
-      settings = new Settings({ user: companyId });
+      settings = new Settings(attachTenant(req, { user: companyId }));
     }
     if (!settings.publicSubmissions) settings.publicSubmissions = {};
 
@@ -382,3 +461,110 @@ exports.regeneratePublicToken = async (req, res) => {
     return res.status(500).json({ message: error.message });
   }
 };
+
+/**
+ * POST /api/settings/smtp/test
+ * Test SMTP credentials and send a test verification email.
+ */
+exports.testSmtpConnection = async (req, res) => {
+  try {
+    const companyId = req.companyId || req.user?._id;
+    if (!companyId) {
+      return res.status(401).json({ message: 'Not authorized' });
+    }
+
+    const { testRecipient, host, port, secure, user, pass, fromEmail, fromName, replyTo } = req.body;
+    const recipient = (testRecipient || req.user?.email || '').trim();
+
+    if (!recipient) {
+      return res.status(400).json({ message: 'Recipient email address is required for sending the test email.' });
+    }
+
+    let overrideConfig = null;
+
+    if (host) {
+      let resolvedPass = pass;
+      // If pass is masked or empty, read existing stored password from settings
+      if (!resolvedPass || resolvedPass === SECRET_MASK) {
+        const tenantFilter = getTenantFilter(req);
+        const settings = await Settings.findOne(tenantFilter);
+        if (settings?.smtp?.auth?.pass) {
+          resolvedPass = decryptPIIField(settings.smtp.auth.pass);
+        }
+      }
+
+      overrideConfig = {
+        host: host.trim(),
+        port: Number(port) || 587,
+        secure: secure === true || secure === 'true' || Number(port) === 465,
+        user: (user || '').trim(),
+        pass: resolvedPass || '',
+        fromEmail: (fromEmail || user || req.user?.email || '').trim(),
+        fromName: fromName || 'Flance Mailer',
+        replyTo: replyTo ? replyTo.trim() : undefined,
+      };
+    }
+
+    const tenantFilter = getTenantFilter(req);
+    const settings = await Settings.findOne(tenantFilter);
+
+    // Verify SMTP connection
+    await verifySmtp(overrideConfig || settings?.smtp);
+
+    // Send styled verification email
+    const subject = `[Flance] SMTP Test Verification - ${new Date().toLocaleTimeString()}`;
+    const testHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 24px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <div style="display: inline-block; padding: 8px 16px; background: #ecfdf5; border-radius: 9999px; color: #059669; font-weight: 600; font-size: 13px;">
+            ✓ SMTP Connected Successfully
+          </div>
+          <h2 style="color: #0f172a; margin-top: 16px; margin-bottom: 8px; font-size: 20px;">Your Email Server is Working!</h2>
+          <p style="color: #64748b; font-size: 14px; line-height: 1.5; margin: 0;">
+            This confirmation email was successfully delivered using your custom SMTP configuration in <strong>Flance</strong>.
+          </p>
+        </div>
+
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 24px;">
+          <div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;">
+            Connection Details
+          </div>
+          <table style="width: 100%; font-size: 13px; color: #334155; border-collapse: collapse;">
+            <tr><td style="padding: 4px 0; color: #64748b; width: 35%;">SMTP Host:</td><td style="padding: 4px 0; font-weight: 600;">${overrideConfig?.host || settings?.smtp?.host || 'Default'}</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b;">Port & Encryption:</td><td style="padding: 4px 0; font-weight: 600;">${overrideConfig?.port || settings?.smtp?.port || 587} (${(overrideConfig?.secure || settings?.smtp?.secure) ? 'SSL/TLS' : 'STARTTLS'})</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b;">Sender:</td><td style="padding: 4px 0; font-weight: 600;">${overrideConfig?.fromEmail || settings?.smtp?.fromEmail || 'Default'}</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b;">Delivered At:</td><td style="padding: 4px 0; font-weight: 600;">${new Date().toUTCString()}</td></tr>
+          </table>
+        </div>
+
+        <p style="font-size: 12px; color: #94a3b8; text-align: center; margin: 0;">
+          © ${new Date().getFullYear()} Flance. All rights reserved.
+        </p>
+      </div>
+    `;
+
+    const info = await sendMail({
+      to: recipient,
+      subject,
+      html: testHtml,
+      text: `Flance SMTP Test Email\n\nYour SMTP server is working correctly!\nHost: ${overrideConfig?.host || settings?.smtp?.host}\nTimestamp: ${new Date().toISOString()}`,
+      settings,
+      overrideConfig,
+    });
+
+    return res.json({
+      success: true,
+      message: `Test email successfully sent to ${recipient}!`,
+      messageId: info.messageId,
+    });
+  } catch (err) {
+    console.error('SMTP test error:', err);
+    const { formatSmtpError } = require('../utils/mailService');
+    const friendlyMessage = typeof formatSmtpError === 'function' ? formatSmtpError(err) : err.message;
+    return res.status(400).json({
+      success: false,
+      message: friendlyMessage || 'Failed to connect to SMTP server. Please verify your host, port, and credentials.',
+    });
+  }
+};
+

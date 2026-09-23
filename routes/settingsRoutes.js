@@ -11,6 +11,9 @@ router.put('/', protect, authorize('settings', 'edit'), upload.fields([
   { name: 'signature', maxCount: 1 }
 ]), settingsController.updateSettings);
 
+// ── SMTP Server Testing ──────────────────────────────────────────────────────
+router.post('/smtp/test', protect, authorize('settings', 'edit'), settingsController.testSmtpConnection);
+
 // ── Public Submission Portal config ──────────────────────────────────────────
 // regenerate-token must be declared before the generic PATCH to avoid routing conflicts
 router.post('/public-submissions/regenerate-token', protect, authorize('settings', 'edit'), settingsController.regeneratePublicToken);

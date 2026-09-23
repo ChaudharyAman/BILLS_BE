@@ -8,6 +8,12 @@ const ItemSchema = new mongoose.Schema({
     ref: 'User',
     index: true
   },
+  profile: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ClientProfile',
+    required: false,
+    index: true
+  },
   name: {
     type: String,
     required: true,
@@ -67,6 +73,9 @@ const ItemSchema = new mongoose.Schema({
     default: Date.now,
   },
 }, { timestamps: true });
+
+ItemSchema.index({ profile: 1, name: 1 });
+ItemSchema.index({ user: 1, name: 1 });
 
 ItemSchema.plugin(softDeletePlugin);
 

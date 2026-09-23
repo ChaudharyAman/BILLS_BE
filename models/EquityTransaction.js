@@ -8,6 +8,12 @@ const EquityTransactionSchema = new mongoose.Schema({
     required: true,
     index: true,
   },
+  profile: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ClientProfile',
+    required: false,
+    index: true,
+  },
   date: {
     type: Date,
     default: Date.now,
@@ -74,6 +80,8 @@ const EquityTransactionSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
+EquityTransactionSchema.index({ profile: 1, date: 1 });
+EquityTransactionSchema.index({ profile: 1, type: 1 });
 EquityTransactionSchema.index({ user: 1, date: 1 });
 EquityTransactionSchema.index({ user: 1, type: 1 });
 EquityTransactionSchema.plugin(softDeletePlugin);

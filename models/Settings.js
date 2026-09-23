@@ -5,7 +5,12 @@ const SettingsSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
-    unique: true
+    index: true
+  },
+  profile: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ClientProfile',
+    required: false,
   },
   companyName: {
     type: String,
@@ -88,11 +93,27 @@ const SettingsSchema = new mongoose.Schema({
     maxSubmissionsPerDay: { type: Number, default: 100, min: 1, max: 10000 },
   },
 
+  // SMTP Mail Server Configuration
+  smtp: {
+    enabled:   { type: Boolean, default: false },
+    host:      { type: String, default: '' },
+    port:      { type: Number, default: 587 },
+    secure:    { type: Boolean, default: false },
+    auth: {
+      user:    { type: String, default: '' },
+      pass:    { type: String, default: '' }, // Stored encrypted via encryptPIIField
+    },
+    fromEmail: { type: String, default: '' },
+    fromName:  { type: String, default: '' },
+    replyTo:   { type: String, default: '' },
+  },
+
 }, { timestamps: true });
 
 // Sparse unique index: only Settings documents that have a token value are indexed.
 // This allows the fast token→user lookup without indexing the null values of
 // users who have never enabled the portal.
+SettingsSchema.index({ profile: 1 }, { unique: true, sparse: true });
 SettingsSchema.index({ 'publicSubmissions.token': 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Settings', SettingsSchema);

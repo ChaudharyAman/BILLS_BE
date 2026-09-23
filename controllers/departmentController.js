@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Department = require('../models/Department');
 const Employee = require('../models/Employee');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 const pickDepartmentFields = (body) => {
   const allowedFields = ['name', 'code', 'head', 'description', 'budget'];
@@ -15,7 +16,7 @@ const pickDepartmentFields = (body) => {
   return payload;
 };
 
-const validateHead = async (head, userId) => {
+const validateHead = async (head, userId, req) => {
   if (!head) return null;
 
   if (!mongoose.Types.ObjectId.isValid(head)) {
@@ -24,7 +25,8 @@ const validateHead = async (head, userId) => {
     throw error;
   }
 
-  const employee = await Employee.findOne({ _id: head, user: userId }).select('_id').lean();
+  const filter = req ? { _id: head, ...getTenantFilter(req) } : { _id: head, user: userId };
+  const employee = await Employee.findOne(filter).select('_id').lean();
   if (!employee) {
     const error = new Error('Department head not found');
     error.statusCode = 404;
@@ -36,8 +38,7 @@ const validateHead = async (head, userId) => {
 
 exports.getDepartments = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const departments = await Department.find({ user: companyId })
+    const departments = await Department.find(getTenantFilter(req))
       .populate('head', 'employeeId firstName lastName')
       .sort({ name: 1 })
       .lean();
@@ -53,12 +54,12 @@ exports.createDepartment = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
     const payload = pickDepartmentFields(req.body);
-    payload.head = await validateHead(payload.head, companyId);
+    payload.head = await validateHead(payload.head, companyId, req);
 
-    const department = await Department.create({
+    const department = await Department.create(attachTenant(req, {
       ...payload,
       user: companyId,
-    });
+    }));
 
     res.status(201).json(department);
   } catch (error) {
@@ -82,11 +83,11 @@ exports.updateDepartment = async (req, res) => {
 
     const payload = pickDepartmentFields(req.body);
     if (Object.prototype.hasOwnProperty.call(payload, 'head')) {
-      payload.head = await validateHead(payload.head, companyId);
+      payload.head = await validateHead(payload.head, companyId, req);
     }
 
     const department = await Department.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...getTenantFilter(req) },
       { $set: payload },
       { returnDocument: 'after', runValidators: true }
     ).populate('head', 'employeeId firstName lastName');
@@ -110,17 +111,17 @@ exports.updateDepartment = async (req, res) => {
 
 exports.deleteDepartment = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Department not found' });
     }
 
-    const hasEmployees = await Employee.exists({ user: companyId, department: req.params.id });
+    const tenantFilter = getTenantFilter(req);
+    const hasEmployees = await Employee.exists({ ...tenantFilter, department: req.params.id });
     if (hasEmployees) {
       return res.status(400).json({ message: 'Cannot delete a department with employees. Reassign employees first.' });
     }
 
-    const department = await Department.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const department = await Department.findOneAndUpdate({ _id: req.params.id, ...tenantFilter }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!department) {
       return res.status(404).json({ message: 'Department not found' });
     }

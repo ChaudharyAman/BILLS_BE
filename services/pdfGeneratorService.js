@@ -586,7 +586,7 @@ function getStoredPayslipPath(payrollId) {
 /**
  * Renders HTML string to PDF buffer via Puppeteer.
  */
-async function renderHtmlToPdf(htmlString) {
+async function renderHtmlToPdf(htmlString, options = {}) {
   const puppeteer = getPuppeteer();
   const browser = await puppeteer.launch({
     headless: true,
@@ -596,10 +596,13 @@ async function renderHtmlToPdf(htmlString) {
   try {
     const page = await browser.newPage();
     await page.setContent(htmlString, { waitUntil: 'networkidle0' });
+    const margin = options.margin || { top: '8mm', bottom: '8mm', left: '8mm', right: '8mm' };
     const pdfBuffer = await page.pdf({
       format: 'A4',
       printBackground: true,
-      margin: { top: '10mm', bottom: '10mm', left: '12mm', right: '12mm' },
+      margin,
+      preferCSSPageSize: true,
+      ...options,
     });
     return Buffer.from(pdfBuffer);
   } finally {
@@ -663,11 +666,24 @@ async function createBulkPayslipsZip(payslipFiles) {
   });
 }
 
+/**
+ * Generates single PDF buffer for an Invoice record.
+ */
+async function generateInvoicePdf({ invoice, settings, template = 'classic' }) {
+  const { buildInvoicePdfHtml } = require('../utils/invoiceEmailTemplate');
+  const html = buildInvoicePdfHtml({ invoice, settings, template });
+  return renderHtmlToPdf(html, {
+    margin: { top: '6mm', bottom: '6mm', left: '8mm', right: '8mm' },
+    preferCSSPageSize: true,
+  });
+}
+
 module.exports = {
   buildPayslipHtml,
   renderHtmlToPdf,
   encryptPdfBuffer,
   generateSinglePayslipPdf,
+  generateInvoicePdf,
   createBulkPayslipsZip,
   getStoredPayslipPath,
   computeTaxWorksheet,

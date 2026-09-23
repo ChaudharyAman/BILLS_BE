@@ -3,6 +3,7 @@ const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const AssetSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   name: { type: String, required: true, trim: true },
   category: { type: String, enum: ['current', 'fixed', 'intangible'], required: true, index: true },
   purchaseDate: Date,
@@ -20,6 +21,9 @@ const AssetSchema = new mongoose.Schema({
   disposalValue: { type: Number, default: 0, min: 0 },
   status: { type: String, enum: ['active', 'disposed', 'sold'], default: 'active', index: true },
 }, { timestamps: true });
+
+AssetSchema.index({ profile: 1, category: 1 });
+AssetSchema.index({ user: 1, category: 1 });
 
 AssetSchema.pre('save', async function() {
   if (this.isNew && this.currentValue === undefined) {

@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const PayrollConfigSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   effectiveFrom: { type: Date, default: () => new Date('2020-01-01'), required: true, index: true },
   basicPercent: { type: Number, default: 0.5 },
   hraPercent: { type: Number, default: 0.5 },
@@ -44,6 +45,7 @@ const PayrollConfigSchema = new mongoose.Schema({
   approverRoles: { type: [String], default: ['manager', 'finance'] },
 }, { timestamps: true });
 
+PayrollConfigSchema.index({ profile: 1, effectiveFrom: -1 });
 PayrollConfigSchema.index({ user: 1, effectiveFrom: -1 });
 
 module.exports = mongoose.model('PayrollConfig', PayrollConfigSchema);

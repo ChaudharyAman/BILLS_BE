@@ -13,6 +13,7 @@ const { buildMasterSalaryStructure, roundAmount } = require('../utils/payrollMat
 const { appendSalaryRevisionIfChanged } = require('../utils/salaryRevisionHelper');
 const { PT_STATE_LIST } = require('../utils/professionalTaxSlabs');
 const { decryptEmployeePII } = require('../utils/cryptoHelper');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 const toCamelCase = (str) => {
   return str
@@ -98,14 +99,15 @@ const standardAliases = new Set([
 ]);
 
 
-const validateDepartment = async (departmentId, userId) => {
+const validateDepartment = async (departmentId, userId, req) => {
   if (!departmentId) return null;
   if (!mongoose.Types.ObjectId.isValid(String(departmentId))) {
     const error = new Error('Invalid department');
     error.statusCode = 400;
     throw error;
   }
-  const department = await Department.findOne({ _id: departmentId, user: userId });
+  const filter = req ? { _id: departmentId, ...getTenantFilter(req) } : { _id: departmentId, user: userId };
+  const department = await Department.findOne(filter);
   if (!department) {
     const error = new Error('Department not found');
     error.statusCode = 400;
@@ -731,14 +733,13 @@ const buildSalaryStructureFromCTC = (payload, config) => {
 
 exports.getEmployees = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const { status, department } = req.query;
     const parsedPage = Number.parseInt(req.query.page, 10);
     const parsedLimit = Number.parseInt(req.query.limit, 10);
     const page = Number.isInteger(parsedPage) ? Math.max(1, parsedPage) : 1;
     const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(parsedLimit, 100)) : 20;
     const skip = (page - 1) * limit;
-    const query = { user: companyId };
+    const query = { ...getTenantFilter(req), isDeleted: { $ne: true } };
 
     if (status) query.status = status;
     if (department) query.department = department;
@@ -777,10 +778,9 @@ exports.getEmployees = async (req, res) => {
 
 exports.getActiveEmployees = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const month = Number(req.query.month);
     const year = Number(req.query.year);
-    const query = { user: companyId };
+    const query = { ...getTenantFilter(req), isDeleted: { $ne: true } };
 
     if (Number.isInteger(month) && Number.isInteger(year)) {
       const startOfMonth = new Date(year, month - 1, 1);
@@ -825,11 +825,11 @@ exports.getActiveEmployees = async (req, res) => {
 exports.createEmployee = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const employeeData = { ...req.body, user: companyId };
+    const employeeData = attachTenant(req, { ...req.body, user: companyId });
     delete employeeData._id;
     delete employeeData.isDeleted;
     delete employeeData.deletedAt;
-    employeeData.department = await validateDepartment(employeeData.department, companyId);
+    employeeData.department = await validateDepartment(employeeData.department, companyId, req);
 
     const employee = await Employee.create(employeeData);
     res.status(201).json(employee);
@@ -844,12 +844,11 @@ exports.createEmployee = async (req, res) => {
 
 exports.getEmployeeById = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Employee not found' });
     }
 
-    const employee = await Employee.findOne({ _id: req.params.id, user: companyId })
+    const employee = await Employee.findOne({ _id: req.params.id, ...getTenantFilter(req) })
       .populate('department', 'name code')
       .select('+panNumber +uanNumber +aadharNumber +bankDetails.accountNumber');
 
@@ -868,7 +867,8 @@ exports.updateEmployee = async (req, res) => {
       return res.status(404).json({ message: 'Employee not found' });
     }
 
-    const existingEmployee = await Employee.findOne({ _id: req.params.id, user: companyId });
+    const tenantFilter = getTenantFilter(req);
+    const existingEmployee = await Employee.findOne({ _id: req.params.id, ...tenantFilter });
     if (!existingEmployee) return res.status(404).json({ message: 'Employee not found' });
 
     const updateData = { ...req.body };
@@ -876,6 +876,7 @@ exports.updateEmployee = async (req, res) => {
     // Mass-assignment protection: strip security-sensitive and internal fields
     const FORBIDDEN_UPDATE_FIELDS = [
       'user',
+      'profile',
       '_id',
       'isDeleted',
       'deletedAt',
@@ -887,7 +888,7 @@ exports.updateEmployee = async (req, res) => {
     FORBIDDEN_UPDATE_FIELDS.forEach((field) => delete updateData[field]);
 
     if (Object.prototype.hasOwnProperty.call(updateData, 'department')) {
-      updateData.department = await validateDepartment(updateData.department, companyId);
+      updateData.department = await validateDepartment(updateData.department, companyId, req);
     }
 
     const effectiveCompType = updateData.compensationType || existingEmployee.compensationType || 'monthly_salary';
@@ -959,7 +960,7 @@ exports.updateEmployee = async (req, res) => {
     Object.assign(existingEmployee, updateData);
     await existingEmployee.save();
 
-    const employee = await Employee.findOne({ _id: req.params.id, user: companyId })
+    const employee = await Employee.findOne({ _id: req.params.id, ...tenantFilter })
       .populate('department', 'name code')
       .select('+panNumber +uanNumber +aadharNumber +bankDetails.accountNumber');
 
@@ -976,39 +977,39 @@ exports.updateEmployee = async (req, res) => {
 
 exports.deleteEmployee = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const employeeId = req.params.id;
     if (!mongoose.Types.ObjectId.isValid(String(employeeId))) {
       return res.status(404).json({ message: 'Employee not found' });
     }
 
-    const employee = await Employee.findOne({ _id: employeeId, user: companyId });
+    const tenantFilter = getTenantFilter(req);
+    const employee = await Employee.findOne({ _id: employeeId, ...tenantFilter });
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     // 1. Find all payroll records to delete their generated expenses
-    const payrolls = await Payroll.find({ user: companyId, employee: employeeId }).select('expenseRef');
+    const payrolls = await Payroll.find({ ...tenantFilter, employee: employeeId }).select('expenseRef');
     const expenseIds = payrolls.map(p => p.expenseRef).filter(Boolean);
     if (expenseIds.length > 0) {
-      await Expense.updateMany({ user: companyId, _id: { $in: expenseIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
+      await Expense.updateMany({ ...tenantFilter, _id: { $in: expenseIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
     }
 
     // 2. Delete payroll records
-    await Payroll.updateMany({ user: companyId, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Payroll.updateMany({ ...tenantFilter, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 3. Delete loans
-    await Loan.updateMany({ user: companyId, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Loan.updateMany({ ...tenantFilter, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 4. Delete reimbursement claims
-    await ReimbursementClaim.updateMany({ user: companyId, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await ReimbursementClaim.updateMany({ ...tenantFilter, employee: employeeId }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 5. Pull employee from project teams
     await Project.updateMany(
-      { user: companyId, team: employeeId },
+      { ...tenantFilter, team: employeeId },
       { $pull: { team: employeeId } }
     );
 
     // 6. Delete the employee profile itself
-    await Employee.findOneAndUpdate({ _id: employeeId, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Employee.findOneAndUpdate({ _id: employeeId, ...tenantFilter }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     res.json({ message: 'Employee and all associated payrolls, expenses, loans, and claims deleted successfully' });
   } catch (error) {
@@ -1019,7 +1020,6 @@ exports.deleteEmployee = async (req, res) => {
 
 exports.bulkDeleteEmployees = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ message: 'No employee IDs provided' });
@@ -1030,30 +1030,32 @@ exports.bulkDeleteEmployees = async (req, res) => {
       return res.status(400).json({ message: 'No valid employee IDs provided' });
     }
 
+    const tenantFilter = getTenantFilter(req);
+
     // 1. Find all payroll records to delete their generated expenses
-    const payrolls = await Payroll.find({ user: companyId, employee: { $in: employeeIds } }).select('expenseRef');
+    const payrolls = await Payroll.find({ ...tenantFilter, employee: { $in: employeeIds } }).select('expenseRef');
     const expenseIds = payrolls.map(p => p.expenseRef).filter(Boolean);
     if (expenseIds.length > 0) {
-      await Expense.updateMany({ user: companyId, _id: { $in: expenseIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
+      await Expense.updateMany({ ...tenantFilter, _id: { $in: expenseIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
     }
 
     // 2. Delete payroll records
-    await Payroll.updateMany({ user: companyId, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Payroll.updateMany({ ...tenantFilter, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 3. Delete loans
-    await Loan.updateMany({ user: companyId, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Loan.updateMany({ ...tenantFilter, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 4. Delete reimbursement claims
-    await ReimbursementClaim.updateMany({ user: companyId, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await ReimbursementClaim.updateMany({ ...tenantFilter, employee: { $in: employeeIds } }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
     // 5. Pull employees from project teams
     await Project.updateMany(
-      { user: companyId, team: { $in: employeeIds } },
+      { ...tenantFilter, team: { $in: employeeIds } },
       { $pull: { team: { $in: employeeIds } } }
     );
 
     // 6. Delete the employee profiles
-    const result = await Employee.updateMany({ _id: { $in: employeeIds }, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const result = await Employee.updateMany({ _id: { $in: employeeIds }, ...tenantFilter }, { $set: { isDeleted: true, deletedAt: new Date() } });
     const count = result.modifiedCount ?? result.matchedCount ?? employeeIds.length;
     res.json({ 
       message: `${count} employee(s) and all associated payrolls, expenses, loans, and claims deleted successfully`,
@@ -1491,7 +1493,7 @@ exports.importEmployees = async (req, res) => {
 
       try {
         let created;
-        const existing = await Employee.findOne({ user: companyId, employeeId });
+        const existing = await Employee.findOne({ ...getTenantFilter(req), employeeId });
         if (existing) {
           await appendSalaryRevisionIfChanged({
             employee: existing,
@@ -1503,7 +1505,7 @@ exports.importEmployees = async (req, res) => {
           Object.assign(existing, payload);
           created = await existing.save();
         } else {
-          created = await Employee.create(payload);
+          created = await Employee.create(attachTenant(req, payload));
         }
         imported += 1;
         const empSummary = {
@@ -1581,7 +1583,7 @@ exports.exportEmployeesExcel = async (req, res) => {
       require('../models/Department');
     }
 
-    const employees = await Employee.find({ user: companyId })
+    const employees = await Employee.find({ ...getTenantFilter(req), isDeleted: { $ne: true } })
       .populate('department', 'name code')
       .populate('role', 'name')
       .select('+panNumber +aadharNumber +uanNumber +bankDetails.accountNumber')
@@ -1920,7 +1922,7 @@ exports.addSalaryRevision = async (req, res) => {
       return res.status(404).json({ message: 'Employee not found' });
     }
 
-    const employee = await Employee.findOne({ _id: req.params.id, user: companyId });
+    const employee = await Employee.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const effectiveDate = parsePossibleDate(req.body.effectiveDate);
@@ -1959,8 +1961,8 @@ exports.addSalaryRevision = async (req, res) => {
     const previousCTC = Number(employee.monthlyCTC) || Number(employee.salaryStructure?.ctc) || 0;
     const previousHourlyRate = Number(employee.hourlyRate) || 0;
     
-    let revisedRole = employee.role;
     let roleDoc = null;
+    let revisedRole = employee.role;
     if (req.body.role !== undefined) {
       const roleId = req.body.role;
       if (roleId) {
@@ -1968,7 +1970,7 @@ exports.addSalaryRevision = async (req, res) => {
           return res.status(400).json({ message: 'Invalid Role ID format' });
         }
         const Role = mongoose.model('Role');
-        roleDoc = await Role.findOne({ _id: roleId, user: companyId });
+        roleDoc = await Role.findOne({ _id: roleId, ...getTenantFilter(req) });
         if (!roleDoc) {
           return res.status(400).json({ message: 'Job Role Template not found' });
         }
@@ -2253,7 +2255,6 @@ exports.addSalaryRevision = async (req, res) => {
 
 exports.updateEmployeeDeclarations = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Employee not found' });
     }
@@ -2261,7 +2262,7 @@ exports.updateEmployeeDeclarations = async (req, res) => {
     const { taxRegime, declarations } = req.body;
 
     const employee = await Employee.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...getTenantFilter(req) },
       { $set: { taxRegime, declarations } },
       { returnDocument: 'after', runValidators: true }
     )
@@ -2284,7 +2285,8 @@ exports.updateSalaryRevision = async (req, res) => {
       return res.status(404).json({ message: 'Invalid employee or revision ID' });
     }
 
-    const employee = await Employee.findOne({ _id: id, user: companyId });
+    const tenantFilter = getTenantFilter(req);
+    const employee = await Employee.findOne({ _id: id, ...tenantFilter });
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const revision = employee.salaryRevisions.id(revisionId);
@@ -2294,7 +2296,7 @@ exports.updateSalaryRevision = async (req, res) => {
     const revDate = new Date(revision.effectiveDate);
     const paidPayrolls = await Payroll.find({
       employee: employee._id,
-      user: companyId,
+      ...tenantFilter,
       status: 'paid'
     });
 
@@ -2557,7 +2559,8 @@ exports.deleteSalaryRevision = async (req, res) => {
       return res.status(404).json({ message: 'Invalid employee or revision ID' });
     }
 
-    const employee = await Employee.findOne({ _id: id, user: companyId });
+    const tenantFilter = getTenantFilter(req);
+    const employee = await Employee.findOne({ _id: id, ...tenantFilter });
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const revision = employee.salaryRevisions.id(revisionId);
@@ -2567,7 +2570,7 @@ exports.deleteSalaryRevision = async (req, res) => {
     const revDate = new Date(revision.effectiveDate);
     const paidPayrolls = await Payroll.find({
       employee: employee._id,
-      user: companyId,
+      ...tenantFilter,
       status: 'paid'
     });
 
@@ -2692,11 +2695,12 @@ exports.bulkSalaryRevision = async (req, res) => {
     const config = await getOrCreateConfig(companyId, parsedDate || new Date());
 
     let targetEmployees = [];
+    const tenantFilter = getTenantFilter(req);
     if (Array.isArray(revisions) && revisions.length > 0) {
       const ids = revisions.map(r => r.employeeId).filter(id => mongoose.Types.ObjectId.isValid(String(id)));
-      targetEmployees = await Employee.find({ _id: { $in: ids }, user: companyId });
+      targetEmployees = await Employee.find({ _id: { $in: ids }, ...tenantFilter });
     } else {
-      const filter = { user: companyId, status: { $ne: 'terminated' } };
+      const filter = { ...tenantFilter, status: { $ne: 'terminated' } };
       if (department && mongoose.Types.ObjectId.isValid(String(department))) {
         filter.department = department;
       }

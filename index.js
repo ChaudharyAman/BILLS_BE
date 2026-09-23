@@ -66,49 +66,63 @@ const apiLimiter = rateLimit({
   message: 'Too many requests from this IP, please try again after 15 minutes',
 });
 
+const { protect } = require('./middleware/authMiddleware');
+const { resolveActiveProfile } = require('./middleware/profileMiddleware');
+const { shareRuleFilter } = require('./middleware/shareRuleFilter');
+const { profileShareRouter, publicShareRouter } = require('./routes/profileShareRoutes');
+
 app.use('/api', apiLimiter);
 
-app.use('/api/clients', require('./routes/clientRoutes'));
-app.use('/api/vendors', require('./routes/vendorRoutes'));
-app.use('/api/items', require('./routes/itemRoutes'));
-app.use('/api/invoices', require('./routes/invoiceRoutes'));
-app.use('/api/quotes', require('./routes/quoteRoutes'));
-app.use('/api/proformas', require('./routes/proformaRoutes'));
-app.use('/api/purchase-orders', require('./routes/purchaseOrderRoutes'));
-app.use('/api/expenses', require('./routes/expenseRoutes'));
-app.use('/api/incomes', require('./routes/incomeRoutes'));
-app.use('/api/categories', require('./routes/categoryRoutes'));
-app.use('/api/departments', require('./routes/departmentRoutes'));
-app.use('/api/business-units', require('./routes/businessUnitRoutes'));
-app.use('/api/employees', require('./routes/employeeRoutes'));
-app.use('/api/loans', require('./routes/loanRoutes'));
-app.use('/api/reimbursements', require('./routes/reimbursementRoutes'));
-app.use('/api/leaves', require('./routes/leaveRoutes'));
-app.use('/api/payroll', require('./routes/payrollRoutes'));
-app.use('/api/payroll-variable-transactions', require('./routes/payrollVariableTransactionRoutes'));
-app.use('/api/roles', require('./routes/roleRoutes'));
-app.use('/api/budgets', require('./routes/budgetRoutes'));
-app.use('/api/reports', require('./routes/reportRoutes'));
-app.use('/api/assets', require('./routes/assetRoutes'));
-app.use('/api/liabilities', require('./routes/liabilityRoutes'));
-app.use('/api/equity', require('./routes/equityRoutes'));
-app.use('/api/accruals', require('./routes/accrualRoutes'));
-app.use('/api/recurring', require('./routes/recurringRoutes'));
-app.use('/api/projects', require('./routes/projectRoutes'));
-app.use('/api/settings', require('./routes/settingsRoutes'));
+// ── Public Routes (Unauthenticated) ──────────────────────────────────────────
 app.use('/api/auth', require('./routes/authRoutes'));
-app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
-app.use('/api/admin', require('./routes/adminRoutes'));
-app.use('/api/pdf', require('./routes/pdfRoutes'));
-app.use('/api/bank-statements', require('./routes/bankStatementRoutes'));
-app.use('/api/recycle-bin', require('./routes/recycleBinRoutes'));
-app.use('/api/team-members', require('./routes/teamMemberRoutes'));
-
-// ── Public Submission Portal (no auth — token-scoped) ────────────────────────
 app.use('/api/public', require('./routes/publicSubmissionRoutes'));
+app.use('/api/shared', publicShareRouter);
 
-// ── Authenticated Submission Review (protect applied inside route file) ───────
-app.use('/api/submissions', require('./routes/submissionReviewRoutes'));
+// ── Profile Management Routes (protect only) ─────────────────────────────────
+app.use('/api/profiles', require('./routes/clientProfileRoutes'));
+app.use('/api/profiles/:profileId/shares', profileShareRouter);
+
+// ── Feature Routes (protect + resolveActiveProfile + shareRuleFilter) ────────
+const tenantStack = [protect, resolveActiveProfile, shareRuleFilter];
+
+app.use('/api/clients', tenantStack, require('./routes/clientRoutes'));
+app.use('/api/vendors', tenantStack, require('./routes/vendorRoutes'));
+app.use('/api/items', tenantStack, require('./routes/itemRoutes'));
+app.use('/api/invoices', tenantStack, require('./routes/invoiceRoutes'));
+app.use('/api/quotes', tenantStack, require('./routes/quoteRoutes'));
+app.use('/api/proformas', tenantStack, require('./routes/proformaRoutes'));
+app.use('/api/purchase-orders', tenantStack, require('./routes/purchaseOrderRoutes'));
+app.use('/api/expenses', tenantStack, require('./routes/expenseRoutes'));
+app.use('/api/incomes', tenantStack, require('./routes/incomeRoutes'));
+app.use('/api/categories', tenantStack, require('./routes/categoryRoutes'));
+app.use('/api/departments', tenantStack, require('./routes/departmentRoutes'));
+app.use('/api/business-units', tenantStack, require('./routes/businessUnitRoutes'));
+app.use('/api/employees', tenantStack, require('./routes/employeeRoutes'));
+app.use('/api/loans', tenantStack, require('./routes/loanRoutes'));
+app.use('/api/reimbursements', tenantStack, require('./routes/reimbursementRoutes'));
+app.use('/api/leaves', tenantStack, require('./routes/leaveRoutes'));
+app.use('/api/payroll', tenantStack, require('./routes/payrollRoutes'));
+app.use('/api/payroll-variable-transactions', tenantStack, require('./routes/payrollVariableTransactionRoutes'));
+app.use('/api/roles', tenantStack, require('./routes/roleRoutes'));
+app.use('/api/budgets', tenantStack, require('./routes/budgetRoutes'));
+app.use('/api/reports', tenantStack, require('./routes/reportRoutes'));
+app.use('/api/assets', tenantStack, require('./routes/assetRoutes'));
+app.use('/api/liabilities', tenantStack, require('./routes/liabilityRoutes'));
+app.use('/api/equity', tenantStack, require('./routes/equityRoutes'));
+app.use('/api/accruals', tenantStack, require('./routes/accrualRoutes'));
+app.use('/api/recurring', tenantStack, require('./routes/recurringRoutes'));
+app.use('/api/projects', tenantStack, require('./routes/projectRoutes'));
+app.use('/api/settings', tenantStack, require('./routes/settingsRoutes'));
+app.use('/api/company-documents', tenantStack, require('./routes/companyDocumentRoutes'));
+app.use('/api/subscriptions', tenantStack, require('./routes/subscriptionRoutes'));
+app.use('/api/admin', tenantStack, require('./routes/adminRoutes'));
+app.use('/api/pdf', tenantStack, require('./routes/pdfRoutes'));
+app.use('/api/bank-statements', tenantStack, require('./routes/bankStatementRoutes'));
+app.use('/api/recycle-bin', tenantStack, require('./routes/recycleBinRoutes'));
+app.use('/api/team-members', tenantStack, require('./routes/teamMemberRoutes'));
+
+// ── Authenticated Submission Review ──────────────────────────────────────────
+app.use('/api/submissions', tenantStack, require('./routes/submissionReviewRoutes'));
 
 
 app.get('/', (req, res) => {

@@ -28,6 +28,7 @@ const PurchaseOrderItemSchema = new mongoose.Schema({
 
 const PurchaseOrderSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   poNumber: { type: String, required: true },
   refNumber: String,
   date: { type: Date, default: Date.now, required: true },
@@ -101,7 +102,7 @@ const PurchaseOrderSchema = new mongoose.Schema({
   attachments: [AttachmentSchema],
 }, { timestamps: true });
 
-PurchaseOrderSchema.index({ user: 1, poNumber: 1 }, { unique: true });
+PurchaseOrderSchema.index({ profile: 1, poNumber: 1 }, { unique: true, sparse: true });
 
 PurchaseOrderSchema.plugin(softDeletePlugin);
 

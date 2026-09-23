@@ -11,7 +11,8 @@ const UNIQUE_FIELDS_MAP = {
   Category: ['name'],
   Income: ['incomeNumber'],
   Expense: ['expenseNumber'],
-  LeaveType: ['name', 'code']
+  LeaveType: ['name', 'code'],
+  ClientProfile: ['name', 'code']
 };
 
 const softDeletePlugin = (schema) => {

@@ -16,6 +16,7 @@ const BankTransactionSchema = new mongoose.Schema({
 
 const BankStatementSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
 
   // File metadata
   fileName:  { type: String, required: true },
@@ -36,7 +37,8 @@ const BankStatementSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-// One user can have many statements — index for fast lookups
+// Fast lookups per profile / user
+BankStatementSchema.index({ profile: 1, createdAt: -1 });
 BankStatementSchema.index({ user: 1, createdAt: -1 });
 
 BankStatementSchema.plugin(softDeletePlugin);
