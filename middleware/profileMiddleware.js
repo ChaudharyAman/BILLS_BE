@@ -1,6 +1,7 @@
 const AccessRole = require('../models/AccessRole');
 const ClientProfile = require('../models/ClientProfile');
 const { getAccessibleProfilesForUser } = require('../services/profileAccessService');
+const { backfillLegacyProfileData } = require('../services/profileBackfillService');
 
 /**
  * Middleware running after protect that resolves the active ClientProfile for the request.
@@ -158,6 +159,13 @@ const resolveActiveProfile = async (req, res, next) => {
 
     // Load full active profile document if needed
     req.activeProfile = await ClientProfile.findById(active.profileId).lean();
+
+    // Trigger asynchronous backfill of unassigned legacy records to default profile
+    const defaultProfileId = accessible.find(a => a.isDefault)?.profileId || accessible[0]?.profileId;
+    const ownerId = req.user.isOwner || !req.user.companyId ? req.user._id : req.user.companyId;
+    if (ownerId && defaultProfileId) {
+      backfillLegacyProfileData(ownerId, defaultProfileId).catch(() => {});
+    }
 
     // 4. If shared session, overwrite req.permissions centrally
     if (active.source === 'share') {

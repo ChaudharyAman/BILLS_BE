@@ -11,10 +11,10 @@ const DepartmentSchema = new mongoose.Schema({
   budget: { type: Number, default: 0, min: 0 },
 }, { timestamps: true });
 
-DepartmentSchema.index({ profile: 1, name: 1 }, { unique: true, sparse: true });
-DepartmentSchema.index({ profile: 1, code: 1 }, { unique: true, sparse: true });
-DepartmentSchema.index({ user: 1, name: 1 }, { unique: true, sparse: true });
-DepartmentSchema.index({ user: 1, code: 1 }, { unique: true, sparse: true });
+DepartmentSchema.index({ user: 1, profile: 1, name: 1 }, { unique: true, sparse: true });
+DepartmentSchema.index({ user: 1, profile: 1, code: 1 }, { unique: true, sparse: true });
+DepartmentSchema.index({ user: 1, name: 1 }, { unique: true, partialFilterExpression: { profile: null } });
+DepartmentSchema.index({ user: 1, code: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 DepartmentSchema.plugin(softDeletePlugin);
 

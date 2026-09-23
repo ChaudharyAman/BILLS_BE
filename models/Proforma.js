@@ -100,7 +100,8 @@ const ProformaSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
-ProformaSchema.index({ profile: 1, proformaNo: 1 }, { unique: true, sparse: true });
+ProformaSchema.index({ user: 1, profile: 1, proformaNo: 1 }, { unique: true, sparse: true });
+ProformaSchema.index({ user: 1, proformaNo: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 ProformaSchema.plugin(softDeletePlugin);
 

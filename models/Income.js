@@ -110,9 +110,9 @@ IncomeSchema.pre('save', function() {
   this.balanceDue = Math.round(Math.max(this.net_received_payment - (this.amountPaid || 0), 0) * 100) / 100;
 });
 
-// Compound unique index: same income number is allowed across different profiles
-IncomeSchema.index({ profile: 1, incomeNumber: 1 }, { unique: true, sparse: true });
-IncomeSchema.index({ profile: 1, sourceInvoice: 1 }, { unique: true, sparse: true });
+// Compound unique index: same income number is allowed across different users and profiles
+IncomeSchema.index({ user: 1, profile: 1, incomeNumber: 1 }, { unique: true, sparse: true });
+IncomeSchema.index({ user: 1, profile: 1, sourceInvoice: 1 }, { unique: true, sparse: true });
 
 IncomeSchema.plugin(softDeletePlugin);
 

@@ -26,15 +26,18 @@ function isQuoteNumberDuplicateError(error) {
   );
 }
 
-async function generateNextUniqueQuoteNumber({ userId, quotePrefix }) {
-  const counterId = buildUserCounterId(userId, 'quoteNo');
+async function generateNextUniqueQuoteNumber({ userId, profileId, quotePrefix }) {
+  const counterId = buildUserCounterId(userId, 'quoteNo', profileId);
   const normalizedPrefix = String(quotePrefix || 'QT').trim().replace(/[-/\s]+$/g, '') || 'QT';
   const pattern = new RegExp(`^${escapeRegex(normalizedPrefix)}-(\\d+)$`);
 
-  const existingQuoteNumbers = await Quote.find({
+  const scopeQuery = {
     user: userId,
     quoteNo: { $regex: `^${escapeRegex(normalizedPrefix)}-\\d+$` },
-  })
+    ...(profileId ? { profile: profileId } : { profile: null }),
+  };
+
+  const existingQuoteNumbers = await Quote.find(scopeQuery)
     .select('quoteNo -_id')
     .lean();
 
@@ -62,7 +65,11 @@ async function generateNextUniqueQuoteNumber({ userId, quotePrefix }) {
     );
 
     const candidate = buildAutoDocumentNumber(normalizedPrefix, counter.seq);
-    const exists = await Quote.exists({ user: userId, quoteNo: candidate });
+    const exists = await Quote.exists({
+      user: userId,
+      quoteNo: candidate,
+      ...(profileId ? { profile: profileId } : { profile: null }),
+    });
     if (!exists) {
       return candidate;
     }
@@ -276,6 +283,7 @@ exports.createQuote = async (req, res) => {
     } else {
       quoteNo = await generateNextUniqueQuoteNumber({
         userId: companyId,
+        profileId: req.activeProfileId,
         quotePrefix,
       });
     }
@@ -329,6 +337,7 @@ exports.createQuote = async (req, res) => {
 
         quoteNo = await generateNextUniqueQuoteNumber({
           userId: companyId,
+          profileId: req.activeProfileId,
           quotePrefix,
         });
       }
@@ -489,7 +498,7 @@ exports.convertToInvoice = async (req, res) => {
 
     const userSettings = await Settings.findOne(getTenantFilter(req));
     const counter = await Counter.findOneAndUpdate(
-      { id: buildUserCounterId(companyId, 'invoiceNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+      { id: buildUserCounterId(companyId, 'invoiceNo', req.activeProfileId) }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
@@ -639,15 +648,15 @@ exports.bulkCreateQuotes = async (req, res) => {
         throw new Error('Client name is required for each imported quote.');
       }
 
-      let client = await Client.findOne({ name: rowClientName, user: companyId });
+      let client = await Client.findOne({ name: rowClientName, ...getTenantFilter(req) });
       if (!client) {
-         client = new Client({
+         client = new Client(attachTenant(req, {
             name: rowClientName || 'Unknown Client',
             email: qData.clientEmail || '',
             phone: qData.clientPhone || '',
             billingAddress: { state: qData.clientState || '' },
             user: companyId
-         });
+         }));
          await client.save();
       }
 
@@ -659,6 +668,7 @@ exports.bulkCreateQuotes = async (req, res) => {
       if (!currentQuoteNo || currentQuoteNo === 'Auto-generated') {
         currentQuoteNo = await generateNextUniqueQuoteNumber({
           userId: companyId,
+          profileId: req.activeProfileId,
           quotePrefix: userSettings?.quotePrefix || 'QT',
         });
       }

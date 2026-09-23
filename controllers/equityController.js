@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const EquityTransaction = require('../models/EquityTransaction');
 const { recordCashMovement, roundTwo } = require('../utils/cashLedgerHelper');
+const { getTenantFilter, getTenantMatch, attachTenant } = require('../utils/tenantHelper');
 
 const pageOptions = (query) => {
   const page = Math.max(1, parseInt(query.page, 10) || 1);
@@ -22,9 +23,8 @@ const VALID_EQUITY_TYPES = [
 
 exports.getEquityTransactions = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const { page, limit, skip } = pageOptions(req.query);
-    const query = { user: companyId, isDeleted: { $ne: true } };
+    const query = { ...getTenantFilter(req), isDeleted: { $ne: true } };
 
     if (req.query.type) {
       query.type = req.query.type;
@@ -115,7 +115,7 @@ exports.createEquityTransaction = async (req, res) => {
       const priorContributions = await EquityTransaction.aggregate([
         {
           $match: {
-            user: new mongoose.Types.ObjectId(companyId),
+            ...getTenantMatch(req),
             isDeleted: { $ne: true },
             type: { $in: ['share_issuance', 'owner_contribution', 'opening_equity_balance', 'common_stock_issued', 'additional_paid_in_capital'] },
           },
@@ -128,8 +128,7 @@ exports.createEquityTransaction = async (req, res) => {
       }
     }
 
-    const equityTx = await EquityTransaction.create({
-      user: companyId,
+    const equityTx = await EquityTransaction.create(attachTenant(req, {
       type,
       amount: roundTwo(numAmount),
       shares: numShares,
@@ -140,13 +139,14 @@ exports.createEquityTransaction = async (req, res) => {
       date: transactionDate,
       notes: notes ? String(notes).trim() : '',
       createdBy: req.user._id,
-    });
+    }));
 
     // Optionally record linked cash movement for capital contributions/withdrawals
     if (postToCash) {
       if (['share_issuance', 'owner_contribution', 'opening_equity_balance', 'common_stock_issued', 'additional_paid_in_capital'].includes(type)) {
         await recordCashMovement({
           user: companyId,
+          profile: req.activeProfileId,
           amount: roundTwo(numAmount),
           date: transactionDate,
           type: 'capital_contribution',
@@ -158,6 +158,7 @@ exports.createEquityTransaction = async (req, res) => {
       } else if (['owner_distribution', 'capital_withdrawal'].includes(type)) {
         await recordCashMovement({
           user: companyId,
+          profile: req.activeProfileId,
           amount: -roundTwo(numAmount),
           date: transactionDate,
           type: 'capital_withdrawal',
@@ -178,14 +179,13 @@ exports.createEquityTransaction = async (req, res) => {
 
 exports.updateEquityTransaction = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Equity transaction not found' });
     }
 
     const equityTx = await EquityTransaction.findOne({
       _id: req.params.id,
-      user: companyId,
+      ...getTenantFilter(req),
       isDeleted: { $ne: true },
     });
 
@@ -232,7 +232,7 @@ exports.updateEquityTransaction = async (req, res) => {
     }
 
     const updated = await EquityTransaction.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...getTenantFilter(req) },
       { $set: updateFields },
       { returnDocument: 'after' }
     );
@@ -246,13 +246,12 @@ exports.updateEquityTransaction = async (req, res) => {
 
 exports.deleteEquityTransaction = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Equity transaction not found' });
     }
 
     const equityTx = await EquityTransaction.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...getTenantFilter(req) },
       { $set: { isDeleted: true, deletedAt: new Date() } },
       { returnDocument: 'after' }
     );

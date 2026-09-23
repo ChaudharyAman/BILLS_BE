@@ -1,14 +1,15 @@
 const mongoose = require('mongoose');
 const BankStatement = require('../models/BankStatement');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 // @desc    Get all bank statements (list view — without transactions array by default)
 // @route   GET /api/bank-statements
 // @access  Private
 exports.getBankStatements = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
+    const filter = getTenantFilter(req);
     const includeTxns = req.query.includeTransactions === 'true';
-    const query = BankStatement.find({ user: companyId });
+    const query = BankStatement.find(filter);
     
     if (!includeTxns) {
       query.select('-transactions');
@@ -28,13 +29,12 @@ exports.getBankStatements = async (req, res) => {
 // @access  Private
 exports.getBankStatementById = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id))
       return res.status(404).json({ message: 'Bank statement not found' });
 
     const statement = await BankStatement.findOne({
       _id: req.params.id,
-      user: companyId,
+      ...getTenantFilter(req),
     });
 
     if (!statement)
@@ -52,7 +52,6 @@ exports.getBankStatementById = async (req, res) => {
 // @access  Private
 exports.createBankStatement = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const { fileName, label, transactions } = req.body;
 
     if (!transactions || !Array.isArray(transactions) || transactions.length === 0) {
@@ -63,8 +62,10 @@ exports.createBankStatement = async (req, res) => {
       return res.status(400).json({ message: 'File name is required' });
     }
 
-    // Retrieve all existing transaction IDs for this user to check for duplicates
-    const existingStatements = await BankStatement.find({ user: companyId }, 'transactions.txnId').lean();
+    const tenantFilter = getTenantFilter(req);
+
+    // Retrieve existing transaction IDs for this workspace profile to check for duplicates
+    const existingStatements = await BankStatement.find(tenantFilter, 'transactions.txnId').lean();
     const existingTxnIds = new Set();
     existingStatements.forEach(s => {
       (s.transactions || []).forEach(t => {
@@ -112,8 +113,7 @@ exports.createBankStatement = async (req, res) => {
     const openingBalance = uniqueTransactions[0]?.balance || 0;
     const closingBalance = uniqueTransactions[uniqueTransactions.length - 1]?.balance || 0;
 
-    const statement = await BankStatement.create({
-      user: companyId,
+    const statementPayload = attachTenant(req, {
       fileName,
       label: label || fileName,
       totalCredits,
@@ -135,6 +135,7 @@ exports.createBankStatement = async (req, res) => {
       })),
     });
 
+    const statement = await BankStatement.create(statementPayload);
 
     // Return without the full transactions array (just the summary)
     const result = statement.toObject();
@@ -152,13 +153,12 @@ exports.createBankStatement = async (req, res) => {
 // @access  Private
 exports.deleteBankStatement = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id))
       return res.status(404).json({ message: 'Bank statement not found' });
 
     const statement = await BankStatement.findOne({
       _id: req.params.id,
-      user: companyId,
+      ...getTenantFilter(req),
     });
 
     if (!statement)

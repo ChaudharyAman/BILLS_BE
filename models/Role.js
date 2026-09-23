@@ -44,8 +44,8 @@ const RoleSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Ensure unique job role names per profile / user
-RoleSchema.index({ profile: 1, name: 1 }, { unique: true, sparse: true });
-RoleSchema.index({ user: 1, name: 1 }, { unique: true, sparse: true });
+RoleSchema.index({ user: 1, profile: 1, name: 1 }, { unique: true, sparse: true });
+RoleSchema.index({ user: 1, name: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 RoleSchema.plugin(softDeletePlugin);
 

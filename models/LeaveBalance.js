@@ -14,7 +14,7 @@ const LeaveBalanceSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Unique balance per profile / user, employee, leave type, and calendar year
-LeaveBalanceSchema.index({ profile: 1, employee: 1, leaveType: 1, year: 1 }, { unique: true, sparse: true });
-LeaveBalanceSchema.index({ user: 1, employee: 1, leaveType: 1, year: 1 }, { unique: true, sparse: true });
+LeaveBalanceSchema.index({ user: 1, profile: 1, employee: 1, leaveType: 1, year: 1 }, { unique: true, sparse: true });
+LeaveBalanceSchema.index({ user: 1, employee: 1, leaveType: 1, year: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 module.exports = mongoose.model('LeaveBalance', LeaveBalanceSchema);

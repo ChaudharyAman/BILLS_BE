@@ -76,6 +76,14 @@ const ItemSchema = new mongoose.Schema({
 
 ItemSchema.index({ profile: 1, name: 1 });
 ItemSchema.index({ user: 1, name: 1 });
+ItemSchema.index(
+  { user: 1, profile: 1, sku: 1 },
+  { unique: true, partialFilterExpression: { sku: { $gt: '' } } }
+);
+ItemSchema.index(
+  { user: 1, sku: 1 },
+  { unique: true, partialFilterExpression: { profile: null, sku: { $gt: '' } } }
+);
 
 ItemSchema.plugin(softDeletePlugin);
 

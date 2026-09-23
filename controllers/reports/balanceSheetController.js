@@ -25,11 +25,15 @@ const EquityTransaction = require('../../models/EquityTransaction');
 const Category = require('../../models/Category');
 const Asset = require('../../models/Asset');
 const Liability = require('../../models/Liability');
+const { getTenantFilter, getTenantMatch } = require('../../utils/tenantHelper');
 
 exports.getBalanceSheet = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
     const userId = new mongoose.Types.ObjectId(String(companyId));
+    const tenantFilter = getTenantFilter(req);
+    const tenantMatch = getTenantMatch(req);
+    const scope = { filter: tenantFilter, match: tenantMatch, user: companyId, profile: req.activeProfileId };
 
     let range;
     try {
@@ -39,7 +43,7 @@ exports.getBalanceSheet = async (req, res) => {
     }
 
     const { targetYear, priorYear, curStart, curEnd, priorStart, priorEnd } = range;
-    const deprCategoryIds = await getDepreciationCategoryIds(userId);
+    const deprCategoryIds = await getDepreciationCategoryIds(scope);
 
     const [
       curCashData,
@@ -75,38 +79,38 @@ exports.getBalanceSheet = async (req, res) => {
       curInvData,
       priorInvData,
     ] = await Promise.all([
-      getCashBalanceAsOf(userId, curEnd),
-      getCashBalanceAsOf(userId, priorEnd),
-      getAssetsAsOf(userId, curEnd),
-      getAssetsAsOf(userId, priorEnd),
-      getFixedAssetsAndDepreciation(userId, curStart, curEnd, curEnd),
-      getFixedAssetsAndDepreciation(userId, priorStart, priorEnd, priorEnd),
-      getLiabilitiesAsOf(userId, curEnd),
-      getLiabilitiesAsOf(userId, priorEnd),
-      getTdsReceivableAsOf(userId, curEnd),
-      getTdsReceivableAsOf(userId, priorEnd),
-      getReceivablesAsOf(userId, curEnd),
-      getReceivablesAsOf(userId, priorEnd),
-      getPayablesAsOf(userId, curEnd),
-      getPayablesAsOf(userId, priorEnd),
-      getAccrualsAsOf(userId, curEnd),
-      getAccrualsAsOf(userId, priorEnd),
-      getPeriodSales(userId, curStart, curEnd),
-      getPeriodSales(userId, priorStart, priorEnd),
-      getPeriodExpenses(userId, curStart, curEnd, deprCategoryIds),
-      getPeriodExpenses(userId, priorStart, priorEnd, deprCategoryIds),
-      getPeriodCogs(userId, curStart, curEnd),
-      getPeriodCogs(userId, priorStart, priorEnd),
-      getPeriodInterestExpense(userId, curStart, curEnd),
-      getPeriodInterestExpense(userId, priorStart, priorEnd),
-      getPeriodTax(userId, curStart, curEnd),
-      getPeriodTax(userId, priorStart, priorEnd),
-      getEquityTransactionsAsOf(userId, curEnd),
-      getEquityTransactionsAsOf(userId, priorEnd),
-      getCumulativeRetainedEarningsAsOf(userId, curEnd),
-      getCumulativeRetainedEarningsAsOf(userId, priorEnd),
-      getInventoryValuationAsOf(userId, curEnd),
-      getInventoryValuationAsOf(userId, priorEnd),
+      getCashBalanceAsOf(scope, curEnd),
+      getCashBalanceAsOf(scope, priorEnd),
+      getAssetsAsOf(scope, curEnd),
+      getAssetsAsOf(scope, priorEnd),
+      getFixedAssetsAndDepreciation(scope, curStart, curEnd, curEnd),
+      getFixedAssetsAndDepreciation(scope, priorStart, priorEnd, priorEnd),
+      getLiabilitiesAsOf(scope, curEnd),
+      getLiabilitiesAsOf(scope, priorEnd),
+      getTdsReceivableAsOf(scope, curEnd),
+      getTdsReceivableAsOf(scope, priorEnd),
+      getReceivablesAsOf(scope, curEnd),
+      getReceivablesAsOf(scope, priorEnd),
+      getPayablesAsOf(scope, curEnd),
+      getPayablesAsOf(scope, priorEnd),
+      getAccrualsAsOf(scope, curEnd),
+      getAccrualsAsOf(scope, priorEnd),
+      getPeriodSales(scope, curStart, curEnd),
+      getPeriodSales(scope, priorStart, priorEnd),
+      getPeriodExpenses(scope, curStart, curEnd, deprCategoryIds),
+      getPeriodExpenses(scope, priorStart, priorEnd, deprCategoryIds),
+      getPeriodCogs(scope, curStart, curEnd),
+      getPeriodCogs(scope, priorStart, priorEnd),
+      getPeriodInterestExpense(scope, curStart, curEnd),
+      getPeriodInterestExpense(scope, priorStart, priorEnd),
+      getPeriodTax(scope, curStart, curEnd),
+      getPeriodTax(scope, priorStart, priorEnd),
+      getEquityTransactionsAsOf(scope, curEnd),
+      getEquityTransactionsAsOf(scope, priorEnd),
+      getCumulativeRetainedEarningsAsOf(scope, curEnd),
+      getCumulativeRetainedEarningsAsOf(scope, priorEnd),
+      getInventoryValuationAsOf(scope, curEnd),
+      getInventoryValuationAsOf(scope, priorEnd),
     ]);
 
     const cCash = curCashData.totalCash;
@@ -553,8 +557,7 @@ exports.getBalanceSheet = async (req, res) => {
  */
 exports.getSetupStatus = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const userId = new mongoose.Types.ObjectId(String(companyId));
+    const tenantFilter = getTenantFilter(req);
 
     const [
       equityCount,
@@ -563,11 +566,11 @@ exports.getSetupStatus = async (req, res) => {
       liabilityCount,
       interestCategoryCount,
     ] = await Promise.all([
-      EquityTransaction.countDocuments({ user: userId, isDeleted: { $ne: true } }),
-      Category.countDocuments({ user: userId, isCogs: true, isDeleted: { $ne: true } }),
-      Asset.countDocuments({ user: userId, category: 'fixed', isDeleted: { $ne: true } }),
-      Liability.countDocuments({ user: userId, isDeleted: { $ne: true } }),
-      Category.countDocuments({ user: userId, name: { $regex: /interest\s*expense/i }, isDeleted: { $ne: true } }),
+      EquityTransaction.countDocuments({ ...tenantFilter, isDeleted: { $ne: true } }),
+      Category.countDocuments({ ...tenantFilter, isCogs: true, isDeleted: { $ne: true } }),
+      Asset.countDocuments({ ...tenantFilter, category: 'fixed', isDeleted: { $ne: true } }),
+      Liability.countDocuments({ ...tenantFilter, isDeleted: { $ne: true } }),
+      Category.countDocuments({ ...tenantFilter, name: { $regex: /interest\s*expense/i }, isDeleted: { $ne: true } }),
     ]);
 
     const steps = {

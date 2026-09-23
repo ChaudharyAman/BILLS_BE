@@ -99,15 +99,18 @@ function escapeRegexLiteral(value = '') {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-async function generateNextUniqueInvoiceNumber({ userId, invoicePrefix }) {
-  const counterId = buildUserCounterId(userId, 'invoiceNo');
+async function generateNextUniqueInvoiceNumber({ userId, profileId, invoicePrefix }) {
+  const counterId = buildUserCounterId(userId, 'invoiceNo', profileId);
   const normalizedPrefix = String(invoicePrefix || 'INV').trim().replace(/[-/\s]+$/g, '') || 'INV';
   const pattern = new RegExp(`^${escapeRegexLiteral(normalizedPrefix)}-(\\d+)$`);
 
-  const existingInvoiceNumbers = await Invoice.find({
+  const scopeQuery = {
     user: userId,
     invoiceNo: { $regex: `^${escapeRegexLiteral(normalizedPrefix)}-\\d+$` },
-  })
+    ...(profileId ? { profile: profileId } : { profile: null }),
+  };
+
+  const existingInvoiceNumbers = await Invoice.find(scopeQuery)
     .select('invoiceNo -_id')
     .lean();
 
@@ -135,7 +138,11 @@ async function generateNextUniqueInvoiceNumber({ userId, invoicePrefix }) {
     );
 
     const candidate = buildAutoDocumentNumber(normalizedPrefix, counter.seq);
-    const exists = await Invoice.exists({ user: userId, invoiceNo: candidate });
+    const exists = await Invoice.exists({
+      user: userId,
+      invoiceNo: candidate,
+      ...(profileId ? { profile: profileId } : { profile: null }),
+    });
     if (!exists) {
       return candidate;
     }
@@ -198,15 +205,19 @@ function buildClientSnapshot(client) {
 }
 
 async function resolveClientForInvoice({
+  req,
   userId,
+  profileId,
   clientRef,
   clientName,
   clientGST,
   placeOfSupply,
   importSource,
 }) {
+  const effectiveProfileId = profileId || req?.activeProfileId;
+  const tenantFilter = req ? getTenantFilter(req) : (effectiveProfileId ? { user: userId, profile: effectiveProfileId } : { user: userId });
   if (clientRef && mongoose.Types.ObjectId.isValid(clientRef)) {
-    const client = await Client.findOne({ _id: clientRef, user: userId });
+    const client = await Client.findOne({ _id: clientRef, ...tenantFilter });
     if (!client) throw new Error('Client not found');
     return client;
   }
@@ -221,7 +232,7 @@ async function resolveClientForInvoice({
   }
 
   const existingClient = await Client.findOne({
-    user: userId,
+    ...tenantFilter,
     name: { $regex: buildExactNameRegex(clientName) },
   });
 
@@ -232,7 +243,7 @@ async function resolveClientForInvoice({
   const normalizedPlaceOfSupply = String(placeOfSupply || '').trim();
   const normalizedClientGST = String(clientGST || '').trim().toUpperCase();
 
-  const client = new Client({
+  const clientPayload = {
     user: userId,
     name: String(clientName).trim(),
     gstin: normalizedClientGST || undefined,
@@ -243,20 +254,23 @@ async function resolveClientForInvoice({
       country: 'India',
     },
     isClient: true,
-  });
+  };
+
+  const client = new Client(req ? attachTenant(req, clientPayload) : (effectiveProfileId ? { ...clientPayload, profile: effectiveProfileId } : clientPayload));
 
   return client.save();
 }
 
-async function resolvePdfImportItems(userId, items = []) {
+async function resolvePdfImportItems(userId, items = [], profileId = null) {
   const resolvedItems = [];
+  const tenantFilter = profileId ? { user: userId, profile: profileId } : { user: userId };
 
   for (const rawItem of items) {
     const item = { ...rawItem };
 
     if (item.itemRef && mongoose.Types.ObjectId.isValid(item.itemRef)) {
-      const existingItem = await Item.findById(item.itemRef).lean();
-      if (existingItem && existingItem.user.toString() === userId.toString()) {
+      const existingItem = await Item.findOne({ _id: item.itemRef, ...tenantFilter }).lean();
+      if (existingItem) {
         resolvedItems.push(item);
         continue;
       }
@@ -269,7 +283,7 @@ async function resolvePdfImportItems(userId, items = []) {
     }
 
     let catalogItem = await Item.findOne({
-      user: userId,
+      ...tenantFilter,
       name: { $regex: buildExactNameRegex(item.name) },
     });
 
@@ -280,6 +294,7 @@ async function resolvePdfImportItems(userId, items = []) {
 
       catalogItem = await Item.create({
         user: userId,
+        ...(profileId ? { profile: profileId } : {}),
         name: String(item.name).trim(),
         description: item.description || '',
         hsnCode: item.hsnCode || '',
@@ -668,12 +683,15 @@ exports.createInvoice = async (req, res) => {
       // Generate Invoice Number
       invoiceNo = await generateNextUniqueInvoiceNumber({
         userId: companyId,
+        profileId: req.activeProfileId,
         invoicePrefix,
       });
     }
 
     const client = await resolveClientForInvoice({
+      req,
       userId: companyId,
+      profileId: req.activeProfileId,
       clientRef,
       clientName,
       clientGST,
@@ -703,7 +721,7 @@ exports.createInvoice = async (req, res) => {
         } : null);
 
     const resolvedItems = resolvedImportSource === PDF_IMPORT_SOURCE
-      ? await resolvePdfImportItems(companyId, items || [])
+      ? await resolvePdfImportItems(companyId, items || [], req.activeProfileId)
       : (items || []);
 
     const documentInvoiceType = ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'].includes(invoiceType)
@@ -841,6 +859,7 @@ exports.createInvoice = async (req, res) => {
         }
         invoiceNo = await generateNextUniqueInvoiceNumber({
           userId: req.user._id,
+          profileId: req.activeProfileId,
           invoicePrefix,
         });
       }
@@ -1496,6 +1515,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       if (isAuto) {
         invoiceNo = await generateNextUniqueInvoiceNumber({
           userId: companyId,
+          profileId: req.activeProfileId,
           invoicePrefix: userSettings?.invoicePrefix || 'INV',
         });
       }
@@ -1543,6 +1563,7 @@ exports.bulkCreateInvoices = async (req, res) => {
         if (existingInvoice) {
           invoiceNo = await generateNextUniqueInvoiceNumber({
             userId: companyId,
+            profileId: req.activeProfileId,
             invoicePrefix: 'INV',
           });
           renumberedInvoices.push({
@@ -1639,6 +1660,7 @@ exports.bulkCreateInvoices = async (req, res) => {
             const previousInvoiceNo = invoiceNo;
             invoiceNo = await generateNextUniqueInvoiceNumber({
               userId: companyId,
+              profileId: req.activeProfileId,
               invoicePrefix: 'INV',
             });
             renumberedInvoices.push({

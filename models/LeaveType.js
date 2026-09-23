@@ -12,9 +12,9 @@ const LeaveTypeSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Ensure unique code/name per profile / tenant
-LeaveTypeSchema.index({ profile: 1, name: 1 }, { unique: true, sparse: true });
-LeaveTypeSchema.index({ profile: 1, code: 1 }, { unique: true, sparse: true });
-LeaveTypeSchema.index({ user: 1, name: 1 }, { unique: true, sparse: true });
-LeaveTypeSchema.index({ user: 1, code: 1 }, { unique: true, sparse: true });
+LeaveTypeSchema.index({ user: 1, profile: 1, name: 1 }, { unique: true, sparse: true });
+LeaveTypeSchema.index({ user: 1, profile: 1, code: 1 }, { unique: true, sparse: true });
+LeaveTypeSchema.index({ user: 1, name: 1 }, { unique: true, partialFilterExpression: { profile: null } });
+LeaveTypeSchema.index({ user: 1, code: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 module.exports = mongoose.model('LeaveType', LeaveTypeSchema);

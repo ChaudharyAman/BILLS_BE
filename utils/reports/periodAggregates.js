@@ -15,6 +15,26 @@ const roundTwo = (num) => Math.round((Number(num) || 0) * 100) / 100;
 const ACTIVE_INVOICE_STATUSES = ['SENT', 'PAID', 'PARTIAL', 'UNPAID'];
 const ACTIVE_EXPENSE_STATUSES = { $nin: ['DRAFT', 'CANCELLED'] };
 
+const resolveScopeMatch = (userIdOrScope) => {
+  if (userIdOrScope && typeof userIdOrScope === 'object') {
+    if (userIdOrScope.match) return userIdOrScope.match;
+    if (userIdOrScope.profile) return { profile: new mongoose.Types.ObjectId(String(userIdOrScope.profile)) };
+    if (userIdOrScope.user) return { user: new mongoose.Types.ObjectId(String(userIdOrScope.user)) };
+  }
+  const id = userIdOrScope ? new mongoose.Types.ObjectId(String(userIdOrScope)) : null;
+  return id ? { user: id } : {};
+};
+
+const resolveScopeFilter = (userIdOrScope) => {
+  if (userIdOrScope && typeof userIdOrScope === 'object') {
+    if (userIdOrScope.filter) return userIdOrScope.filter;
+    if (userIdOrScope.profile) return { profile: userIdOrScope.profile };
+    if (userIdOrScope.user) return { user: userIdOrScope.user };
+  }
+  return userIdOrScope ? { user: userIdOrScope } : {};
+};
+
+
 /**
  * Validates and parses reporting year/date ranges.
  */
@@ -67,7 +87,7 @@ async function getPeriodSales(userId, startDate, endDate) {
   const result = await Invoice.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         date: { $gte: startDate, $lte: endDate },
         status: { $in: ACTIVE_INVOICE_STATUSES },
         isDeleted: { $ne: true },
@@ -83,7 +103,7 @@ async function getPeriodSales(userId, startDate, endDate) {
  */
 async function getDepreciationCategoryIds(userId) {
   const deprCategories = await Category.find({
-    user: userId,
+    ...resolveScopeMatch(userId),
     $or: [
       { isDepreciation: true },
       { name: { $regex: /depreciation/i } },
@@ -98,7 +118,7 @@ async function getDepreciationCategoryIds(userId) {
  */
 async function getPeriodExpenses(userId, startDate, endDate, excludedCategoryIds = []) {
   const match = {
-    user: userId,
+    ...resolveScopeMatch(userId),
     date: { $gte: startDate, $lte: endDate },
     status: ACTIVE_EXPENSE_STATUSES,
     isDeleted: { $ne: true },
@@ -120,7 +140,7 @@ async function getPeriodExpenses(userId, startDate, endDate, excludedCategoryIds
  */
 async function getPeriodCogs(userId, startDate, endDate) {
   const cogsCategories = await Category.find({
-    user: userId,
+    ...resolveScopeMatch(userId),
     isCogs: true,
     isDeleted: { $ne: true },
   }).select('_id').lean();
@@ -133,7 +153,7 @@ async function getPeriodCogs(userId, startDate, endDate) {
   const result = await Expense.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         category: { $in: categoryIds },
         date: { $gte: startDate, $lte: endDate },
         status: ACTIVE_EXPENSE_STATUSES,
@@ -155,7 +175,7 @@ async function getPeriodCogs(userId, startDate, endDate) {
  */
 async function getPeriodInterestExpense(userId, startDate, endDate) {
   const interestCategories = await Category.find({
-    user: userId,
+    ...resolveScopeMatch(userId),
     name: { $regex: /interest\s*expense/i },
     isDeleted: { $ne: true },
   }).select('_id').lean();
@@ -168,7 +188,7 @@ async function getPeriodInterestExpense(userId, startDate, endDate) {
   const result = await Expense.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         category: { $in: categoryIds },
         date: { $gte: startDate, $lte: endDate },
         status: ACTIVE_EXPENSE_STATUSES,
@@ -190,7 +210,7 @@ async function getPeriodInterestExpense(userId, startDate, endDate) {
  */
 async function getPeriodOperatingExpenses(userId, startDate, endDate, excludedCategoryIds = []) {
   const match = {
-    user: userId,
+    ...resolveScopeMatch(userId),
     date: { $gte: startDate, $lte: endDate },
     status: ACTIVE_EXPENSE_STATUSES,
     isDeleted: { $ne: true },
@@ -215,7 +235,7 @@ async function getPeriodTax(userId, startDate, endDate) {
   const result = await Invoice.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         date: { $gte: startDate, $lte: endDate },
         status: { $in: ACTIVE_INVOICE_STATUSES },
         isDeleted: { $ne: true },
@@ -233,7 +253,7 @@ async function getReceivablesAsOf(userId, asOfDate) {
   const result = await Invoice.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         date: { $lte: asOfDate },
         status: { $in: ['SENT', 'PARTIAL', 'UNPAID'] },
         balanceDue: { $gt: 0 },
@@ -252,7 +272,7 @@ async function getPayablesAsOf(userId, asOfDate) {
   const result = await Expense.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         date: { $lte: asOfDate },
         status: { $in: ['UNPAID', 'PARTIAL', 'APPROVED'] },
         balanceDue: { $gt: 0 },
@@ -275,7 +295,7 @@ async function getAccrualsAsOf(userId, asOfDate) {
   const accrualResult = await AccrualEntry.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         date: { $lte: asOfDate },
         status: 'accrued',
         isDeleted: { $ne: true },
@@ -289,7 +309,7 @@ async function getAccrualsAsOf(userId, asOfDate) {
   const payrollResult = await Payroll.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         status: { $in: ['draft', 'processed', 'approved'] },
         $or: [
           { year: { $lt: asOfYear } },
@@ -319,7 +339,7 @@ async function getTdsReceivableAsOf(userId, asOfDate) {
   const result = await Invoice.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         date: { $lte: asOfDate },
         status: { $in: ACTIVE_INVOICE_STATUSES },
         isDeleted: { $ne: true },
@@ -351,7 +371,7 @@ async function getAssetsAsOf(userId, asOfDate) {
   const rows = await Asset.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         status: 'active',
         category: { $ne: 'fixed' },
         isDeleted: { $ne: true },
@@ -378,7 +398,7 @@ async function getAssetsAsOf(userId, asOfDate) {
  */
 async function getFixedAssetsAndDepreciation(userId, startDate, endDate, asOfDate) {
   const fixedAssets = await Asset.find({
-    user: userId,
+    ...resolveScopeMatch(userId),
     category: 'fixed',
     status: 'active',
     isDeleted: { $ne: true },
@@ -422,7 +442,7 @@ async function getLiabilitiesAsOf(userId, asOfDate) {
   const rows = await Liability.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         status: 'active',
         isDeleted: { $ne: true },
         $or: [
@@ -462,7 +482,7 @@ async function getLiabilitiesAsOf(userId, asOfDate) {
  */
 async function getEquityTransactionsAsOf(userId, asOfDate) {
   const rows = await EquityTransaction.find({
-    user: userId,
+    ...resolveScopeMatch(userId),
     date: { $lte: asOfDate },
     isDeleted: { $ne: true },
   }).lean();
@@ -534,7 +554,7 @@ async function getEquityTransactionsAsOf(userId, asOfDate) {
 async function getCumulativeRetainedEarningsAsOf(userId, asOfDate) {
   const deprCategoryIds = await getDepreciationCategoryIds(userId);
   const expMatch = {
-    user: userId,
+    ...resolveScopeMatch(userId),
     date: { $lte: asOfDate },
     status: ACTIVE_EXPENSE_STATUSES,
     isDeleted: { $ne: true },
@@ -547,7 +567,7 @@ async function getCumulativeRetainedEarningsAsOf(userId, asOfDate) {
     Invoice.aggregate([
       {
         $match: {
-          user: userId,
+          ...resolveScopeMatch(userId),
           date: { $lte: asOfDate },
           status: { $in: ACTIVE_INVOICE_STATUSES },
           isDeleted: { $ne: true },
@@ -564,7 +584,7 @@ async function getCumulativeRetainedEarningsAsOf(userId, asOfDate) {
     Invoice.aggregate([
       {
         $match: {
-          user: userId,
+          ...resolveScopeMatch(userId),
           date: { $lte: asOfDate },
           status: { $in: ACTIVE_INVOICE_STATUSES },
           isDeleted: { $ne: true },
@@ -574,7 +594,7 @@ async function getCumulativeRetainedEarningsAsOf(userId, asOfDate) {
     ]),
     getEquityTransactionsAsOf(userId, asOfDate),
     Asset.find({
-      user: userId,
+      ...resolveScopeMatch(userId),
       category: 'fixed',
       status: 'active',
       isDeleted: { $ne: true },
@@ -620,7 +640,7 @@ async function getInventoryValuationAsOf(userId, asOfDate) {
   const result = await Item.aggregate([
     {
       $match: {
-        user: userId,
+        ...resolveScopeMatch(userId),
         isDeleted: { $ne: true },
         openingQuantity: { $gt: 0 },
         createdAt: { $lte: asOfDate },

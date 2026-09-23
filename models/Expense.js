@@ -149,9 +149,9 @@ ExpenseSchema.pre('save', async function() {
   this.net_vendor_payment = Math.round(Math.max(basePayable - tdsAmt, 0) * 100) / 100;
 });
 
-ExpenseSchema.index({ profile: 1, expenseNumber: 1 }, { unique: true, sparse: true });
+ExpenseSchema.index({ user: 1, profile: 1, expenseNumber: 1 }, { unique: true, sparse: true });
+ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 ExpenseSchema.index({ profile: 1, date: 1 });
-ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true, sparse: true });
 ExpenseSchema.index({ user: 1, date: 1 });
 ExpenseSchema.index({ user: 1, 'items.taxRate': 1 });
 

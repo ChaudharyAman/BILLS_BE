@@ -43,8 +43,8 @@ const AccessRoleSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Ensure unique role names per profile (and per company when profile is null)
-AccessRoleSchema.index({ profile: 1, name: 1 }, { unique: true, sparse: true });
 AccessRoleSchema.index({ companyId: 1, profile: 1, name: 1 }, { unique: true, sparse: true });
+AccessRoleSchema.index({ companyId: 1, name: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 // Standard system role templates
 AccessRoleSchema.statics.SYSTEM_MODULES = [

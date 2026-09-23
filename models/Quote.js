@@ -101,7 +101,8 @@ const QuoteSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
-QuoteSchema.index({ profile: 1, quoteNo: 1 }, { unique: true, sparse: true });
+QuoteSchema.index({ user: 1, profile: 1, quoteNo: 1 }, { unique: true, sparse: true });
+QuoteSchema.index({ user: 1, quoteNo: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 QuoteSchema.plugin(softDeletePlugin);
 

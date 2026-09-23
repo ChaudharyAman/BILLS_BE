@@ -102,7 +102,8 @@ const PurchaseOrderSchema = new mongoose.Schema({
   attachments: [AttachmentSchema],
 }, { timestamps: true });
 
-PurchaseOrderSchema.index({ profile: 1, poNumber: 1 }, { unique: true, sparse: true });
+PurchaseOrderSchema.index({ user: 1, profile: 1, poNumber: 1 }, { unique: true, sparse: true });
+PurchaseOrderSchema.index({ user: 1, poNumber: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 PurchaseOrderSchema.plugin(softDeletePlugin);
 

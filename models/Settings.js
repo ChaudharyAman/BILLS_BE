@@ -5,7 +5,6 @@ const SettingsSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
-    index: true
   },
   profile: {
     type: mongoose.Schema.Types.ObjectId,
@@ -113,7 +112,8 @@ const SettingsSchema = new mongoose.Schema({
 // Sparse unique index: only Settings documents that have a token value are indexed.
 // This allows the fast token→user lookup without indexing the null values of
 // users who have never enabled the portal.
-SettingsSchema.index({ profile: 1 }, { unique: true, sparse: true });
+SettingsSchema.index({ user: 1, profile: 1 }, { unique: true, sparse: true });
+SettingsSchema.index({ user: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 SettingsSchema.index({ 'publicSubmissions.token': 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Settings', SettingsSchema);

@@ -56,7 +56,7 @@ exports.createItem = async (req, res) => {
 
     if (!sku || sku.trim() === '') {
       const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(companyId, 'skuSeq') },
+        { id: buildUserCounterId(companyId, 'skuSeq', req.activeProfileId) },
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
@@ -94,7 +94,7 @@ exports.bulkCreateItems = async (req, res) => {
 
         if (!sku || sku.trim() === '') {
           const counter = await Counter.findOneAndUpdate(
-            { id: buildUserCounterId(companyId, 'skuSeq') },
+            { id: buildUserCounterId(companyId, 'skuSeq', req.activeProfileId) },
             { $inc: { seq: 1 } },
             { returnDocument: 'after', upsert: true }
           );

@@ -13,10 +13,10 @@ const BusinessUnitSchema = new mongoose.Schema({
   isDefault: { type: Boolean, default: false },
 }, { timestamps: true });
 
-BusinessUnitSchema.index({ profile: 1, name: 1 }, { unique: true, sparse: true });
-BusinessUnitSchema.index({ profile: 1, code: 1 }, { unique: true, sparse: true });
-BusinessUnitSchema.index({ user: 1, name: 1 }, { unique: true, sparse: true });
-BusinessUnitSchema.index({ user: 1, code: 1 }, { unique: true, sparse: true });
+BusinessUnitSchema.index({ user: 1, profile: 1, name: 1 }, { unique: true, sparse: true });
+BusinessUnitSchema.index({ user: 1, profile: 1, code: 1 }, { unique: true, sparse: true });
+BusinessUnitSchema.index({ user: 1, name: 1 }, { unique: true, partialFilterExpression: { profile: null } });
+BusinessUnitSchema.index({ user: 1, code: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 BusinessUnitSchema.plugin(softDeletePlugin);
 

@@ -193,6 +193,8 @@ const PayrollSchema = new mongoose.Schema({
   ],
 }, { timestamps: true });
 
+PayrollSchema.index({ profile: 1, month: 1, year: 1 });
+
 const { add, subtract, roundToPaise, sumField, sumNamedAmounts } = require('../utils/money');
 
 PayrollSchema.pre('validate', function() {
@@ -282,12 +284,12 @@ PayrollSchema.pre('validate', function() {
 });
 
 PayrollSchema.index(
-  { profile: 1, employee: 1, month: 1, year: 1 },
+  { user: 1, profile: 1, employee: 1, month: 1, year: 1 },
   { unique: true, partialFilterExpression: { isDeleted: false }, sparse: true }
 );
 PayrollSchema.index(
   { user: 1, employee: 1, month: 1, year: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: false }, sparse: true }
+  { unique: true, partialFilterExpression: { isDeleted: false, profile: null } }
 );
 PayrollSchema.post('init', function () {
   this._originalStatus = this.status;

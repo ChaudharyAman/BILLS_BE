@@ -23,15 +23,7 @@ const CompanyDocumentSchema = new mongoose.Schema({
     type: String,
     required: true,
     default: 'General Documents',
-    enum: [
-      'Registration & Legal',
-      'Tax & GST',
-      'Banking & Finance',
-      'Licenses & Compliance',
-      'Brand & Letterheads',
-      'Contracts & Policies',
-      'General Documents',
-    ],
+    trim: true,
   },
   originalName: {
     type: String,

@@ -11,6 +11,9 @@ const upload = multer({
 
 router.get('/', protect, companyDocumentController.getDocuments);
 router.post('/', protect, upload.single('file'), companyDocumentController.uploadDocument);
+router.get('/folders', protect, companyDocumentController.getFolders);
+router.post('/folders', protect, companyDocumentController.createFolder);
+router.delete('/folders/:id', protect, companyDocumentController.deleteFolder);
 router.get('/:id/view', protect, companyDocumentController.viewDocument);
 router.get('/:id/download', protect, companyDocumentController.downloadDocument);
 router.patch('/:id', protect, companyDocumentController.updateDocument);

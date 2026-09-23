@@ -21,6 +21,7 @@ const PayrollVariableTransaction = require('../models/PayrollVariableTransaction
 const LeaveRequest = require('../models/LeaveRequest');
 const BankStatement = require('../models/BankStatement');
 const Loan = require('../models/Loan');
+const { getTenantFilter } = require('../utils/tenantHelper');
 
 const MODELS_MAP = {
   Invoice, Quote, Proforma, PurchaseOrder, Expense, Income, Client, Item, Employee, Project, Asset, Liability, Budget, Category, Department, Role, ReimbursementClaim, RecurringTransaction, Payroll, PayrollVariableTransaction, LeaveRequest, BankStatement, Loan
@@ -106,9 +107,9 @@ function getDisplayAmount(doc, type) {
 
 const getRecycleBinItems = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
+    const tenantFilter = getTenantFilter(req);
     const promises = Object.entries(MODELS_MAP).map(async ([type, Model]) => {
-      const items = await Model.find({ user: companyId, isDeleted: true })
+      const items = await Model.find({ ...tenantFilter, isDeleted: true })
         .setOptions({ withDeleted: true })
         .lean();
       
@@ -133,7 +134,7 @@ const getRecycleBinItems = async (req, res) => {
 
 const restoreItem = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
+    const tenantFilter = getTenantFilter(req);
     const { id, type, forceRestore } = req.body;
     if (!id || !type) {
       return res.status(400).json({ message: 'ID and Type are required' });
@@ -145,7 +146,7 @@ const restoreItem = async (req, res) => {
     }
 
     const item = await Model.findOneAndUpdate(
-      { _id: id, user: companyId },
+      { _id: id, ...tenantFilter },
       { $set: { isDeleted: false }, $unset: { deletedAt: 1 } },
       { new: true }
     ).setOptions({ withDeleted: true, forceRestore: !!forceRestore });
@@ -174,7 +175,7 @@ const restoreItem = async (req, res) => {
 
 const permanentlyDeleteItem = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
+    const tenantFilter = getTenantFilter(req);
     const { id, type } = req.query;
     if (!id || !type) {
       return res.status(400).json({ message: 'ID and Type are required' });
@@ -185,7 +186,7 @@ const permanentlyDeleteItem = async (req, res) => {
       return res.status(400).json({ message: `Invalid type: ${type}` });
     }
 
-    const result = await Model.deleteOne({ _id: id, user: companyId }).setOptions({ hardDelete: true });
+    const result = await Model.deleteOne({ _id: id, ...tenantFilter }).setOptions({ hardDelete: true });
 
     if (result.deletedCount === 0) {
       return res.status(404).json({ message: 'Item not found' });
@@ -200,7 +201,7 @@ const permanentlyDeleteItem = async (req, res) => {
 
 const bulkRestoreItems = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
+    const tenantFilter = getTenantFilter(req);
     const { items, forceRestore } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Items array is required' });
@@ -215,7 +216,7 @@ const bulkRestoreItems = async (req, res) => {
 
       try {
         const item = await Model.findOneAndUpdate(
-          { _id: id, user: companyId },
+          { _id: id, ...tenantFilter },
           { $set: { isDeleted: false }, $unset: { deletedAt: 1 } },
           { new: true }
         ).setOptions({ withDeleted: true, forceRestore: !!forceRestore });
@@ -235,7 +236,7 @@ const bulkRestoreItems = async (req, res) => {
 
 const bulkPermanentlyDeleteItems = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
+    const tenantFilter = getTenantFilter(req);
     const { items } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Items array is required' });
@@ -252,7 +253,7 @@ const bulkPermanentlyDeleteItems = async (req, res) => {
     let totalDeleted = 0;
     for (const [type, ids] of Object.entries(grouped)) {
       const Model = MODELS_MAP[type];
-      const result = await Model.deleteMany({ _id: { $in: ids }, user: companyId }).setOptions({ hardDelete: true });
+      const result = await Model.deleteMany({ _id: { $in: ids }, ...tenantFilter }).setOptions({ hardDelete: true });
       totalDeleted += result.deletedCount || 0;
     }
 
@@ -265,10 +266,10 @@ const bulkPermanentlyDeleteItems = async (req, res) => {
 
 const emptyRecycleBin = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
+    const tenantFilter = getTenantFilter(req);
     let totalPurged = 0;
     const promises = Object.values(MODELS_MAP).map(async (Model) => {
-      const result = await Model.deleteMany({ user: companyId, isDeleted: true }).setOptions({ hardDelete: true });
+      const result = await Model.deleteMany({ ...tenantFilter, isDeleted: true }).setOptions({ hardDelete: true });
       totalPurged += result.deletedCount || 0;
     });
 

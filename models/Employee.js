@@ -270,7 +270,8 @@ const EmployeeSchema = new mongoose.Schema({
   }],
 }, { timestamps: true, strict: false });
 
-EmployeeSchema.index({ user: 1, employeeId: 1 }, { unique: true });
+EmployeeSchema.index({ user: 1, profile: 1, employeeId: 1 }, { unique: true, sparse: true });
+EmployeeSchema.index({ user: 1, employeeId: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 EmployeeSchema.index({ user: 1, email: 1 });
 
 EmployeeSchema.pre('save', async function() {
@@ -785,9 +786,6 @@ EmployeeSchema.post('findOneAndUpdate', function (doc) {
     if (doc) decryptEmployeePII(doc);
   }
 });
-
-EmployeeSchema.index({ profile: 1, employeeId: 1 }, { sparse: true });
-EmployeeSchema.index({ user: 1, employeeId: 1 }, { sparse: true });
 
 EmployeeSchema.plugin(softDeletePlugin);
 

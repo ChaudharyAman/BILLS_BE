@@ -20,8 +20,8 @@ const ProjectSchema = new mongoose.Schema({
   team: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Employee' }],
 }, { timestamps: true });
 
-ProjectSchema.index({ profile: 1, code: 1 }, { unique: true, sparse: true });
-ProjectSchema.index({ user: 1, code: 1 }, { unique: true, sparse: true });
+ProjectSchema.index({ user: 1, profile: 1, code: 1 }, { unique: true, sparse: true });
+ProjectSchema.index({ user: 1, code: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 ProjectSchema.plugin(softDeletePlugin);
 

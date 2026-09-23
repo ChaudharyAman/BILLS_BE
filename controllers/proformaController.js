@@ -24,15 +24,19 @@ function isProformaNumberDuplicateError(error) {
   );
 }
 
-async function generateNextUniqueProformaNumber({ userId, proformaPrefix }) {
+async function generateNextUniqueProformaNumber({ userId, profileId, proformaPrefix }) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const counter = await Counter.findOneAndUpdate(
-      { id: buildUserCounterId(userId, 'proformaNo') },
+      { id: buildUserCounterId(userId, 'proformaNo', profileId) },
       { $inc: { seq: 1 } },
       { returnDocument: 'after', upsert: true }
     );
     const candidate = buildAutoDocumentNumber(proformaPrefix || 'PRF', counter.seq);
-    const exists = await Proforma.exists({ user: userId, proformaNo: candidate });
+    const exists = await Proforma.exists({
+      user: userId,
+      proformaNo: candidate,
+      ...(profileId ? { profile: profileId } : { profile: null }),
+    });
     if (!exists) return candidate;
   }
 
@@ -185,7 +189,7 @@ exports.createProforma = async (req, res) => {
       }
     } else {
       const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(companyId, 'proformaNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+        { id: buildUserCounterId(companyId, 'proformaNo', req.activeProfileId) }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
       );
       proformaNo = buildAutoDocumentNumber(proformaPrefix, counter.seq);
     }
@@ -379,7 +383,7 @@ exports.convertToInvoice = async (req, res) => {
 
     const userSettings = await Settings.findOne(getTenantFilter(req));
     const counter = await Counter.findOneAndUpdate(
-      { id: buildUserCounterId(companyId, 'invoiceNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+      { id: buildUserCounterId(companyId, 'invoiceNo', req.activeProfileId) }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
@@ -526,15 +530,15 @@ exports.bulkCreateProformas = async (req, res) => {
         throw new Error('Client name is required for each imported proforma.');
       }
 
-      let client = await Client.findOne({ name: rowClientName, user: companyId });
+      let client = await Client.findOne({ name: rowClientName, ...getTenantFilter(req) });
       if (!client) {
-         client = new Client({
+         client = new Client(attachTenant(req, {
             name: rowClientName || 'Unknown Client',
             email: pData.clientEmail || '',
             phone: pData.clientPhone || '',
             billingAddress: { state: pData.clientState || '' },
             user: companyId
-         });
+         }));
          await client.save();
       }
 
@@ -546,6 +550,7 @@ exports.bulkCreateProformas = async (req, res) => {
       if (!proformaNo || proformaNo === 'Auto-generated') {
         proformaNo = await generateNextUniqueProformaNumber({
           userId: companyId,
+          profileId: req.activeProfileId,
           proformaPrefix: userSettings?.proformaPrefix || 'PRF',
         });
       }

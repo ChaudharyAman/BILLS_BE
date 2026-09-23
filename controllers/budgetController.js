@@ -4,15 +4,23 @@ const Category = require('../models/Category');
 const Department = require('../models/Department');
 const BusinessUnit = require('../models/BusinessUnit');
 const Expense = require('../models/Expense');
+const { getTenantFilter, getTenantMatch, attachTenant } = require('../utils/tenantHelper');
 
-const validateOptionalRef = async (Model, id, userId, label) => {
+const resolveScopeFilter = (userOrReq) => {
+  if (userOrReq && userOrReq.activeProfileId) return getTenantFilter(userOrReq);
+  if (userOrReq && typeof userOrReq === 'object' && (userOrReq.profile || userOrReq.user)) return userOrReq;
+  const id = userOrReq?.companyId || userOrReq?.user?._id || userOrReq;
+  return id ? { user: id } : {};
+};
+
+const validateOptionalRef = async (Model, id, scopeFilter, label) => {
   if (!id) return null;
   if (!mongoose.Types.ObjectId.isValid(id)) {
     const error = new Error(`Invalid ${label}`);
     error.statusCode = 400;
     throw error;
   }
-  const doc = await Model.findOne({ _id: id, user: userId });
+  const doc = await Model.findOne({ _id: id, ...scopeFilter });
   if (!doc) {
     const error = new Error(`${label} not found`);
     error.statusCode = 400;
@@ -21,11 +29,11 @@ const validateOptionalRef = async (Model, id, userId, label) => {
   return doc._id;
 };
 
-const normalizeBudgetPayload = async (body, userId) => ({
+const normalizeBudgetPayload = async (body, scopeFilter) => ({
   name: body.name,
-  category: await validateOptionalRef(Category, body.category, userId, 'Category'),
-  department: await validateOptionalRef(Department, body.department, userId, 'Department'),
-  businessUnit: await validateOptionalRef(BusinessUnit, body.businessUnit, userId, 'Business Unit'),
+  category: await validateOptionalRef(Category, body.category, scopeFilter, 'Category'),
+  department: await validateOptionalRef(Department, body.department, scopeFilter, 'Department'),
+  businessUnit: await validateOptionalRef(BusinessUnit, body.businessUnit, scopeFilter, 'Business Unit'),
   project: body.project || null,
   period: body.period,
   startDate: body.startDate,
@@ -40,16 +48,21 @@ const refreshOneBudget = async (budget) => {
   if (!budget?.category) return budget;
 
   const categoryId = budget.category?._id || budget.category;
+  const match = {
+    category: categoryId,
+    date: { $gte: budget.startDate, $lte: budget.endDate },
+    status: { $ne: 'CANCELLED' },
+    isDeleted: { $ne: true },
+  };
+
+  if (budget.profile) {
+    match.profile = budget.profile;
+  } else if (budget.user) {
+    match.user = budget.user;
+  }
+
   const result = await Expense.aggregate([
-    {
-      $match: {
-        user: budget.user,
-        category: categoryId,
-        date: { $gte: budget.startDate, $lte: budget.endDate },
-        status: { $ne: 'CANCELLED' },
-        isDeleted: { $ne: true },
-      },
-    },
+    { $match: match },
     { $group: { _id: null, total: { $sum: '$grandTotal' } } },
   ]);
 
@@ -61,10 +74,14 @@ const refreshOneBudget = async (budget) => {
   return budget;
 };
 
-exports.updateBudgetSpent = async (categoryId, userId) => {
+exports.updateBudgetSpent = async (categoryId, userOrReq, maybeProfileId) => {
   if (!categoryId || !mongoose.Types.ObjectId.isValid(String(categoryId))) return [];
+  let filter = resolveScopeFilter(userOrReq);
+  if (maybeProfileId) {
+    filter = { profile: maybeProfileId };
+  }
   const budgets = await Budget.find({
-    user: userId,
+    ...filter,
     category: categoryId,
     status: { $in: ['active', 'exceeded'] },
   });
@@ -76,11 +93,12 @@ exports.updateBudgetSpent = async (categoryId, userId) => {
   return refreshed;
 };
 
-exports.checkBudgetWarning = async (categoryId, userId, amount, excludeExpenseId = null) => {
+exports.checkBudgetWarning = async (categoryId, userOrReq, amount, excludeExpenseId = null) => {
   if (!categoryId || !mongoose.Types.ObjectId.isValid(String(categoryId))) return null;
   const now = new Date();
+  const filter = resolveScopeFilter(userOrReq);
   const budgets = await Budget.find({
-    user: userId,
+    ...filter,
     category: categoryId,
     startDate: { $lte: now },
     endDate: { $gte: now },
@@ -90,7 +108,7 @@ exports.checkBudgetWarning = async (categoryId, userId, amount, excludeExpenseId
   for (const budget of budgets) {
     let spent = budget.spentAmount || 0;
     if (excludeExpenseId) {
-      const existing = await Expense.findOne({ _id: excludeExpenseId, user: userId }).select('grandTotal category');
+      const existing = await Expense.findOne({ _id: excludeExpenseId, ...filter }).select('grandTotal category');
       if (existing && String(existing.category) === String(categoryId)) {
         spent -= Number(existing.grandTotal) || 0;
       }
@@ -111,11 +129,10 @@ exports.checkBudgetWarning = async (categoryId, userId, amount, excludeExpenseId
 
 exports.getBudgets = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 20;
     const skip = (page - 1) * limit;
-    const query = { user: companyId };
+    const query = { ...getTenantFilter(req) };
 
     if (req.query.category) query.category = req.query.category;
     if (req.query.businessUnit) query.businessUnit = req.query.businessUnit;
@@ -141,9 +158,9 @@ exports.getBudgets = async (req, res) => {
 
 exports.createBudget = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const payload = await normalizeBudgetPayload(req.body, companyId);
-    const budget = await Budget.create({ ...payload, user: companyId });
+    const scopeFilter = getTenantFilter(req);
+    const payload = await normalizeBudgetPayload(req.body, scopeFilter);
+    const budget = await Budget.create(attachTenant(req, payload));
     await refreshOneBudget(budget);
     res.status(201).json(budget);
   } catch (error) {
@@ -155,18 +172,18 @@ exports.createBudget = async (req, res) => {
 
 exports.updateBudget = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
+    const tenantFilter = getTenantFilter(req);
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Budget not found' });
     }
 
-    const existing = await Budget.findOne({ _id: req.params.id, user: companyId });
+    const existing = await Budget.findOne({ _id: req.params.id, ...tenantFilter });
     if (!existing) return res.status(404).json({ message: 'Budget not found' });
 
-    const payload = await normalizeBudgetPayload({ ...existing.toObject(), ...req.body }, companyId);
+    const payload = await normalizeBudgetPayload({ ...existing.toObject(), ...req.body }, tenantFilter);
     Object.assign(existing, payload);
     await refreshOneBudget(existing);
-    const budget = await Budget.findById(existing._id)
+    const budget = await Budget.findOne({ _id: existing._id, ...tenantFilter })
       .populate('category', 'name type color icon')
       .populate('department', 'name code');
     res.json(budget);
@@ -178,11 +195,14 @@ exports.updateBudget = async (req, res) => {
 
 exports.deleteBudget = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
+    const tenantFilter = getTenantFilter(req);
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Budget not found' });
     }
-    const budget = await Budget.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const budget = await Budget.findOneAndUpdate(
+      { _id: req.params.id, ...tenantFilter },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
     if (!budget) return res.status(404).json({ message: 'Budget not found' });
     res.json({ message: 'Budget deleted successfully' });
   } catch (error) {
@@ -193,13 +213,12 @@ exports.deleteBudget = async (req, res) => {
 
 exports.getBudgetVsActual = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const parsedPage = parseInt(req.query.page, 10);
     const parsedLimit = parseInt(req.query.limit, 10);
     const page = Number.isInteger(parsedPage) ? Math.max(1, parsedPage) : 1;
     const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(parsedLimit, 100)) : 20;
     const skip = (page - 1) * limit;
-    const query = { user: companyId, status: { $in: ['active', 'exceeded'] } };
+    const query = { ...getTenantFilter(req), status: { $in: ['active', 'exceeded'] } };
 
     if (req.query.category) query.category = req.query.category;
     if (req.query.period) query.period = req.query.period;
@@ -225,7 +244,7 @@ exports.getBudgetVsActual = async (req, res) => {
     const expenseTotals = categoryIds.length > 0 ? await Expense.aggregate([
       {
         $match: {
-          user: companyId,
+          ...getTenantMatch(req),
           category: { $in: categoryIds },
           date: { $gte: dates.min, $lte: dates.max },
           status: { $ne: 'CANCELLED' },

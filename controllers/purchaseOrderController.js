@@ -307,7 +307,7 @@ exports.createPurchaseOrder = async (req, res) => {
       }
     } else {
       const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(companyId, 'purchaseOrderNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+        { id: buildUserCounterId(companyId, 'purchaseOrderNo', req.activeProfileId) }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
       );
       poNumber = buildAutoDocumentNumber(purchaseOrderPrefix, counter.seq);
     }
@@ -512,7 +512,7 @@ exports.convertToInvoice = async (req, res) => {
 
     const userSettings = await Settings.findOne(getTenantFilter(req));
     const counter = await Counter.findOneAndUpdate(
-      { id: buildUserCounterId(companyId, 'invoiceNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+      { id: buildUserCounterId(companyId, 'invoiceNo', req.activeProfileId) }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
@@ -690,7 +690,7 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
       const isIntraState = !isInterStateSupply(vendorState, COMPANY_STATE, COMPANY_GSTIN);
 
       const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(companyId, 'purchaseOrderNo') },
+        { id: buildUserCounterId(companyId, 'purchaseOrderNo', req.activeProfileId) },
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );

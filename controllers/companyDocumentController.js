@@ -1,4 +1,6 @@
+const mongoose = require('mongoose');
 const CompanyDocument = require('../models/CompanyDocument');
+const DocumentFolder = require('../models/DocumentFolder');
 const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 const escapeRegex = require('../utils/escapeRegex');
 
@@ -47,12 +49,16 @@ exports.getDocuments = async (req, res) => {
       totalStorageBytes += (Number(doc.sizeBytes) || 0);
     }
 
+    // Retrieve tenant custom folders
+    const customFolders = await DocumentFolder.find(tenantFilter).sort({ createdAt: 1 }).lean();
+
     res.json({
       success: true,
       data: documents,
       total: documents.length,
       categoryCounts,
       totalStorageBytes,
+      customFolders: customFolders || [],
     });
   } catch (error) {
     console.error('Error fetching company documents:', error);
@@ -248,5 +254,98 @@ exports.deleteDocument = async (req, res) => {
   } catch (error) {
     console.error('Error deleting document:', error);
     res.status(500).json({ message: error.message || 'Failed to delete document' });
+  }
+};
+
+// GET /api/company-documents/folders
+exports.getFolders = async (req, res) => {
+  try {
+    const tenantFilter = getTenantFilter(req);
+    const folders = await DocumentFolder.find(tenantFilter).sort({ createdAt: 1 }).lean();
+    res.json({ success: true, data: folders });
+  } catch (error) {
+    console.error('Error fetching document folders:', error);
+    res.status(500).json({ message: error.message || 'Failed to fetch folders' });
+  }
+};
+
+// POST /api/company-documents/folders
+exports.createFolder = async (req, res) => {
+  try {
+    const { name, color, icon } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Folder name is required' });
+    }
+
+    const trimmedName = name.trim();
+
+    if (trimmedName.toLowerCase() === 'all') {
+      return res.status(400).json({ message: '"All" is a reserved folder name.' });
+    }
+
+    const tenantFilter = getTenantFilter(req);
+
+    const existing = await DocumentFolder.findOne({
+      ...tenantFilter,
+      name: { $regex: new RegExp(`^${escapeRegex(trimmedName)}$`, 'i') },
+    });
+    if (existing) {
+      return res.status(400).json({ message: 'A folder with this name already exists' });
+    }
+
+    const newFolder = await DocumentFolder.create(attachTenant(req, {
+      name: trimmedName,
+      color: color || 'text-indigo-500 bg-indigo-50 dark:bg-indigo-900/30',
+      icon: icon || 'Folder',
+    }));
+
+    res.status(201).json({
+      success: true,
+      message: 'Folder created successfully',
+      data: newFolder,
+    });
+  } catch (error) {
+    console.error('Error creating document folder:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'A folder with this name already exists' });
+    }
+    res.status(500).json({ message: error.message || 'Failed to create folder' });
+  }
+};
+
+// DELETE /api/company-documents/folders/:id
+exports.deleteFolder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tenantFilter = getTenantFilter(req);
+
+    const query = {
+      ...tenantFilter,
+      $or: [
+        mongoose.isValidObjectId(id) ? { _id: id } : null,
+        { name: id },
+      ].filter(Boolean),
+    };
+
+    const folder = await DocumentFolder.findOne(query);
+    if (!folder) {
+      return res.status(404).json({ message: 'Folder not found' });
+    }
+
+    await DocumentFolder.deleteOne({ _id: folder._id });
+
+    // Reassign any documents in this deleted folder to 'General Documents'
+    await CompanyDocument.updateMany(
+      { ...tenantFilter, category: folder.name },
+      { $set: { category: 'General Documents' } }
+    );
+
+    res.json({
+      success: true,
+      message: `Folder "${folder.name}" deleted. Any existing documents were moved to General Documents.`,
+    });
+  } catch (error) {
+    console.error('Error deleting document folder:', error);
+    res.status(500).json({ message: error.message || 'Failed to delete folder' });
   }
 };

@@ -5,6 +5,7 @@ const Asset = require('../../models/Asset');
 const Liability = require('../../models/Liability');
 const CashLedgerEntry = require('../../models/CashLedgerEntry');
 const { parseMonthlyDateRange } = require('../../utils/dateRange');
+const { getTenantFilter, getTenantMatch } = require('../../utils/tenantHelper');
 
 const roundTwo = (num) => Math.round((Number(num) || 0) * 100) / 100;
 
@@ -18,12 +19,12 @@ const sumField = async (Model, match, field) => {
 
 exports.getCashFlow = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const userId = new mongoose.Types.ObjectId(String(companyId));
+    const tenantFilter = getTenantFilter(req);
+    const tenantMatch = getTenantMatch(req);
     const { startDate, endDate } = parseMonthlyDateRange(req.query);
 
-    // Check if CashLedgerEntry records exist for this user
-    const hasLedger = await CashLedgerEntry.exists({ user: userId, isDeleted: { $ne: true } });
+    // Check if CashLedgerEntry records exist for this workspace/tenant
+    const hasLedger = await CashLedgerEntry.exists({ ...tenantFilter, isDeleted: { $ne: true } });
 
     let operating = 0;
     let investing = 0;
@@ -34,7 +35,7 @@ exports.getCashFlow = async (req, res) => {
       const entries = await CashLedgerEntry.aggregate([
         {
           $match: {
-            user: userId,
+            ...tenantMatch,
             date: { $gte: startDate, $lte: endDate },
             isDeleted: { $ne: true },
           },
@@ -59,11 +60,11 @@ exports.getCashFlow = async (req, res) => {
     } else {
       // Fallback: document-level aggregates
       const [totalIncome, totalExpense, assetPurchases, assetDisposals, liabilityPrincipal] = await Promise.all([
-        sumField(Income, { user: companyId, date: { $gte: startDate, $lte: endDate }, status: { $nin: ['DRAFT', 'CANCELLED'] }, isDeleted: { $ne: true } }, '$grandTotal'),
-        sumField(Expense, { user: companyId, date: { $gte: startDate, $lte: endDate }, status: { $nin: ['DRAFT', 'CANCELLED'] }, isDeleted: { $ne: true } }, '$grandTotal'),
-        sumField(Asset, { user: companyId, purchaseDate: { $gte: startDate, $lte: endDate }, isDeleted: { $ne: true } }, '$purchaseValue'),
-        sumField(Asset, { user: companyId, disposalDate: { $gte: startDate, $lte: endDate }, status: { $in: ['disposed', 'sold'] }, isDeleted: { $ne: true } }, '$disposalValue'),
-        sumField(Liability, { user: companyId, startDate: { $gte: startDate, $lte: endDate }, isDeleted: { $ne: true } }, '$principalAmount'),
+        sumField(Income, { ...tenantFilter, date: { $gte: startDate, $lte: endDate }, status: { $nin: ['DRAFT', 'CANCELLED'] }, isDeleted: { $ne: true } }, '$grandTotal'),
+        sumField(Expense, { ...tenantFilter, date: { $gte: startDate, $lte: endDate }, status: { $nin: ['DRAFT', 'CANCELLED'] }, isDeleted: { $ne: true } }, '$grandTotal'),
+        sumField(Asset, { ...tenantFilter, purchaseDate: { $gte: startDate, $lte: endDate }, isDeleted: { $ne: true } }, '$purchaseValue'),
+        sumField(Asset, { ...tenantFilter, disposalDate: { $gte: startDate, $lte: endDate }, status: { $in: ['disposed', 'sold'] }, isDeleted: { $ne: true } }, '$disposalValue'),
+        sumField(Liability, { ...tenantFilter, startDate: { $gte: startDate, $lte: endDate }, isDeleted: { $ne: true } }, '$principalAmount'),
       ]);
 
       operating = roundTwo(totalIncome - totalExpense);
