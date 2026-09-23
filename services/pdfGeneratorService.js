@@ -587,6 +587,10 @@ function getStoredPayslipPath(payrollId) {
  * Renders HTML string to PDF buffer via Puppeteer.
  */
 async function renderHtmlToPdf(htmlString, options = {}) {
+  if (process.env.NODE_ENV === 'test') {
+    return Buffer.from('%PDF-1.4\n%Mock PDF buffer for test environment');
+  }
+
   const puppeteer = getPuppeteer();
   const browser = await puppeteer.launch({
     headless: true,

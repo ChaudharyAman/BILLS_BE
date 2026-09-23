@@ -30,7 +30,7 @@ const PayrollBatchRunSchema = new mongoose.Schema({
   errorMessage: { type: String, default: '' },
   startedAt: { type: Date, default: null },
   completedAt: { type: Date, default: null },
-}, { timestamps: true });
+}, { timestamps: true, suppressReservedKeysWarning: true });
 
 PayrollBatchRunSchema.index({ profile: 1, month: 1, year: 1 });
 PayrollBatchRunSchema.index({ user: 1, month: 1, year: 1 });
