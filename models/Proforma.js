@@ -20,6 +20,7 @@ const ProformaItemSchema = new mongoose.Schema({
 
 const ProformaSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   proformaNo: { type: String, required: true },
   invoiceType: {
     type: String,
@@ -99,7 +100,8 @@ const ProformaSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
-ProformaSchema.index({ user: 1, proformaNo: 1 }, { unique: true });
+ProformaSchema.index({ user: 1, profile: 1, proformaNo: 1 }, { unique: true, sparse: true });
+ProformaSchema.index({ user: 1, proformaNo: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 
 ProformaSchema.plugin(softDeletePlugin);
 

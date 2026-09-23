@@ -13,6 +13,7 @@ const Expense = require('../../models/Expense');
 const { enqueueBatchJob } = require('../../queues/payrollQueue');
 const { buildPayrollSnapshot } = require('../../utils/payrollMath');
 const { isValidMonth, isValidYear, getOrCreateConfig } = require('./common');
+const { getTenantFilter, attachTenant } = require('../../utils/tenantHelper');
 
 const processPayroll = async (req, res) => {
   try {
@@ -36,7 +37,7 @@ const processPayroll = async (req, res) => {
       const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
       if (mongoose.connection.readyState === 1) {
-        await PayrollBatchRun.create({
+        await PayrollBatchRun.create(attachTenant(req, {
           jobId,
           user: tenantUserId,
           month: Number(month),
@@ -50,7 +51,7 @@ const processPayroll = async (req, res) => {
           errors: [],
           skippedNoActivity: [],
           startedAt: new Date(),
-        }).catch(err => console.error('Error creating synchronous PayrollBatchRun:', err));
+        })).catch(err => console.error('Error creating synchronous PayrollBatchRun:', err));
       }
 
       const batchResult = await processBatchJob({
@@ -88,10 +89,9 @@ const processPayroll = async (req, res) => {
 const getBatchJobStatus = async (req, res) => {
   try {
     const { jobId } = req.params;
-    const tenantUserId = req.companyId || req.user._id;
     const batchRun = await PayrollBatchRun.findOne({
       jobId,
-      user: { $in: [req.user._id, tenantUserId].filter(Boolean) }
+      ...getTenantFilter(req),
     });
     if (!batchRun) {
       return res.status(404).json({ message: 'Payroll batch job not found' });
@@ -126,7 +126,7 @@ const previewPayroll = async (req, res) => {
       return res.status(400).json({ message: 'Invalid employeeId' });
     }
 
-    const employee = await Employee.findOne({ _id: employeeId, user: req.user._id })
+    const employee = await Employee.findOne({ _id: employeeId, ...getTenantFilter(req) })
       .populate('department', 'name code')
       .lean();
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
@@ -150,7 +150,8 @@ const bulkApprovePayroll = async (req, res) => {
     const ids = Array.isArray(req.body.ids) ? req.body.ids.filter((id) => mongoose.Types.ObjectId.isValid(String(id))) : [];
     const month = req.body.month !== undefined ? Number(req.body.month) : undefined;
     const year = req.body.year !== undefined ? Number(req.body.year) : undefined;
-    const filter = { user: req.user._id, status: 'processed' };
+    const tenantFilter = getTenantFilter(req);
+    const filter = { ...tenantFilter, status: 'processed' };
 
     if (ids.length) filter._id = { $in: ids };
     if (month !== undefined) {
@@ -228,7 +229,8 @@ const bulkDeletePayroll = async (req, res) => {
     const ids = Array.isArray(req.body.ids) ? req.body.ids.filter((id) => mongoose.Types.ObjectId.isValid(String(id))) : [];
     const month = req.body.month !== undefined ? Number(req.body.month) : undefined;
     const year = req.body.year !== undefined ? Number(req.body.year) : undefined;
-    const filter = { user: req.user._id, status: { $ne: 'paid' } };
+    const tenantFilter = getTenantFilter(req);
+    const filter = { ...tenantFilter, status: { $ne: 'paid' } };
 
     if (ids.length) filter._id = { $in: ids };
     if (month !== undefined) {
@@ -248,11 +250,11 @@ const bulkDeletePayroll = async (req, res) => {
 
     for (const payroll of payrolls) {
       if (payroll.expenseRef) {
-        await Expense.updateOne({ _id: payroll.expenseRef, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+        await Expense.updateOne({ _id: payroll.expenseRef, ...tenantFilter }, { $set: { isDeleted: true, deletedAt: new Date() } });
       }
       const PayrollVariableTransaction = require('../../models/PayrollVariableTransaction');
       await PayrollVariableTransaction.updateMany(
-        { payroll: payroll._id, user: req.user._id },
+        { payroll: payroll._id, ...tenantFilter },
         { $set: { status: 'approved', payroll: null } }
       );
       await Payroll.updateOne({ _id: payroll._id }, { $set: { isDeleted: true, deletedAt: new Date() } });

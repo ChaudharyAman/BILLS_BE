@@ -8,6 +8,12 @@ const CashLedgerEntrySchema = new mongoose.Schema({
     required: true,
     index: true,
   },
+  profile: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ClientProfile',
+    required: false,
+    index: true,
+  },
   account: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'CashAccount',
@@ -64,6 +70,8 @@ const CashLedgerEntrySchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
+CashLedgerEntrySchema.index({ profile: 1, account: 1, date: 1 });
+CashLedgerEntrySchema.index({ profile: 1, sourceModel: 1, sourceId: 1 });
 CashLedgerEntrySchema.index({ user: 1, account: 1, date: 1 });
 CashLedgerEntrySchema.index({ user: 1, sourceModel: 1, sourceId: 1 });
 CashLedgerEntrySchema.plugin(softDeletePlugin);

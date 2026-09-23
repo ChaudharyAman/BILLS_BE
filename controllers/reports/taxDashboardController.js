@@ -4,6 +4,7 @@ const Expense = require('../../models/Expense');
 const Invoice = require('../../models/Invoice');
 const Payroll = require('../../models/Payroll');
 const PurchaseOrder = require('../../models/PurchaseOrder');
+const { getTenantFilter, getTenantMatch } = require('../../utils/tenantHelper');
 
 const ACTIVE_INVOICE_STATUSES = ['SENT', 'PAID', 'PARTIAL', 'UNPAID'];
 const ACTIVE_EXPENSE_STATUSES = { $nin: ['DRAFT', 'CANCELLED'] };
@@ -74,7 +75,26 @@ function classifyInvoice(row = {}) {
   return 'B2C';
 }
 
-async function aggregateTotals(Model, userId, startDate, endDate, fields, allowedStatuses = ACTIVE_EXPENSE_STATUSES, buId = null) {
+function resolveScopeMatch(scope) {
+  if (scope && typeof scope === 'object') {
+    if (scope.match) return scope.match;
+    if (scope.profile) return { profile: new mongoose.Types.ObjectId(String(scope.profile)) };
+    if (scope.user) return { user: new mongoose.Types.ObjectId(String(scope.user)) };
+  }
+  const id = scope ? new mongoose.Types.ObjectId(String(scope)) : null;
+  return id ? { user: id } : {};
+}
+
+function resolveScopeFilter(scope) {
+  if (scope && typeof scope === 'object') {
+    if (scope.filter) return scope.filter;
+    if (scope.profile) return { profile: scope.profile };
+    if (scope.user) return { user: scope.user };
+  }
+  return scope ? { user: scope } : {};
+}
+
+async function aggregateTotals(Model, scope, startDate, endDate, fields, allowedStatuses = ACTIVE_EXPENSE_STATUSES, buId = null) {
   const isExpense = Model.modelName === 'Expense';
   const isIncome = Model.modelName === 'Income';
   const project = fields.reduce((acc, field) => {
@@ -91,7 +111,7 @@ async function aggregateTotals(Model, userId, startDate, endDate, fields, allowe
     return { ...acc, [field]: { $sum: sumExpression } };
   }, {});
 
-  const matchQuery = { user: userId, date: { $gte: startDate, $lte: endDate }, status: allowedStatuses };
+  const matchQuery = { ...resolveScopeMatch(scope), date: { $gte: startDate, $lte: endDate }, status: allowedStatuses };
   if (isIncome) {
     matchQuery.sourceType = 'manual';
   }
@@ -106,9 +126,9 @@ async function aggregateTotals(Model, userId, startDate, endDate, fields, allowe
   return result || fields.reduce((acc, field) => ({ ...acc, [field]: 0 }), {});
 }
 
-async function getInvoiceSplit(userId, startDate, endDate, buId = null) {
+async function getInvoiceSplit(scope, startDate, endDate, buId = null) {
   const query = {
-    user: userId,
+    ...resolveScopeFilter(scope),
     date: { $gte: startDate, $lte: endDate },
     status: { $in: ACTIVE_INVOICE_STATUSES },
   };
@@ -132,7 +152,7 @@ async function getInvoiceSplit(userId, startDate, endDate, buId = null) {
   return split;
 }
 
-async function getSlabTotals(Model, userId, startDate, endDate, allowedStatuses = ACTIVE_EXPENSE_STATUSES, buId = null) {
+async function getSlabTotals(Model, scope, startDate, endDate, allowedStatuses = ACTIVE_EXPENSE_STATUSES, buId = null) {
   const isExpense = Model.modelName === 'Expense';
 
   const sumExpression = isExpense
@@ -156,7 +176,7 @@ async function getSlabTotals(Model, userId, startDate, endDate, allowedStatuses 
       }
     : '$items.taxAmount';
 
-  const matchQuery = { user: userId, date: { $gte: startDate, $lte: endDate }, status: allowedStatuses };
+  const matchQuery = { ...resolveScopeMatch(scope), date: { $gte: startDate, $lte: endDate }, status: allowedStatuses };
   if (buId) matchQuery.businessUnit = buId;
 
   const rows = await Model.aggregate([
@@ -178,12 +198,12 @@ async function getSlabTotals(Model, userId, startDate, endDate, allowedStatuses 
   }));
 }
 
-async function getTrend6Months(userId, endDate, buId = null) {
+async function getTrend6Months(scope, endDate, buId = null) {
   const start = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - 5, 1));
   const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 0, 23, 59, 59, 999));
   
-  const invMatch = { user: userId, date: { $gte: start, $lte: end }, status: { $in: ACTIVE_INVOICE_STATUSES } };
-  const expMatch = { user: userId, date: { $gte: start, $lte: end }, status: ACTIVE_EXPENSE_STATUSES };
+  const invMatch = { ...resolveScopeMatch(scope), date: { $gte: start, $lte: end }, status: { $in: ACTIVE_INVOICE_STATUSES } };
+  const expMatch = { ...resolveScopeMatch(scope), date: { $gte: start, $lte: end }, status: ACTIVE_EXPENSE_STATUSES };
   if (buId) {
     invMatch.businessUnit = buId;
     expMatch.businessUnit = buId;
@@ -237,16 +257,18 @@ async function getTrend6Months(userId, endDate, buId = null) {
   });
 }
 
-async function getExpenseGstCredits(userId, startDate, endDate, buId = null) {
+async function getExpenseGstCredits(scope, startDate, endDate, buId = null) {
   const Settings = require('../../models/Settings');
   const Client = require('../../models/Client');
 
-  const settings = await Settings.findOne({ user: userId }).select('gstin').lean();
+  const filter = resolveScopeFilter(scope);
+  const settings = (await Settings.findOne(filter).select('gstin').lean())
+    || (filter.user ? await Settings.findOne({ user: filter.user }).select('gstin').lean() : null);
   const userGstin = String(settings?.gstin || '').trim().toUpperCase();
   const userStateCode = /^[0-9]{2}/.test(userGstin) ? userGstin.substring(0, 2) : '';
 
   const expQuery = {
-    user: userId,
+    ...filter,
     date: { $gte: startDate, $lte: endDate },
     status: ACTIVE_EXPENSE_STATUSES,
   };
@@ -300,8 +322,8 @@ async function getExpenseGstCredits(userId, startDate, endDate, buId = null) {
   return { igst: roundTwo(igst), cgstSgst: roundTwo(cgst + sgst) };
 }
 
-async function getExpenseCategories(userId, startDate, endDate, buId = null) {
-  const match = { user: userId, date: { $gte: startDate, $lte: endDate }, status: ACTIVE_EXPENSE_STATUSES };
+async function getExpenseCategories(scope, startDate, endDate, buId = null) {
+  const match = { ...resolveScopeMatch(scope), date: { $gte: startDate, $lte: endDate }, status: ACTIVE_EXPENSE_STATUSES };
   if (buId) match.businessUnit = buId;
 
   return Expense.aggregate([
@@ -315,8 +337,8 @@ async function getExpenseCategories(userId, startDate, endDate, buId = null) {
   ]);
 }
 
-async function getPayrollTdsPayable(userId, startDate, endDate, buId = null) {
-  const match = { user: userId, status: { $nin: ['cancelled', 'draft'] }, paymentDate: { $gte: startDate, $lte: endDate } };
+async function getPayrollTdsPayable(scope, startDate, endDate, buId = null) {
+  const match = { ...resolveScopeMatch(scope), status: { $nin: ['cancelled', 'draft'] }, paymentDate: { $gte: startDate, $lte: endDate } };
   if (buId) match.businessUnit = buId;
 
   const [result] = await Payroll.aggregate([
@@ -326,8 +348,8 @@ async function getPayrollTdsPayable(userId, startDate, endDate, buId = null) {
   return roundTwo(result?.total || 0);
 }
 
-async function getReceivables(userId, buId = null) {
-  const match = { user: userId, status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] } };
+async function getReceivables(scope, buId = null) {
+  const match = { ...resolveScopeMatch(scope), status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] } };
   if (buId) match.businessUnit = buId;
 
   const [result] = await Invoice.aggregate([
@@ -337,8 +359,8 @@ async function getReceivables(userId, buId = null) {
   return roundTwo(result?.total || 0);
 }
 
-async function getPayables(userId, buId = null) {
-  const match = { user: userId, status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] } };
+async function getPayables(scope, buId = null) {
+  const match = { ...resolveScopeMatch(scope), status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] } };
   if (buId) match.businessUnit = buId;
 
   const [result] = await Expense.aggregate([
@@ -348,9 +370,9 @@ async function getPayables(userId, buId = null) {
   return roundTwo(result?.total || 0);
 }
 
-async function getOverdueInvoices(userId, buId = null) {
+async function getOverdueInvoices(scope, buId = null) {
   const now = new Date();
-  const match = { user: userId, status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] }, dueDate: { $lt: now, $exists: true } };
+  const match = { ...resolveScopeMatch(scope), status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] }, dueDate: { $lt: now, $exists: true } };
   if (buId) match.businessUnit = buId;
 
   const invoices = await Invoice.aggregate([
@@ -377,8 +399,8 @@ async function getOverdueInvoices(userId, buId = null) {
   return { total, count: invoices.length, aging };
 }
 
-async function getTopClients(userId, startDate, endDate, buId = null) {
-  const match = { user: userId, date: { $gte: startDate, $lte: endDate }, status: { $in: ACTIVE_INVOICE_STATUSES } };
+async function getTopClients(scope, startDate, endDate, buId = null) {
+  const match = { ...resolveScopeMatch(scope), date: { $gte: startDate, $lte: endDate }, status: { $in: ACTIVE_INVOICE_STATUSES } };
   if (buId) match.businessUnit = buId;
 
   const rows = await Invoice.aggregate([
@@ -391,8 +413,8 @@ async function getTopClients(userId, startDate, endDate, buId = null) {
   return rows.map((row) => ({ ...row, total: roundTwo(row.total) }));
 }
 
-async function getPendingPO(userId, buId = null) {
-  const match = { user: userId, status: { $nin: ['DRAFT', 'RECEIVED', 'BILLED', 'CANCELLED'] } };
+async function getPendingPO(scope, buId = null) {
+  const match = { ...resolveScopeMatch(scope), status: { $nin: ['DRAFT', 'RECEIVED', 'BILLED', 'CANCELLED'] } };
   if (buId) match.businessUnit = buId;
 
   const [result] = await PurchaseOrder.aggregate([
@@ -402,9 +424,10 @@ async function getPendingPO(userId, buId = null) {
   return { total: roundTwo(result?.total || 0), count: result?.count || 0 };
 }
 
-async function getDraftCounts(userId, buId = null) {
-  const invQuery = { user: userId, status: 'DRAFT' };
-  const expQuery = { user: userId, status: 'DRAFT' };
+async function getDraftCounts(scope, buId = null) {
+  const filter = resolveScopeFilter(scope);
+  const invQuery = { ...filter, status: 'DRAFT' };
+  const expQuery = { ...filter, status: 'DRAFT' };
   if (buId) {
     invQuery.businessUnit = buId;
     expQuery.businessUnit = buId;
@@ -417,9 +440,9 @@ async function getDraftCounts(userId, buId = null) {
   return { invoices, expenses, total: invoices + expenses };
 }
 
-async function getExpenseTdsPayable(userId, startDate, endDate, buId = null) {
+async function getExpenseTdsPayable(scope, startDate, endDate, buId = null) {
   const match = {
-    user: userId,
+    ...resolveScopeMatch(scope),
     date: { $gte: startDate, $lte: endDate },
     status: ACTIVE_EXPENSE_STATUSES,
     $or: [{ tds_applicable: true }, { tdsApplicable: true }],
@@ -438,8 +461,8 @@ async function getExpenseTdsPayable(userId, startDate, endDate, buId = null) {
   return roundTwo(result?.total || 0);
 }
 
-async function getInvoiceTdsDeducted(userId, startDate, endDate, buId = null) {
-  const match = { user: userId, date: { $gte: startDate, $lte: endDate }, status: { $in: ACTIVE_INVOICE_STATUSES } };
+async function getInvoiceTdsDeducted(scope, startDate, endDate, buId = null) {
+  const match = { ...resolveScopeMatch(scope), date: { $gte: startDate, $lte: endDate }, status: { $in: ACTIVE_INVOICE_STATUSES } };
   if (buId) match.businessUnit = buId;
 
   const [result] = await Invoice.aggregate([
@@ -463,6 +486,10 @@ exports.getTaxDashboard = async (req, res) => {
       ? new mongoose.Types.ObjectId(req.query.businessUnit)
       : null;
 
+    const tenantFilter = getTenantFilter(req);
+    const tenantMatch = getTenantMatch(req);
+    const tenantScope = { filter: tenantFilter, match: tenantMatch, user: userId };
+
     const [
       incomeTotals,
       expenseTotals,
@@ -485,26 +512,26 @@ exports.getTaxDashboard = async (req, res) => {
       pendingPO,
       draftCounts,
     ] = await Promise.all([
-      aggregateTotals(Income, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal'], { $in: ['PAID', 'PARTIAL'] }, buId),
-      aggregateTotals(Expense, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal'], ACTIVE_EXPENSE_STATUSES, buId),
-      aggregateTotals(Invoice, userId, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal', 'totalCGST', 'totalSGST', 'totalIGST', 'tds', 'tds_amount', 'tdsAmount', 'tcs'], { $in: ACTIVE_INVOICE_STATUSES }, buId),
-      aggregateTotals(Invoice, userId, previous.startDate, previous.endDate, ['taxTotal', 'grandTotal'], { $in: ACTIVE_INVOICE_STATUSES }, buId),
-      aggregateTotals(Expense, userId, previous.startDate, previous.endDate, ['taxTotal', 'grandTotal'], ACTIVE_EXPENSE_STATUSES, buId),
-      getInvoiceSplit(userId, startDate, endDate, buId),
-      getSlabTotals(Invoice, userId, startDate, endDate, { $in: ACTIVE_INVOICE_STATUSES }, buId),
-      getSlabTotals(Expense, userId, startDate, endDate, ACTIVE_EXPENSE_STATUSES, buId),
-      getTrend6Months(userId, endDate, buId),
-      getExpenseGstCredits(userId, startDate, endDate, buId),
-      getExpenseCategories(userId, startDate, endDate, buId),
-      getPayrollTdsPayable(userId, startDate, endDate, buId),
-      getExpenseTdsPayable(userId, startDate, endDate, buId),
-      getInvoiceTdsDeducted(userId, startDate, endDate, buId),
-      getReceivables(userId, buId),
-      getPayables(userId, buId),
-      getOverdueInvoices(userId, buId),
-      getTopClients(userId, startDate, endDate, buId),
-      getPendingPO(userId, buId),
-      getDraftCounts(userId, buId),
+      aggregateTotals(Income, tenantScope, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal'], { $in: ['PAID', 'PARTIAL'] }, buId),
+      aggregateTotals(Expense, tenantScope, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal'], ACTIVE_EXPENSE_STATUSES, buId),
+      aggregateTotals(Invoice, tenantScope, startDate, endDate, ['subTotal', 'taxTotal', 'grandTotal', 'totalCGST', 'totalSGST', 'totalIGST', 'tds', 'tds_amount', 'tdsAmount', 'tcs'], { $in: ACTIVE_INVOICE_STATUSES }, buId),
+      aggregateTotals(Invoice, tenantScope, previous.startDate, previous.endDate, ['taxTotal', 'grandTotal'], { $in: ACTIVE_INVOICE_STATUSES }, buId),
+      aggregateTotals(Expense, tenantScope, previous.startDate, previous.endDate, ['taxTotal', 'grandTotal'], ACTIVE_EXPENSE_STATUSES, buId),
+      getInvoiceSplit(tenantScope, startDate, endDate, buId),
+      getSlabTotals(Invoice, tenantScope, startDate, endDate, { $in: ACTIVE_INVOICE_STATUSES }, buId),
+      getSlabTotals(Expense, tenantScope, startDate, endDate, ACTIVE_EXPENSE_STATUSES, buId),
+      getTrend6Months(tenantScope, endDate, buId),
+      getExpenseGstCredits(tenantScope, startDate, endDate, buId),
+      getExpenseCategories(tenantScope, startDate, endDate, buId),
+      getPayrollTdsPayable(tenantScope, startDate, endDate, buId),
+      getExpenseTdsPayable(tenantScope, startDate, endDate, buId),
+      getInvoiceTdsDeducted(tenantScope, startDate, endDate, buId),
+      getReceivables(tenantScope, buId),
+      getPayables(tenantScope, buId),
+      getOverdueInvoices(tenantScope, buId),
+      getTopClients(tenantScope, startDate, endDate, buId),
+      getPendingPO(tenantScope, buId),
+      getDraftCounts(tenantScope, buId),
     ]);
 
     const outputLiability = roundTwo(invoiceTotals.taxTotal);
@@ -524,14 +551,14 @@ exports.getTaxDashboard = async (req, res) => {
 
 
     const revInvQuery = {
-      user: userId,
+      ...tenantFilter,
       date: { $gte: startDate, $lte: endDate },
       status: { $in: ACTIVE_INVOICE_STATUSES }
     };
     if (buId) revInvQuery.businessUnit = buId;
 
     const revIncQuery = {
-      user: userId,
+      ...tenantFilter,
       date: { $gte: startDate, $lte: endDate },
       status: { $in: ['PAID', 'PARTIAL'] },
       sourceType: 'manual'
@@ -563,7 +590,7 @@ exports.getTaxDashboard = async (req, res) => {
     ].sort((a, b) => new Date(b.date) - new Date(a.date));
 
     const expDocQuery = {
-      user: userId,
+      ...tenantFilter,
       date: { $gte: startDate, $lte: endDate },
       status: ACTIVE_EXPENSE_STATUSES
     };
@@ -582,7 +609,7 @@ exports.getTaxDashboard = async (req, res) => {
     }));
 
     const gstLiabQuery = {
-      user: userId,
+      ...tenantFilter,
       date: { $gte: startDate, $lte: endDate },
       status: { $in: ACTIVE_INVOICE_STATUSES },
       taxTotal: { $gt: 0 }
@@ -605,7 +632,7 @@ exports.getTaxDashboard = async (req, res) => {
     }));
 
     const tdsDedQuery = {
-      user: userId,
+      ...tenantFilter,
       date: { $gte: startDate, $lte: endDate },
       status: { $in: ACTIVE_INVOICE_STATUSES },
       $or: [
@@ -630,7 +657,7 @@ exports.getTaxDashboard = async (req, res) => {
     }));
 
     const tdsPayExpQuery = {
-      user: userId,
+      ...tenantFilter,
       date: { $gte: startDate, $lte: endDate },
       status: ACTIVE_EXPENSE_STATUSES,
       $or: [
@@ -645,7 +672,7 @@ exports.getTaxDashboard = async (req, res) => {
     const tdsPayableExpenses = await Expense.find(tdsPayExpQuery).select('expenseNumber vendor.name party grandTotal tdsAmount tds_amount date status').sort({ date: -1 }).lean();
 
     const tdsPayablePayrolls = await Payroll.find({
-      user: userId,
+      ...tenantFilter,
       status: { $nin: ['cancelled', 'draft'] },
       paymentDate: { $gte: startDate, $lte: endDate },
       'deductions.tds': { $gt: 0 }
@@ -675,7 +702,7 @@ exports.getTaxDashboard = async (req, res) => {
     ].sort((a, b) => new Date(b.date) - new Date(a.date));
 
     const poQuery = {
-      user: userId,
+      ...tenantFilter,
       status: { $nin: ['DRAFT', 'RECEIVED', 'BILLED', 'CANCELLED'] }
     };
     if (buId) poQuery.businessUnit = buId;
@@ -693,7 +720,7 @@ exports.getTaxDashboard = async (req, res) => {
     }));
 
     const receivableDocs = await Invoice.find({
-      user: userId,
+      ...tenantFilter,
       status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] }
     }).select('invoiceNo client.name grandTotal balanceDue date status').sort({ date: -1 }).lean();
 
@@ -709,7 +736,7 @@ exports.getTaxDashboard = async (req, res) => {
     }));
 
     const payableDocs = await Expense.find({
-      user: userId,
+      ...tenantFilter,
       status: { $nin: ['DRAFT', 'PAID', 'CANCELLED'] }
     }).select('expenseNumber vendor.name party grandTotal balanceDue date status').sort({ date: -1 }).lean();
 

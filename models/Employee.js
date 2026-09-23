@@ -17,6 +17,7 @@ const RateCardItemSchema = new mongoose.Schema({
 
 const EmployeeSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
 
   employeeId: { type: String, required: true, trim: true },
   firstName: { type: String, required: true, trim: true },
@@ -269,7 +270,8 @@ const EmployeeSchema = new mongoose.Schema({
   }],
 }, { timestamps: true, strict: false });
 
-EmployeeSchema.index({ user: 1, employeeId: 1 }, { unique: true });
+EmployeeSchema.index({ user: 1, profile: 1, employeeId: 1 }, { unique: true, sparse: true });
+EmployeeSchema.index({ user: 1, employeeId: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 EmployeeSchema.index({ user: 1, email: 1 });
 
 EmployeeSchema.pre('save', async function() {

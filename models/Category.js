@@ -3,6 +3,7 @@ const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const CategorySchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   name: { type: String, required: true, trim: true },
   type: { type: String, enum: ['income', 'expense'], required: true },
   icon: { type: String, default: '' },
@@ -15,7 +16,9 @@ const CategorySchema = new mongoose.Schema({
   description: { type: String, default: '' },
 }, { timestamps: true });
 
-CategorySchema.index({ user: 1, name: 1, type: 1 }, { unique: true });
+CategorySchema.index({ user: 1, profile: 1, name: 1, type: 1 }, { unique: true, sparse: true });
+CategorySchema.index({ user: 1, name: 1, type: 1 }, { unique: true, partialFilterExpression: { profile: null } });
+CategorySchema.index({ profile: 1, type: 1, parent: 1 });
 CategorySchema.index({ user: 1, type: 1, parent: 1 });
 
 CategorySchema.plugin(softDeletePlugin);

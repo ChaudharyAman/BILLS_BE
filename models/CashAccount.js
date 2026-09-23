@@ -8,6 +8,12 @@ const CashAccountSchema = new mongoose.Schema({
     required: true,
     index: true,
   },
+  profile: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ClientProfile',
+    required: false,
+    index: true,
+  },
   name: {
     type: String,
     required: true,
@@ -63,7 +69,8 @@ const CashAccountSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
-CashAccountSchema.index({ user: 1, name: 1 }, { unique: true });
+CashAccountSchema.index({ user: 1, profile: 1, name: 1 }, { unique: true, sparse: true });
+CashAccountSchema.index({ user: 1, name: 1 }, { unique: true, partialFilterExpression: { profile: null } });
 CashAccountSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('CashAccount', CashAccountSchema);

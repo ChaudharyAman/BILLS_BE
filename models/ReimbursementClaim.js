@@ -3,6 +3,7 @@ const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const ReimbursementClaimSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true, index: true },
   category: {
     type: String,
@@ -20,6 +21,9 @@ const ReimbursementClaimSchema = new mongoose.Schema({
   },
   approverRemarks: { type: String, default: '' }
 }, { timestamps: true });
+
+ReimbursementClaimSchema.index({ profile: 1, employee: 1, status: 1 });
+ReimbursementClaimSchema.index({ user: 1, employee: 1, status: 1 });
 
 ReimbursementClaimSchema.plugin(softDeletePlugin);
 

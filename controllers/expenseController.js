@@ -7,6 +7,7 @@ const { recordCashMovement, roundTwo } = require('../utils/cashLedgerHelper');
 const escapeRegex = require('../utils/escapeRegex');
 const { updateBudgetSpent, checkBudgetWarning } = require('./budgetController');
 const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
+const { getTenantFilter, getTenantMatch, attachTenant } = require('../utils/tenantHelper');
 
 async function syncExpenseCashMovement(expense, paymentDate = new Date(), session = null) {
   if (!expense || !expense.user || !expense._id) return;
@@ -45,8 +46,11 @@ async function syncExpenseCashMovement(expense, paymentDate = new Date(), sessio
   }
 }
 
-const validateExpenseCategory = async (userId, categoryId, subCategoryId) => {
+const validateExpenseCategory = async (userOrReq, categoryId, subCategoryId) => {
   const result = { category: categoryId || null, subCategory: subCategoryId || null };
+  const tenantFilter = (userOrReq && typeof userOrReq === 'object' && (userOrReq.user || userOrReq.activeProfileId))
+    ? getTenantFilter(userOrReq)
+    : { user: userOrReq };
 
   if (categoryId) {
     if (!mongoose.Types.ObjectId.isValid(categoryId)) {
@@ -54,7 +58,7 @@ const validateExpenseCategory = async (userId, categoryId, subCategoryId) => {
       error.statusCode = 400;
       throw error;
     }
-    const category = await Category.findOne({ _id: categoryId, user: userId, type: 'expense' });
+    const category = await Category.findOne({ _id: categoryId, ...tenantFilter, type: 'expense' });
     if (!category) {
       const error = new Error('Expense category not found');
       error.statusCode = 400;
@@ -68,7 +72,7 @@ const validateExpenseCategory = async (userId, categoryId, subCategoryId) => {
       error.statusCode = 400;
       throw error;
     }
-    const subCategory = await Category.findOne({ _id: subCategoryId, user: userId, type: 'expense' });
+    const subCategory = await Category.findOne({ _id: subCategoryId, ...tenantFilter, type: 'expense' });
     if (!subCategory) {
       const error = new Error('Expense sub-category not found');
       error.statusCode = 400;
@@ -171,12 +175,12 @@ exports.getExpenses = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const companyId = req.companyId || req.user._id;
-    let query = { user: companyId };
+    let query = { ...getTenantFilter(req) };
     if (req.query.category) query.category = req.query.category;
     if (req.query.excludeCategoryName) {
       const Category = require('../models/Category');
       const excludeCategory = await Category.findOne({
-        user: companyId,
+        ...getTenantFilter(req),
         name: req.query.excludeCategoryName,
         type: 'expense'
       });
@@ -200,7 +204,7 @@ exports.getExpenses = async (req, res) => {
       const Client = require('../models/Client');
       const safeSearch = escapeRegex(search);
       const matchedClients = await Client.find({
-        user: companyId,
+        ...getTenantFilter(req),
         name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
@@ -239,6 +243,7 @@ exports.getExpenses = async (req, res) => {
 
 // --- Resolve or auto-create vendor/client from name/ref ---
 async function resolveParty({
+  req,
   userId,
   partyRef,
   partyName,
@@ -252,9 +257,10 @@ async function resolveParty({
   placeOfSupply,
 }) {
   const ClientModel = require('../models/Client');
+  const tenantFilter = req ? getTenantFilter(req) : { user: userId };
 
   if (partyRef && mongoose.Types.ObjectId.isValid(partyRef)) {
-    const party = await ClientModel.findOne({ _id: partyRef, user: userId });
+    const party = await ClientModel.findOne({ _id: partyRef, ...tenantFilter });
     if (!party) throw new Error(`${isVendor ? 'Vendor' : 'Client'} not found`);
 
     let needsUpdate = false;
@@ -312,22 +318,22 @@ async function resolveParty({
 
   let existing = null;
   if (gstinClean) {
-    existing = await ClientModel.findOne({ user: userId, gstin: gstinClean });
+    existing = await ClientModel.findOne({ ...tenantFilter, gstin: gstinClean });
   }
   if (!existing && panClean) {
-    existing = await ClientModel.findOne({ user: userId, pan: panClean });
+    existing = await ClientModel.findOne({ ...tenantFilter, pan: panClean });
   }
   if (!existing && name) {
     const escaped = escapeRegex(name).replace(/\s+/g, '\\s+');
     const exactRegex = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
-    existing = await ClientModel.findOne({ user: userId, name: { $regex: exactRegex } });
+    existing = await ClientModel.findOne({ ...tenantFilter, name: { $regex: exactRegex } });
 
     if (!existing) {
       const cleanCore = name.replace(/\b(Pvt|Ltd|Private|Limited|Inc|LLP|Co|Corporation|Corp)\b\.?/gi, '').replace(/[^a-zA-Z0-9\s]/g, '').trim();
       if (cleanCore && cleanCore.length > 2) {
         const coreEscaped = escapeRegex(cleanCore).replace(/\s+/g, '\\s+');
         const flexRegex = new RegExp(`^\\s*${coreEscaped}`, 'i');
-        existing = await ClientModel.findOne({ user: userId, name: { $regex: flexRegex } });
+        existing = await ClientModel.findOne({ ...tenantFilter, name: { $regex: flexRegex } });
       }
     }
   }
@@ -381,8 +387,7 @@ async function resolveParty({
 
   const gstin = String(partyGST || '').trim().toUpperCase();
   const state = String(partyAddressObject?.state || placeOfSupply || '').trim();
-  const party = new ClientModel({
-    user: userId,
+  const partyPayload = {
     name,
     isVendor: !!isVendor,
     isClient: !!isClient,
@@ -408,8 +413,9 @@ async function resolveParty({
     phone: partyPhone ? String(partyPhone).trim() : undefined,
     email: partyEmail ? String(partyEmail).trim().toLowerCase() : undefined,
     pan: partyPAN ? String(partyPAN).trim().toUpperCase() : undefined,
-  });
+  };
 
+  const party = new ClientModel(req ? attachTenant(req, partyPayload) : { user: userId, ...partyPayload });
   return party.save();
 }
 
@@ -442,6 +448,7 @@ exports.createExpense = async (req, res) => {
     let resolvedVendor = null;
     if (vendor) {
       resolvedVendor = await resolveParty({
+        req,
         userId: companyId,
         partyRef: vendor.vendorRef,
         partyName: vendor.name,
@@ -459,6 +466,7 @@ exports.createExpense = async (req, res) => {
     let resolvedClient = null;
     if (client) {
       resolvedClient = await resolveParty({
+        req,
         userId: companyId,
         partyRef: client.clientRef,
         partyName: client.name,
@@ -467,10 +475,10 @@ exports.createExpense = async (req, res) => {
       });
     }
 
-    const categoryData = await validateExpenseCategory(companyId, category, subCategory);
+    const categoryData = await validateExpenseCategory(req, category, subCategory);
 
-    // Check if expenseNumber exists for this company
-    const existing = await Expense.findOne({ expenseNumber, user: companyId });
+    // Check if expenseNumber exists for this tenant
+    const existing = await Expense.findOne({ expenseNumber, ...getTenantFilter(req) });
     if (existing) {
       return res.status(400).json({ message: 'Expense number already exists' });
     }
@@ -486,8 +494,7 @@ exports.createExpense = async (req, res) => {
     const budgetWarning = await checkBudgetWarning(categoryData.category, companyId, payableAmount);
     const paymentState = resolvePaymentState(grandTotal, amountPaid, status, !!reverseCharge, taxTotal, tds_amount);
 
-    const expense = await Expense.create({
-      user: companyId,
+    const expense = await Expense.create(attachTenant(req, {
       ...categoryData,
       project: project || null,
       department: department || null,
@@ -514,7 +521,7 @@ exports.createExpense = async (req, res) => {
       tds_nature,
       net_vendor_payment: payableAmount,
       attachments: processIncomingAttachments(req.body.attachments, []),
-    });
+    }));
 
     if (expense.category) await updateBudgetSpent(expense.category, companyId);
     await syncExpenseCashMovement(expense, expense.date);
@@ -537,7 +544,7 @@ exports.getExpenseById = async (req, res) => {
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Expense not found' });
     
-    const expense = await Expense.findOne({ _id: req.params.id, user: companyId })
+    const expense = await Expense.findOne({ _id: req.params.id, ...getTenantFilter(req) })
       .select('-attachments.buffer')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent');
@@ -560,7 +567,7 @@ exports.updateExpense = async (req, res) => {
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Expense not found' });
 
-    let expense = await Expense.findOne({ _id: req.params.id, user: companyId });
+    let expense = await Expense.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!expense) {
       return res.status(404).json({ message: 'Expense not found' });
     }
@@ -697,7 +704,7 @@ exports.updateExpense = async (req, res) => {
     };
 
     if (expenseNumber && expenseNumber !== expense.expenseNumber) {
-      const existing = await Expense.findOne({ expenseNumber, user: companyId });
+      const existing = await Expense.findOne({ expenseNumber, ...getTenantFilter(req) });
       if (existing) {
         return res.status(400).json({ message: 'Expense number already exists' });
       }
@@ -705,7 +712,7 @@ exports.updateExpense = async (req, res) => {
 
     if (category !== undefined || subCategory !== undefined) {
       const categoryData = await validateExpenseCategory(
-        companyId,
+        req,
         category !== undefined ? category : expense.category,
         subCategory !== undefined ? subCategory : expense.subCategory
       );
@@ -734,7 +741,7 @@ exports.updateExpense = async (req, res) => {
 
     await expense.save();
 
-    expense = await Expense.findOne({ _id: expense._id, user: companyId })
+    expense = await Expense.findOne({ _id: expense._id, ...getTenantFilter(req) })
       .select('-attachments.buffer')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent');
@@ -764,7 +771,7 @@ exports.getExpenseAttachment = async (req, res) => {
     const companyId = req.companyId || req.user?._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Expense not found' });
 
-    const expense = await Expense.findOne({ _id: req.params.id, user: companyId });
+    const expense = await Expense.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!expense) return res.status(404).json({ message: 'Expense not found' });
 
     const attachment = expense.attachments.id(req.params.attachmentId) || expense.attachments[req.params.attachmentId];
@@ -793,13 +800,13 @@ exports.deleteExpense = async (req, res) => {
     }
     // -------------------------------------------
 
-    const expense = await Expense.findOne({ _id: req.params.id, user: companyId });
+    const expense = await Expense.findOne({ _id: req.params.id, ...getTenantFilter(req) });
 
     if (expense) {
       const oldCategory = expense.category;
       await Expense.updateOne({ _id: expense._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
       await CashLedgerEntry.updateMany(
-        { sourceModel: 'Expense', sourceId: expense._id, user: companyId },
+        { sourceModel: 'Expense', sourceId: expense._id, ...getTenantFilter(req) },
         { $set: { isDeleted: true, deletedAt: new Date() } }
       );
       if (oldCategory) await updateBudgetSpent(oldCategory, companyId);
@@ -825,7 +832,7 @@ exports.getVendorAccountStatement = async (req, res) => {
     }
 
     const matchStage = {
-      user: new mongoose.Types.ObjectId(String(companyId)),
+      ...getTenantMatch(req),
       "vendor.vendorRef": new mongoose.Types.ObjectId(String(vendorId)),
       status: { $in: ['PAID', 'PARTIAL', 'UNPAID'] },
       isDeleted: { $ne: true },

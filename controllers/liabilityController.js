@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Liability = require('../models/Liability');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 const pageOptions = (query) => {
   const page = Math.max(1, parseInt(query.page, 10) || 1);
@@ -9,9 +10,8 @@ const pageOptions = (query) => {
 
 exports.getLiabilities = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const { page, limit, skip } = pageOptions(req.query);
-    const query = { user: companyId };
+    const query = { ...getTenantFilter(req) };
     if (req.query.status) query.status = req.query.status;
     if (req.query.type) query.type = req.query.type;
     if (req.query.category) query.category = req.query.category;
@@ -31,9 +31,8 @@ exports.getLiabilities = async (req, res) => {
 
 exports.getLiabilityById = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Liability not found' });
-    const liability = await Liability.findOne({ _id: req.params.id, user: companyId });
+    const liability = await Liability.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!liability) return res.status(404).json({ message: 'Liability not found' });
     res.json(liability);
   } catch (error) {
@@ -43,8 +42,7 @@ exports.getLiabilityById = async (req, res) => {
 
 exports.createLiability = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const liability = await Liability.create({ ...req.body, user: companyId });
+    const liability = await Liability.create(attachTenant(req, req.body));
     res.status(201).json(liability);
   } catch (error) {
     res.status(400).json({ message: error.message || 'Server error creating liability' });
@@ -53,10 +51,9 @@ exports.createLiability = async (req, res) => {
 
 exports.updateLiability = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Liability not found' });
     const liability = await Liability.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...getTenantFilter(req) },
       { $set: req.body },
       { returnDocument: 'after', runValidators: true }
     );
@@ -69,9 +66,11 @@ exports.updateLiability = async (req, res) => {
 
 exports.deleteLiability = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Liability not found' });
-    const liability = await Liability.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const liability = await Liability.findOneAndUpdate(
+      { _id: req.params.id, ...getTenantFilter(req) },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
     if (!liability) return res.status(404).json({ message: 'Liability not found' });
     res.json({ message: 'Liability deleted successfully' });
   } catch (error) {

@@ -253,7 +253,15 @@ async function processBatchJob({ jobId, userId, month, year, employeePayloads = 
         await runTransaction(async (session) => {
           const sessionOpt = session ? { session } : {};
 
-          const existing = await Payroll.findOne({ user: userId, employee: employeeId, month, year }, null, sessionOpt);
+          const effectiveProfile = employee.profile || payload.profile || null;
+          const existing = await Payroll.findOne({
+            user: userId,
+            employee: employeeId,
+            month,
+            year,
+            isDeleted: { $ne: true },
+            ...(effectiveProfile ? { profile: effectiveProfile } : { profile: null }),
+          }, null, sessionOpt);
           if (existing) {
             if (existing.status !== 'draft') {
               throw new Error('PAYROLL_EXISTS');
@@ -268,6 +276,7 @@ async function processBatchJob({ jobId, userId, month, year, employeePayloads = 
 
           const createdPayrolls = await Payroll.create([{
             user: userId,
+            ...(employee.profile || payload.profile ? { profile: employee.profile || payload.profile } : {}),
             employee: employee._id,
             month,
             year,

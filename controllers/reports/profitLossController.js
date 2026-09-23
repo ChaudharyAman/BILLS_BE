@@ -2,13 +2,13 @@ const mongoose = require('mongoose');
 const Income = require('../../models/Income');
 const Expense = require('../../models/Expense');
 const { parseMonthlyDateRange } = require('../../utils/dateRange');
+const { getTenantMatch } = require('../../utils/tenantHelper');
 
-const aggregateByCategory = async (Model, userId, startDate, endDate, totalExpression = '$grandTotal') => {
-  const matchUser = mongoose.Types.ObjectId.isValid(String(userId)) ? new mongoose.Types.ObjectId(String(userId)) : userId;
+const aggregateByCategory = async (Model, tenantMatch, startDate, endDate, totalExpression = '$grandTotal') => {
   return Model.aggregate([
     {
       $match: {
-        user: matchUser,
+        ...tenantMatch,
         date: { $gte: startDate, $lte: endDate },
         status: { $nin: ['DRAFT', 'CANCELLED'] },
       },
@@ -37,7 +37,7 @@ const aggregateByCategory = async (Model, userId, startDate, endDate, totalExpre
 
 exports.getProfitLoss = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
+    const tenantMatch = getTenantMatch(req);
     const { startDate, endDate } = parseMonthlyDateRange(req.query);
     const netRevenueExpression = {
       $cond: [
@@ -54,8 +54,8 @@ exports.getProfitLoss = async (req, res) => {
     };
 
     const [revenue, expenses] = await Promise.all([
-      aggregateByCategory(Income, companyId, startDate, endDate, netRevenueExpression),
-      aggregateByCategory(Expense, companyId, startDate, endDate),
+      aggregateByCategory(Income, tenantMatch, startDate, endDate, netRevenueExpression),
+      aggregateByCategory(Expense, tenantMatch, startDate, endDate),
     ]);
     const totalRevenue = revenue.reduce((sum, item) => sum + item.total, 0);
     const totalExpenses = expenses.reduce((sum, item) => sum + item.total, 0);

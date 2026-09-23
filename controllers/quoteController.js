@@ -9,6 +9,7 @@ const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseImportedDate } = require('../utils/dateRange');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
@@ -25,15 +26,18 @@ function isQuoteNumberDuplicateError(error) {
   );
 }
 
-async function generateNextUniqueQuoteNumber({ userId, quotePrefix }) {
-  const counterId = buildUserCounterId(userId, 'quoteNo');
+async function generateNextUniqueQuoteNumber({ userId, profileId, quotePrefix }) {
+  const counterId = buildUserCounterId(userId, 'quoteNo', profileId);
   const normalizedPrefix = String(quotePrefix || 'QT').trim().replace(/[-/\s]+$/g, '') || 'QT';
   const pattern = new RegExp(`^${escapeRegex(normalizedPrefix)}-(\\d+)$`);
 
-  const existingQuoteNumbers = await Quote.find({
+  const scopeQuery = {
     user: userId,
     quoteNo: { $regex: `^${escapeRegex(normalizedPrefix)}-\\d+$` },
-  })
+    ...(profileId ? { profile: profileId } : { profile: null }),
+  };
+
+  const existingQuoteNumbers = await Quote.find(scopeQuery)
     .select('quoteNo -_id')
     .lean();
 
@@ -61,7 +65,11 @@ async function generateNextUniqueQuoteNumber({ userId, quotePrefix }) {
     );
 
     const candidate = buildAutoDocumentNumber(normalizedPrefix, counter.seq);
-    const exists = await Quote.exists({ user: userId, quoteNo: candidate });
+    const exists = await Quote.exists({
+      user: userId,
+      quoteNo: candidate,
+      ...(profileId ? { profile: profileId } : { profile: null }),
+    });
     if (!exists) {
       return candidate;
     }
@@ -109,13 +117,13 @@ exports.getQuotes = async (req, res) => {
     const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
     const skip = (page - 1) * limit;
 
-    let query = { user: companyId };
+    let query = { ...getTenantFilter(req) };
 
     if (search) {
       const safeSearch = escapeRegex(search);
       const Client = require('../models/Client');
       const matchedClients = await Client.find({
-        user: companyId,
+        ...getTenantFilter(req),
         name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
@@ -198,7 +206,7 @@ exports.getQuoteById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Quote not found' });
     }
-    const quote = await Quote.findOne({ _id: req.params.id, user: companyId });
+    const quote = await Quote.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
     res.json(quote);
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -237,7 +245,7 @@ exports.createQuote = async (req, res) => {
     }
     // -------------------------------
 
-    const client = await Client.findOne({ _id: clientRef, user: companyId });
+    const client = await Client.findOne({ _id: clientRef, ...getTenantFilter(req) });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const clientSnapshot = {
@@ -256,7 +264,7 @@ exports.createQuote = async (req, res) => {
       email: client.email || '',
     };
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const quotePrefix = userSettings?.quotePrefix || 'QT';
     let quoteNo = buildCustomDocumentNumber({
       prefix: quotePrefix,
@@ -268,13 +276,14 @@ exports.createQuote = async (req, res) => {
 
 
     if (quoteNo) {
-      const existing = await Quote.findOne({ user: companyId, quoteNo });
+      const existing = await Quote.findOne({ ...getTenantFilter(req), quoteNo });
       if (existing) {
         return res.status(400).json({ message: `Quote number "${quoteNo}" already exists.` });
       }
     } else {
       quoteNo = await generateNextUniqueQuoteNumber({
         userId: companyId,
+        profileId: req.activeProfileId,
         quotePrefix,
       });
     }
@@ -301,8 +310,8 @@ exports.createQuote = async (req, res) => {
 
     let saved = null;
     for (let attempt = 0; attempt < 25; attempt += 1) {
-      const quote = new Quote({
-        user: companyId, quoteNo, invoiceType: 'Invoice',
+      const quote = new Quote(attachTenant(req, {
+        quoteNo, invoiceType: 'Invoice',
         date, validUntil, paymentMode, paymentTerms,
         client: clientSnapshot, items: processedItems,
         subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
@@ -312,7 +321,7 @@ exports.createQuote = async (req, res) => {
         status: status || 'DRAFT', shippingAddress, transport: effectiveTransport,
         placeOfSupply: clientState, reverseCharge: !!reverseCharge, notes, terms,
         bankDetails: userSettings?.bankDetails || {},
-      });
+      }));
 
       try {
         saved = await quote.save();
@@ -328,6 +337,7 @@ exports.createQuote = async (req, res) => {
 
         quoteNo = await generateNextUniqueQuoteNumber({
           userId: companyId,
+          profileId: req.activeProfileId,
           quotePrefix,
         });
       }
@@ -356,7 +366,7 @@ exports.updateQuote = async (req, res) => {
       placeOfSupply, paymentMode, paymentTerms, shippingCharges, packagingCharges,
       customChargeLabel, discountTotal, status, notes, terms, reverseCharge } = req.body;
 
-    const quote = await Quote.findOne({ _id: req.params.id, user: companyId });
+    const quote = await Quote.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
     if (quote.status === 'CONVERTED' || quote.convertedToInvoice) {
       return res.status(400).json({ message: 'Converted quotations cannot be edited.' });
@@ -369,38 +379,19 @@ exports.updateQuote = async (req, res) => {
     if (plan === 'free') {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const conditions = {
+      const editedQuotesCount = await Quote.countDocuments({
         user: companyId,
         updatedAt: { $gte: startOfMonth },
-        $expr: { $gt: ["$updatedAt", "$createdAt"] } 
-      };
-      
-      const editedQuotesCount = await Quote.countDocuments(conditions);
-
-      let otherEditsCount = 0;
-      try {
-        const InvoiceModel = require('../models/Invoice');
-        const ProformaModel = require('../models/Proforma');
-        const POModel = require('../models/PurchaseOrder');
-        const [inv, prf, po] = await Promise.all([
-          InvoiceModel.countDocuments(conditions),
-          ProformaModel.countDocuments(conditions),
-          POModel.countDocuments(conditions)
-        ]);
-        otherEditsCount = inv + prf + po;
-      } catch (e) {}
-      
-      const totalEditsThisMonth = editedQuotesCount + otherEditsCount;
-
-      const isAlreadyEditedThisMonth = quote.updatedAt && quote.updatedAt >= startOfMonth && quote.updatedAt > quote.createdAt;
-
-      if (totalEditsThisMonth >= 5 && !isAlreadyEditedThisMonth) {
+        $expr: { $gt: ["$updatedAt", "$createdAt"] }
+      });
+      const isAlreadyEdited = quote.updatedAt && quote.updatedAt >= startOfMonth && quote.updatedAt > quote.createdAt;
+      if (editedQuotesCount >= 5 && !isAlreadyEdited) {
         return res.status(403).json({ message: 'You have reached the free plan limit of 5 document edits per month. Please upgrade to Pro.' });
       }
     }
     // -----------------------------------------
 
-    const client = await Client.findOne({ _id: clientRef, user: companyId });
+    const client = await Client.findOne({ _id: clientRef, ...getTenantFilter(req) });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const clientSnapshot = {
@@ -419,7 +410,7 @@ exports.updateQuote = async (req, res) => {
       email: client.email || '',
     };
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const quotePrefix = userSettings?.quotePrefix || 'QT';
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
@@ -482,7 +473,7 @@ exports.updateQuote = async (req, res) => {
 exports.deleteQuote = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const quote = await Quote.findOne({ _id: req.params.id, user: companyId });
+    const quote = await Quote.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
 
     // --- Subscription Plan Check for Deletes ---
@@ -501,18 +492,18 @@ exports.deleteQuote = async (req, res) => {
 exports.convertToInvoice = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const quote = await Quote.findOne({ _id: req.params.id, user: companyId });
+    const quote = await Quote.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
     if (quote.status === 'CONVERTED') return res.status(400).json({ message: 'Already converted' });
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const counter = await Counter.findOneAndUpdate(
-      { id: buildUserCounterId(companyId, 'invoiceNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+      { id: buildUserCounterId(companyId, 'invoiceNo', req.activeProfileId) }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
     // Fetch fresh client data to ensure correct address format specially for old quotes
-    const client = await Client.findOne({ _id: quote.client.clientRef, user: companyId });
+    const client = await Client.findOne({ _id: quote.client.clientRef, ...getTenantFilter(req) });
     let clientSnapshot = quote.client;
     let resolvedShipping = quote.shippingAddress;
 
@@ -558,8 +549,8 @@ exports.convertToInvoice = async (req, res) => {
     const finalDiscount = Number(quote.discountTotal) || 0;
     const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount;
 
-    const invoice = new Invoice({
-      user: quote.user, invoiceNo, invoiceType: quote.invoiceType,
+    const invoice = new Invoice(attachTenant(req, {
+      invoiceNo, invoiceType: quote.invoiceType,
       date: new Date(), dueDate: quote.validUntil,
       paymentMode: quote.paymentMode, paymentTerms: quote.paymentTerms,
       client: clientSnapshot, items: processedItems,
@@ -572,7 +563,7 @@ exports.convertToInvoice = async (req, res) => {
       shippingAddress: resolvedShipping, transport: quote.transport,
       placeOfSupply: quote.placeOfSupply, reverseCharge: quote.reverseCharge,
       notes: quote.notes, terms: quote.terms, status: 'DRAFT',
-    });
+    }));
 
     const savedInvoice = await invoice.save();
     let syncError = null;
@@ -657,15 +648,15 @@ exports.bulkCreateQuotes = async (req, res) => {
         throw new Error('Client name is required for each imported quote.');
       }
 
-      let client = await Client.findOne({ name: rowClientName, user: companyId });
+      let client = await Client.findOne({ name: rowClientName, ...getTenantFilter(req) });
       if (!client) {
-         client = new Client({
+         client = new Client(attachTenant(req, {
             name: rowClientName || 'Unknown Client',
             email: qData.clientEmail || '',
             phone: qData.clientPhone || '',
             billingAddress: { state: qData.clientState || '' },
             user: companyId
-         });
+         }));
          await client.save();
       }
 
@@ -677,6 +668,7 @@ exports.bulkCreateQuotes = async (req, res) => {
       if (!currentQuoteNo || currentQuoteNo === 'Auto-generated') {
         currentQuoteNo = await generateNextUniqueQuoteNumber({
           userId: companyId,
+          profileId: req.activeProfileId,
           quotePrefix: userSettings?.quotePrefix || 'QT',
         });
       }
@@ -863,7 +855,7 @@ exports.updateQuoteStatus = async (req, res) => {
       return res.status(400).json({ message: 'Status is required' });
     }
 
-    const quote = await Quote.findOne({ _id: req.params.id, user: companyId });
+    const quote = await Quote.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!quote) return res.status(404).json({ message: 'Quote not found' });
     if (quote.status === 'CONVERTED' || quote.convertedToInvoice) {
       return res.status(400).json({ message: 'Converted quotations cannot be updated.' });

@@ -4,27 +4,55 @@ const CashLedgerEntry = require('../models/CashLedgerEntry');
 
 const roundTwo = (num) => Math.round((Number(num) || 0) * 100) / 100;
 
+function parseUserAndProfile(userIdOrScope) {
+  if (!userIdOrScope) return { user: null, profile: null };
+
+  if (
+    userIdOrScope instanceof mongoose.Types.ObjectId ||
+    typeof userIdOrScope === 'string' ||
+    userIdOrScope._bsontype === 'ObjectID' ||
+    userIdOrScope._bsontype === 'ObjectId'
+  ) {
+    return { user: new mongoose.Types.ObjectId(String(userIdOrScope)), profile: null };
+  }
+
+  const raw = userIdOrScope.filter || userIdOrScope;
+  const user = raw.user || userIdOrScope.user || userIdOrScope.companyId;
+  const profile = raw.profile || userIdOrScope.profile || userIdOrScope.activeProfileId;
+
+  return {
+    user: user ? new mongoose.Types.ObjectId(String(user)) : null,
+    profile: profile ? new mongoose.Types.ObjectId(String(profile)) : null,
+  };
+}
+
 /**
- * Ensures a default CashAccount exists for the specified company/user.
+ * Ensures a default CashAccount exists for the specified company/user/profile.
  */
-async function getOrCreateDefaultCashAccount(userId) {
-  const userObjectId = new mongoose.Types.ObjectId(String(userId));
+async function getOrCreateDefaultCashAccount(userIdOrScope) {
+  const { user: userObjectId, profile: profileObjectId } = parseUserAndProfile(userIdOrScope);
+
+  const query = profileObjectId
+    ? { profile: profileObjectId }
+    : (userObjectId ? { user: userObjectId } : {});
+
   let account = await CashAccount.findOne({
-    user: userObjectId,
+    ...query,
     isDefault: true,
     isDeleted: { $ne: true },
   });
 
   if (!account) {
     account = await CashAccount.findOne({
-      user: userObjectId,
+      ...query,
       isDeleted: { $ne: true },
     }).sort({ createdAt: 1 });
   }
 
-  if (!account) {
+  if (!account && (userObjectId || profileObjectId)) {
     account = await CashAccount.create({
-      user: userObjectId,
+      user: userObjectId || profileObjectId,
+      ...(profileObjectId ? { profile: profileObjectId } : {}),
       name: 'Main Cash Account',
       accountType: 'cash',
       openingBalance: 0,
@@ -40,12 +68,18 @@ async function getOrCreateDefaultCashAccount(userId) {
 /**
  * Computes the total running cash balance as of a given date across all active accounts.
  */
-async function getCashBalanceAsOf(userId, asOfDate = new Date()) {
-  const userObjectId = new mongoose.Types.ObjectId(String(userId));
+async function getCashBalanceAsOf(userIdOrScope, asOfDate = new Date()) {
+  const { user: userObjectId, profile: profileObjectId } = parseUserAndProfile(userIdOrScope);
+  const filter = profileObjectId
+    ? { profile: profileObjectId }
+    : (userObjectId ? { user: userObjectId } : {});
+  const matchFilter = profileObjectId
+    ? { profile: profileObjectId }
+    : (userObjectId ? { user: userObjectId } : {});
   const dateLimit = asOfDate instanceof Date ? asOfDate : new Date(asOfDate);
 
   const accounts = await CashAccount.find({
-    user: userObjectId,
+    ...filter,
     status: 'active',
     isDeleted: { $ne: true },
   }).lean();
@@ -64,7 +98,7 @@ async function getCashBalanceAsOf(userId, asOfDate = new Date()) {
   const ledgerSums = await CashLedgerEntry.aggregate([
     {
       $match: {
-        user: userObjectId,
+        ...matchFilter,
         account: { $in: accountIds },
         date: { $lte: dateLimit },
         isDeleted: { $ne: true },
@@ -108,6 +142,7 @@ async function getCashBalanceAsOf(userId, asOfDate = new Date()) {
  */
 async function recordCashMovement({
   user,
+  profile,
   account,
   date = new Date(),
   amount,
@@ -118,11 +153,12 @@ async function recordCashMovement({
   notes = '',
   session = null,
 }) {
-  const userObjectId = new mongoose.Types.ObjectId(String(user));
+  const userObjectId = user ? new mongoose.Types.ObjectId(String(user)) : null;
+  const profileObjectId = profile ? new mongoose.Types.ObjectId(String(profile)) : null;
   let targetAccount = account;
 
   if (!targetAccount) {
-    targetAccount = await getOrCreateDefaultCashAccount(userObjectId);
+    targetAccount = await getOrCreateDefaultCashAccount(profileObjectId ? { profile: profileObjectId, user: userObjectId } : userObjectId);
   }
 
   const accountId = targetAccount._id ? targetAccount._id : targetAccount;
@@ -130,7 +166,7 @@ async function recordCashMovement({
   const signedAmount = roundTwo(amount);
   const sessionOpt = session ? { session } : {};
 
-  const createdDocs = await CashLedgerEntry.create([{
+  const docToCreate = {
     user: userObjectId,
     account: accountId,
     date: entryDate,
@@ -140,7 +176,12 @@ async function recordCashMovement({
     sourceId,
     createdBy,
     notes,
-  }], sessionOpt);
+  };
+  if (profileObjectId) {
+    docToCreate.profile = profileObjectId;
+  }
+
+  const createdDocs = await CashLedgerEntry.create([docToCreate], sessionOpt);
 
   const entry = Array.isArray(createdDocs) ? createdDocs[0] : createdDocs;
 

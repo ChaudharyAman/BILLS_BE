@@ -14,6 +14,7 @@ const { recordCashMovement } = require('../../utils/cashLedgerHelper');
 const { runTransaction } = require('../../utils/withTransaction');
 const { roundAmount, getSalarySplits, buildPayrollSnapshot, calculateGratuityEntitlement } = require('../../utils/payrollMath');
 const { monthName, buildEmployeeName, isValidMonth, isValidYear, getOrCreateConfig, getPayrollCategory } = require('./common');
+const { getTenantFilter, attachTenant } = require('../../utils/tenantHelper');
 
 const getPayrolls = async (req, res) => {
   try {
@@ -21,7 +22,7 @@ const getPayrolls = async (req, res) => {
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 20;
     const skip = (page - 1) * limit;
-    const query = { user: req.user._id };
+    const query = { ...getTenantFilter(req) };
 
     if (month !== undefined) {
       const parsedMonth = Number(month);
@@ -44,7 +45,7 @@ const getPayrolls = async (req, res) => {
       const escapeRegex = require('../../utils/escapeRegex');
       const safeSearch = escapeRegex(req.query.search);
       const matchedEmployees = await Employee.find({
-        user: req.user._id,
+        ...getTenantFilter(req),
         $or: [
           { firstName: { $regex: safeSearch, $options: 'i' } },
           { lastName: { $regex: safeSearch, $options: 'i' } },
@@ -88,7 +89,7 @@ const getPayrollById = async (req, res) => {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
-    const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id })
+    const payroll = await Payroll.findOne({ _id: req.params.id, ...getTenantFilter(req) })
       .populate({
         path: 'employee',
         populate: { path: 'department', select: 'name code' },
@@ -144,7 +145,7 @@ const updatePayroll = async (req, res) => {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
-    const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id });
+    const payroll = await Payroll.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
 
     if (payroll.status === 'paid') {
@@ -195,14 +196,13 @@ const updatePayroll = async (req, res) => {
     }
     await payroll.populate('employee', 'employeeId firstName lastName designation');
 
-    await AuditLog.create({
-      user: req.user._id,
+    await AuditLog.create(attachTenant(req, {
       actor: req.user._id,
       action: 'PAYROLL_UPDATED',
       targetEmployee: payroll.employee?._id || payroll.employee,
       targetPayroll: payroll._id,
       changes: updateData
-    });
+    }));
 
     res.json(payroll);
   } catch (error) {
@@ -217,7 +217,7 @@ const markPayrollAsPaid = async (req, res) => {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
-    const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id }).populate('employee');
+    const payroll = await Payroll.findOne({ _id: req.params.id, ...getTenantFilter(req) }).populate('employee');
     if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
     if (payroll.status === 'paid') return res.status(400).json({ message: 'Payroll is already paid' });
 
@@ -260,16 +260,15 @@ const markPayrollAsPaid = async (req, res) => {
       const sessionOpt = session ? { session } : {};
 
       if (payroll.expenseRef) {
-        expense = await Expense.findOne({ _id: payroll.expenseRef, user: req.user._id }, null, sessionOpt);
+        expense = await Expense.findOne({ _id: payroll.expenseRef, ...getTenantFilter(req) }, null, sessionOpt);
       }
 
       if (!expense) {
-        expense = await Expense.findOne({ user: req.user._id, expenseNumber }, null, sessionOpt);
+        expense = await Expense.findOne({ expenseNumber, ...getTenantFilter(req) }, null, sessionOpt);
       }
 
       if (!expense) {
-        const createdExpenses = await Expense.create([{
-          user: req.user._id,
+        const createdExpenses = await Expense.create([attachTenant(req, {
           expenseNumber,
           category: payrollCategory._id,
           date: paymentDate,
@@ -291,7 +290,7 @@ const markPayrollAsPaid = async (req, res) => {
           balanceDue: 0,
           status: 'PAID',
           privateNotes: `Payroll ID: ${payroll._id}`,
-        }], sessionOpt);
+        })], sessionOpt);
         expense = Array.isArray(createdExpenses) ? createdExpenses[0] : createdExpenses;
       }
 
@@ -303,6 +302,7 @@ const markPayrollAsPaid = async (req, res) => {
 
       await recordCashMovement({
         user: req.user._id,
+        profile: req.activeProfileId,
         amount: -payroll.netSalary,
         type: 'payroll_payment',
         sourceModel: 'Payroll',
@@ -321,7 +321,7 @@ const markPayrollAsPaid = async (req, res) => {
       if (payroll.deductions?.loanDeduction > 0) {
         const activeLoans = await Loan.find({
           employee: payroll.employee?._id || payroll.populated('employee') || payroll.employee,
-          user: req.user._id,
+          ...getTenantFilter(req),
           status: 'active',
           remainingBalance: { $gt: 0 }
         }, null, sessionOpt).sort({ createdAt: 1 });
@@ -358,14 +358,13 @@ const markPayrollAsPaid = async (req, res) => {
 
       await payroll.save(sessionOpt);
 
-      await AuditLog.create([{
-        user: req.user._id,
+      await AuditLog.create([attachTenant(req, {
         actor: req.user._id,
         action: 'PAYROLL_PAID',
         targetEmployee: payroll.employee?._id || payroll.populated('employee') || payroll.employee,
         targetPayroll: payroll._id,
         changes: { status: 'paid', paymentDate, expenseId: expense._id }
-      }], sessionOpt);
+      })], sessionOpt);
     });
 
     // Background pre-generate and persist payslip PDF for fast re-downloads
@@ -399,14 +398,14 @@ const markPayrollAsPaid = async (req, res) => {
     console.error('Error marking payroll as paid:', error);
     if (error.code === 11000) {
       try {
-        const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id });
+        const payroll = await Payroll.findOne({ _id: req.params.id, ...getTenantFilter(req) });
         if (payroll && payroll.status !== 'paid') {
           const employeeIdentifier =
             payroll.employeeSnapshot?.employeeId ||
             payroll.employee?.toString() ||
             payroll._id.toString();
           const expenseNumber = `PAY-${payroll.year}-${String(payroll.month).padStart(2, '0')}-${employeeIdentifier}`;
-          const expense = await Expense.findOne({ user: req.user._id, expenseNumber });
+          const expense = await Expense.findOne({ expenseNumber, ...getTenantFilter(req) });
           if (expense) {
             payroll.status = 'paid';
             payroll.paymentDate = req.body.paymentDate || new Date();
@@ -423,7 +422,7 @@ const markPayrollAsPaid = async (req, res) => {
             if (payroll.deductions?.loanDeduction > 0) {
               const activeLoans = await Loan.find({
                 employee: payroll.employee?._id || payroll.populated('employee') || payroll.employee,
-                user: req.user._id,
+                ...getTenantFilter(req),
                 status: 'active',
                 remainingBalance: { $gt: 0 }
               }).sort({ createdAt: 1 });
@@ -463,14 +462,13 @@ const markPayrollAsPaid = async (req, res) => {
               }}}
             );
 
-            await AuditLog.create({
-              user: req.user._id,
+            await AuditLog.create(attachTenant(req, {
               actor: req.user._id,
               action: 'PAYROLL_PAID',
               targetEmployee: payroll.employee?._id || payroll.populated('employee') || payroll.employee,
               targetPayroll: payroll._id,
               changes: { status: 'paid', paymentDate: payroll.paymentDate, expenseId: expense._id }
-            });
+            }));
 
             return res.json({ payroll, expense });
           }
@@ -492,7 +490,7 @@ const reopenPayroll = async (req, res) => {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
-    const payroll = await Payroll.findOne({ _id: id, user: req.user._id });
+    const payroll = await Payroll.findOne({ _id: id, ...getTenantFilter(req) });
     if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
 
     if (payroll.status === 'paid') {
@@ -524,14 +522,13 @@ const reopenPayroll = async (req, res) => {
       }}}
     );
 
-    await AuditLog.create({
-      user: req.user._id,
+    await AuditLog.create(attachTenant(req, {
       actor: req.user._id,
       action: 'PAYROLL_REOPENED',
       targetEmployee: payroll.employee,
       targetPayroll: payroll._id,
       changes: { from: oldStatus, to: 'processed', remarks },
-    });
+    }));
 
     res.json({ message: 'Payroll re-opened successfully', payroll });
   } catch (error) {
@@ -547,7 +544,7 @@ const deletePayroll = async (req, res) => {
       return res.status(404).json({ message: 'Payroll not found' });
     }
 
-    const payroll = await Payroll.findOne({ _id: id, user: req.user._id });
+    const payroll = await Payroll.findOne({ _id: id, ...getTenantFilter(req) });
     if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
 
     if (payroll.status === 'paid') {
@@ -555,24 +552,23 @@ const deletePayroll = async (req, res) => {
     }
 
     if (payroll.expenseRef) {
-      await Expense.updateOne({ _id: payroll.expenseRef, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+      await Expense.updateOne({ _id: payroll.expenseRef, ...getTenantFilter(req) }, { $set: { isDeleted: true, deletedAt: new Date() } });
     }
 
     const PayrollVariableTransaction = require('../../models/PayrollVariableTransaction');
     await PayrollVariableTransaction.updateMany(
-      { payroll: id, user: req.user._id },
+      { payroll: id, ...getTenantFilter(req) },
       { $set: { status: 'approved', payroll: null } }
     );
 
-    await Payroll.updateOne({ _id: id, user: req.user._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    await Payroll.updateOne({ _id: id, ...getTenantFilter(req) }, { $set: { isDeleted: true, deletedAt: new Date() } });
 
-    await AuditLog.create({
-      user: req.user._id,
+    await AuditLog.create(attachTenant(req, {
       actor: req.user._id,
       action: 'PAYROLL_DELETED',
       targetEmployee: payroll.employee,
       changes: { month: payroll.month, year: payroll.year, netSalary: payroll.netSalary }
-    });
+    }));
 
     res.json({ message: 'Payroll deleted successfully' });
   } catch (error) {
@@ -602,7 +598,7 @@ const processFullAndFinalSettlement = async (req, res) => {
       return res.status(400).json({ message: 'employeeId and lastWorkingDay are required' });
     }
 
-    const employee = await Employee.findOne({ _id: employeeId, user: req.user._id });
+    const employee = await Employee.findOne({ _id: employeeId, ...getTenantFilter(req) });
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const exitDate = new Date(lastWorkingDay);
@@ -632,7 +628,7 @@ const processFullAndFinalSettlement = async (req, res) => {
       leaveEncashmentAmount = roundAmount(encashDays * basicDailyRate);
     }
 
-    const activeLoans = await Loan.find({ employee: employee._id, user: req.user._id, status: 'active', remainingBalance: { $gt: 0 } });
+    const activeLoans = await Loan.find({ employee: employee._id, ...getTenantFilter(req), status: 'active', remainingBalance: { $gt: 0 } });
     let loanRecoveryDeduction = 0;
     activeLoans.forEach(loan => {
       loanRecoveryDeduction += Number(loan.remainingBalance) || 0;
@@ -675,8 +671,7 @@ const processFullAndFinalSettlement = async (req, res) => {
 
     const snapshot = buildPayrollSnapshot(employee, config, fnfAttendance, adjustments, month, year);
 
-    const payroll = await Payroll.create({
-      user: req.user._id,
+    const payroll = await Payroll.create(attachTenant(req, {
       employee: employee._id,
       month,
       year,
@@ -714,7 +709,7 @@ const processFullAndFinalSettlement = async (req, res) => {
         monthlyCTC: snapshot.master.monthlyCTC,
       },
       notes: `Full & Final Settlement for ${employee.firstName} ${employee.lastName}. LWD: ${exitDate.toLocaleDateString('en-IN')}`
-    });
+    }));
 
     employee.status = 'terminated';
     await employee.save();

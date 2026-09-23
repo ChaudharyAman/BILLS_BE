@@ -23,6 +23,7 @@ const ExpenseItemSchema = new mongoose.Schema({
 
 const ExpenseSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   category: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Category',
@@ -148,7 +149,9 @@ ExpenseSchema.pre('save', async function() {
   this.net_vendor_payment = Math.round(Math.max(basePayable - tdsAmt, 0) * 100) / 100;
 });
 
-ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true });
+ExpenseSchema.index({ user: 1, profile: 1, expenseNumber: 1 }, { unique: true, sparse: true });
+ExpenseSchema.index({ user: 1, expenseNumber: 1 }, { unique: true, partialFilterExpression: { profile: null } });
+ExpenseSchema.index({ profile: 1, date: 1 });
 ExpenseSchema.index({ user: 1, date: 1 });
 ExpenseSchema.index({ user: 1, 'items.taxRate': 1 });
 

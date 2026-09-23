@@ -3,6 +3,7 @@ const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const PayrollVariableTransactionSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true, index: true },
   payroll: { type: mongoose.Schema.Types.ObjectId, ref: 'Payroll', index: true },
   paymentType: {
@@ -19,6 +20,9 @@ const PayrollVariableTransactionSchema = new mongoose.Schema({
   status: { type: String, enum: ['pending', 'approved', 'paid'], default: 'approved' },
   date: { type: Date, default: Date.now },
 }, { timestamps: true });
+
+PayrollVariableTransactionSchema.index({ profile: 1, employee: 1, date: 1 });
+PayrollVariableTransactionSchema.index({ user: 1, employee: 1, date: 1 });
 
 PayrollVariableTransactionSchema.plugin(softDeletePlugin);
 

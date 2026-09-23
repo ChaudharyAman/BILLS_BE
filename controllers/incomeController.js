@@ -4,9 +4,13 @@ const User = require('../models/User');
 const Category = require('../models/Category');
 const escapeRegex = require('../utils/escapeRegex');
 const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
-const validateIncomeCategory = async (userId, categoryId, subCategoryId) => {
+const validateIncomeCategory = async (userOrReq, categoryId, subCategoryId) => {
   const result = { category: categoryId || null, subCategory: subCategoryId || null };
+  const tenantFilter = (userOrReq && typeof userOrReq === 'object' && (userOrReq.user || userOrReq.activeProfileId))
+    ? getTenantFilter(userOrReq)
+    : { user: userOrReq };
 
   if (categoryId) {
     if (!mongoose.Types.ObjectId.isValid(categoryId)) {
@@ -14,7 +18,7 @@ const validateIncomeCategory = async (userId, categoryId, subCategoryId) => {
       error.statusCode = 400;
       throw error;
     }
-    const category = await Category.findOne({ _id: categoryId, user: userId, type: 'income' });
+    const category = await Category.findOne({ _id: categoryId, ...tenantFilter, type: 'income' });
     if (!category) {
       const error = new Error('Income category not found');
       error.statusCode = 400;
@@ -28,7 +32,7 @@ const validateIncomeCategory = async (userId, categoryId, subCategoryId) => {
       error.statusCode = 400;
       throw error;
     }
-    const subCategory = await Category.findOne({ _id: subCategoryId, user: userId, type: 'income' });
+    const subCategory = await Category.findOne({ _id: subCategoryId, ...tenantFilter, type: 'income' });
     if (!subCategory) {
       const error = new Error('Income sub-category not found');
       error.statusCode = 400;
@@ -70,7 +74,7 @@ exports.getIncomes = async (req, res) => {
 
     const { status, sourceType, startDate, endDate, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
 
-    let query = { user: companyId };
+    let query = { ...getTenantFilter(req) };
     if (req.query.category) query.category = req.query.category;
     if (req.query.subCategory) query.subCategory = req.query.subCategory;
     if (req.query.project) query.project = req.query.project;
@@ -95,7 +99,7 @@ exports.getIncomes = async (req, res) => {
       const Client = require('../models/Client');
       const safeSearch = escapeRegex(search);
       const matchedClients = await Client.find({
-        user: companyId,
+        ...getTenantFilter(req),
         name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
@@ -142,6 +146,7 @@ exports.getIncomes = async (req, res) => {
 
 // --- Resolve or auto-create vendor/client from name/ref ---
 async function resolveParty({
+  req,
   userId,
   partyRef,
   partyName,
@@ -155,10 +160,11 @@ async function resolveParty({
   placeOfSupply,
 }) {
   const ClientModel = require('../models/Client');
+  const tenantFilter = req ? getTenantFilter(req) : { user: userId };
 
   if (partyRef && mongoose.Types.ObjectId.isValid(partyRef)) {
-    const party = await ClientModel.findOne({ _id: partyRef, user: userId });
-    if (!party) throw new Error(`${isVendor ? 'Vendor' : 'Client'} not found`);
+    const party = await ClientModel.findOne({ _id: partyRef, ...tenantFilter });
+    if (!party) return null;
 
     let needsUpdate = false;
     if (isVendor && !party.isVendor) {
@@ -214,7 +220,7 @@ async function resolveParty({
   const regex = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
 
   const existing = await ClientModel.findOne({
-    user: userId,
+    ...tenantFilter,
     name: { $regex: regex }
   });
 
@@ -267,8 +273,7 @@ async function resolveParty({
 
   const gstin = String(partyGST || '').trim().toUpperCase();
   const state = String(partyAddressObject?.state || placeOfSupply || '').trim();
-  const party = new ClientModel({
-    user: userId,
+  const partyPayload = {
     name,
     isVendor: !!isVendor,
     isClient: !!isClient,
@@ -294,7 +299,9 @@ async function resolveParty({
     phone: partyPhone ? String(partyPhone).trim() : undefined,
     email: partyEmail ? String(partyEmail).trim().toLowerCase() : undefined,
     pan: partyPAN ? String(partyPAN).trim().toUpperCase() : undefined,
-  });
+  };
+
+  const party = new ClientModel(req ? attachTenant(req, partyPayload) : { user: userId, ...partyPayload });
 
   return party.save();
 }
@@ -340,6 +347,7 @@ exports.createIncome = async (req, res) => {
     let resolvedVendor = null;
     if (vendor) {
       resolvedVendor = await resolveParty({
+        req,
         userId: companyId,
         partyRef: vendor.vendorRef,
         partyName: vendor.name,
@@ -357,6 +365,7 @@ exports.createIncome = async (req, res) => {
     let resolvedClient = null;
     if (client) {
       resolvedClient = await resolveParty({
+        req,
         userId: companyId,
         partyRef: client.clientRef,
         partyName: client.name,
@@ -371,16 +380,15 @@ exports.createIncome = async (req, res) => {
       });
     }
 
-    const categoryData = await validateIncomeCategory(companyId, category, subCategory);
+    const categoryData = await validateIncomeCategory(req, category, subCategory);
 
-    // Check if incomeNumber exists for this user (if you want uniqueness per user)
-    const existing = await Income.findOne({ incomeNumber, user: companyId });
+    // Check if incomeNumber exists for this tenant
+    const existing = await Income.findOne({ incomeNumber, ...getTenantFilter(req) });
     if (existing) {
       return res.status(400).json({ message: 'Income number already exists' });
     }
 
-    const income = await Income.create({
-      user: companyId,
+    const income = await Income.create(attachTenant(req, {
       ...categoryData,
       project: project || null,
       department: department || null,
@@ -410,7 +418,7 @@ exports.createIncome = async (req, res) => {
       amountPaid: Number(amountPaid) || 0,
       paymentDate: paymentDate ? new Date(paymentDate) : (Number(amountPaid) > 0 || status === 'PAID' ? (date || new Date()) : null),
       attachments: processIncomingAttachments(req.body.attachments, []),
-    });
+    }));
 
     res.status(201).json(income);
   } catch (error) {
@@ -427,7 +435,7 @@ exports.getIncomeById = async (req, res) => {
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Income not found' });
     
-    const income = await Income.findOne({ _id: req.params.id, user: companyId })
+    const income = await Income.findOne({ _id: req.params.id, ...getTenantFilter(req) })
       .select('-attachments.buffer')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent')
@@ -451,7 +459,7 @@ exports.updateIncome = async (req, res) => {
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Income not found' });
 
-    let income = await Income.findOne({ _id: req.params.id, user: companyId });
+    let income = await Income.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!income) {
       return res.status(404).json({ message: 'Income not found' });
     }
@@ -557,7 +565,7 @@ exports.updateIncome = async (req, res) => {
     }
 
     if (incomeNumber && incomeNumber !== income.incomeNumber) {
-      const existingNumber = await Income.findOne({ incomeNumber, user: companyId });
+      const existingNumber = await Income.findOne({ incomeNumber, ...getTenantFilter(req) });
       if (existingNumber) {
         return res.status(400).json({ message: 'Income number already exists' });
       }
@@ -653,7 +661,7 @@ exports.getIncomeAttachment = async (req, res) => {
     const companyId = req.companyId || req.user?._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Income not found' });
 
-    const income = await Income.findOne({ _id: req.params.id, user: companyId });
+    const income = await Income.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!income) return res.status(404).json({ message: 'Income not found' });
 
     const attachment = income.attachments.id(req.params.attachmentId) || income.attachments[req.params.attachmentId];
@@ -683,7 +691,7 @@ exports.deleteIncome = async (req, res) => {
     }
     // -------------------------------------------
 
-    const income = await Income.findOne({ _id: req.params.id, user: companyId })
+    const income = await Income.findOne({ _id: req.params.id, ...getTenantFilter(req) })
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent');
 

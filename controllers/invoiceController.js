@@ -15,6 +15,7 @@ const { calculateTds } = require('../utils/tdsCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseOptionalDateRange, parseImportedDate } = require('../utils/dateRange');
 const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
+const { getTenantFilter, getTenantMatch, attachTenant } = require('../utils/tenantHelper');
 
 const User = require('../models/User');
 const PDF_IMPORT_SOURCE = 'pdf';
@@ -98,15 +99,18 @@ function escapeRegexLiteral(value = '') {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-async function generateNextUniqueInvoiceNumber({ userId, invoicePrefix }) {
-  const counterId = buildUserCounterId(userId, 'invoiceNo');
+async function generateNextUniqueInvoiceNumber({ userId, profileId, invoicePrefix }) {
+  const counterId = buildUserCounterId(userId, 'invoiceNo', profileId);
   const normalizedPrefix = String(invoicePrefix || 'INV').trim().replace(/[-/\s]+$/g, '') || 'INV';
   const pattern = new RegExp(`^${escapeRegexLiteral(normalizedPrefix)}-(\\d+)$`);
 
-  const existingInvoiceNumbers = await Invoice.find({
+  const scopeQuery = {
     user: userId,
     invoiceNo: { $regex: `^${escapeRegexLiteral(normalizedPrefix)}-\\d+$` },
-  })
+    ...(profileId ? { profile: profileId } : { profile: null }),
+  };
+
+  const existingInvoiceNumbers = await Invoice.find(scopeQuery)
     .select('invoiceNo -_id')
     .lean();
 
@@ -134,7 +138,11 @@ async function generateNextUniqueInvoiceNumber({ userId, invoicePrefix }) {
     );
 
     const candidate = buildAutoDocumentNumber(normalizedPrefix, counter.seq);
-    const exists = await Invoice.exists({ user: userId, invoiceNo: candidate });
+    const exists = await Invoice.exists({
+      user: userId,
+      invoiceNo: candidate,
+      ...(profileId ? { profile: profileId } : { profile: null }),
+    });
     if (!exists) {
       return candidate;
     }
@@ -197,15 +205,19 @@ function buildClientSnapshot(client) {
 }
 
 async function resolveClientForInvoice({
+  req,
   userId,
+  profileId,
   clientRef,
   clientName,
   clientGST,
   placeOfSupply,
   importSource,
 }) {
+  const effectiveProfileId = profileId || req?.activeProfileId;
+  const tenantFilter = req ? getTenantFilter(req) : (effectiveProfileId ? { user: userId, profile: effectiveProfileId } : { user: userId });
   if (clientRef && mongoose.Types.ObjectId.isValid(clientRef)) {
-    const client = await Client.findOne({ _id: clientRef, user: userId });
+    const client = await Client.findOne({ _id: clientRef, ...tenantFilter });
     if (!client) throw new Error('Client not found');
     return client;
   }
@@ -220,7 +232,7 @@ async function resolveClientForInvoice({
   }
 
   const existingClient = await Client.findOne({
-    user: userId,
+    ...tenantFilter,
     name: { $regex: buildExactNameRegex(clientName) },
   });
 
@@ -231,7 +243,7 @@ async function resolveClientForInvoice({
   const normalizedPlaceOfSupply = String(placeOfSupply || '').trim();
   const normalizedClientGST = String(clientGST || '').trim().toUpperCase();
 
-  const client = new Client({
+  const clientPayload = {
     user: userId,
     name: String(clientName).trim(),
     gstin: normalizedClientGST || undefined,
@@ -242,20 +254,23 @@ async function resolveClientForInvoice({
       country: 'India',
     },
     isClient: true,
-  });
+  };
+
+  const client = new Client(req ? attachTenant(req, clientPayload) : (effectiveProfileId ? { ...clientPayload, profile: effectiveProfileId } : clientPayload));
 
   return client.save();
 }
 
-async function resolvePdfImportItems(userId, items = []) {
+async function resolvePdfImportItems(userId, items = [], profileId = null) {
   const resolvedItems = [];
+  const tenantFilter = profileId ? { user: userId, profile: profileId } : { user: userId };
 
   for (const rawItem of items) {
     const item = { ...rawItem };
 
     if (item.itemRef && mongoose.Types.ObjectId.isValid(item.itemRef)) {
-      const existingItem = await Item.findById(item.itemRef).lean();
-      if (existingItem && existingItem.user.toString() === userId.toString()) {
+      const existingItem = await Item.findOne({ _id: item.itemRef, ...tenantFilter }).lean();
+      if (existingItem) {
         resolvedItems.push(item);
         continue;
       }
@@ -268,7 +283,7 @@ async function resolvePdfImportItems(userId, items = []) {
     }
 
     let catalogItem = await Item.findOne({
-      user: userId,
+      ...tenantFilter,
       name: { $regex: buildExactNameRegex(item.name) },
     });
 
@@ -279,6 +294,7 @@ async function resolvePdfImportItems(userId, items = []) {
 
       catalogItem = await Item.create({
         user: userId,
+        ...(profileId ? { profile: profileId } : {}),
         name: String(item.name).trim(),
         description: item.description || '',
         hsnCode: item.hsnCode || '',
@@ -398,27 +414,32 @@ exports.getInvoices = async (req, res) => {
     const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
     const skip = (page - 1) * limit;
 
-    let query = { user: companyId };
+    const tenantFilter = getTenantFilter(req);
+    const andConditions = [tenantFilter];
 
     if (search) {
       const safeSearch = escapeRegex(search);
       // Find clients that match the search term
       const Client = require('../models/Client'); // Lazy load if needed
       const matchedClients = await Client.find({
-        user: companyId,
+        ...tenantFilter,
         name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
       const clientIds = matchedClients.map(c => c._id);
 
       // Search by invoice number, matched client reference, or embedded client name / GSTIN
-      query.$or = [
-        { invoiceNo: { $regex: safeSearch, $options: 'i' } },
-        { 'client.clientRef': { $in: clientIds } },
-        { 'client.name': { $regex: safeSearch, $options: 'i' } },
-        { 'client.gstin': { $regex: safeSearch, $options: 'i' } }
-      ];
+      andConditions.push({
+        $or: [
+          { invoiceNo: { $regex: safeSearch, $options: 'i' } },
+          { 'client.clientRef': { $in: clientIds } },
+          { 'client.name': { $regex: safeSearch, $options: 'i' } },
+          { 'client.gstin': { $regex: safeSearch, $options: 'i' } }
+        ]
+      });
     }
+
+    let query = andConditions.length > 1 ? { $and: andConditions } : { ...tenantFilter };
 
     // Status Filter
     if (status) {
@@ -484,7 +505,7 @@ exports.getInvoices = async (req, res) => {
 
     const aggMatch = {
       ...query,
-      user: new mongoose.Types.ObjectId(String(companyId)),
+      ...getTenantMatch(req),
       isDeleted: { $ne: true }
     };
 
@@ -583,7 +604,7 @@ exports.getInvoiceById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Invoice not found' });
     }
-    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId }).select('-attachments.buffer');
+    const invoice = await Invoice.findOne({ _id: req.params.id, ...getTenantFilter(req) }).select('-attachments.buffer');
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
     res.json(invoice);
   } catch (error) {
@@ -647,14 +668,14 @@ exports.createInvoice = async (req, res) => {
       }
     }
     // -------------------------------
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const invoicePrefix = userSettings?.invoicePrefix || 'INV';
     let invoiceNo = req.body.invoiceNo;
     const isAuto = !invoiceNo || invoiceNo === 'Auto-generated';
 
     if (!isAuto) {
-      // Validate Custom Invoice Number Uniqueness for this user
-      const existing = await Invoice.findOne({ user: companyId, invoiceNo });
+      // Validate Custom Invoice Number Uniqueness for this user/profile
+      const existing = await Invoice.findOne({ ...getTenantFilter(req), invoiceNo });
       if (existing) {
         return res.status(400).json({ message: `Invoice number "${invoiceNo}" already exists.` });
       }
@@ -662,12 +683,15 @@ exports.createInvoice = async (req, res) => {
       // Generate Invoice Number
       invoiceNo = await generateNextUniqueInvoiceNumber({
         userId: companyId,
+        profileId: req.activeProfileId,
         invoicePrefix,
       });
     }
 
     const client = await resolveClientForInvoice({
+      req,
       userId: companyId,
+      profileId: req.activeProfileId,
       clientRef,
       clientName,
       clientGST,
@@ -697,7 +721,7 @@ exports.createInvoice = async (req, res) => {
         } : null);
 
     const resolvedItems = resolvedImportSource === PDF_IMPORT_SOURCE
-      ? await resolvePdfImportItems(companyId, items || [])
+      ? await resolvePdfImportItems(companyId, items || [], req.activeProfileId)
       : (items || []);
 
     const documentInvoiceType = ['Invoice', 'Retail Invoice', 'Tax Invoice', 'Excise Invoice'].includes(invoiceType)
@@ -746,7 +770,7 @@ exports.createInvoice = async (req, res) => {
 
     let linkedPo = null;
     if (purchaseOrderRef && mongoose.Types.ObjectId.isValid(purchaseOrderRef)) {
-      linkedPo = await PurchaseOrder.findOne({ _id: purchaseOrderRef, user: companyId });
+      linkedPo = await PurchaseOrder.findOne({ _id: purchaseOrderRef, ...getTenantFilter(req) });
       if (!linkedPo) {
         return res.status(404).json({ message: 'Linked Purchase Order not found' });
       }
@@ -766,8 +790,7 @@ exports.createInvoice = async (req, res) => {
 
     let newInvoice = null;
     for (let attempt = 0; attempt < 25; attempt += 1) {
-      const invoice = new Invoice({
-        user: companyId,
+      const invoice = new Invoice(attachTenant(req, {
         invoiceNo,
         invoiceType: documentInvoiceType,
         gstInvoiceType: storedGstInvoiceType,
@@ -822,7 +845,7 @@ exports.createInvoice = async (req, res) => {
         exciseDuty: buildExciseDutySnapshot(exciseDuty, totalExcise),
         purchaseOrderRef: linkedPo ? linkedPo._id : undefined,
         attachments: processIncomingAttachments(req.body.attachments, []),
-      });
+      }));
 
       try {
         newInvoice = await invoice.save();
@@ -836,6 +859,7 @@ exports.createInvoice = async (req, res) => {
         }
         invoiceNo = await generateNextUniqueInvoiceNumber({
           userId: req.user._id,
+          profileId: req.activeProfileId,
           invoicePrefix,
         });
       }
@@ -905,7 +929,7 @@ exports.updateInvoice = async (req, res) => {
       purchaseOrderRef,
     } = req.body;
 
-    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId });
+    const invoice = await Invoice.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
     const oldPoId = invoice.purchaseOrderRef;
@@ -953,7 +977,7 @@ exports.updateInvoice = async (req, res) => {
     // -----------------------------------------
 
     // Fetch Client Snapshot
-    const client = await Client.findOne({ _id: clientRef, user: companyId });
+    const client = await Client.findOne({ _id: clientRef, ...getTenantFilter(req) });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const clientSnapshot = {
@@ -972,7 +996,7 @@ exports.updateInvoice = async (req, res) => {
       email: client.email || '',
     };
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
     const clientState = placeOfSupply || client.placeOfSupply || client.billingAddress?.state || '';
@@ -1053,7 +1077,7 @@ exports.updateInvoice = async (req, res) => {
     invoice.overrideInvoiceType = !!req.body.overrideInvoiceType;
     // Allow updating invoiceNo only if a custom value was provided and it differs
     if (req.body.invoiceNo && req.body.invoiceNo !== 'Auto-generated' && req.body.invoiceNo !== invoice.invoiceNo) {
-      const duplicate = await Invoice.findOne({ user: companyId, invoiceNo: req.body.invoiceNo, _id: { $ne: invoice._id } });
+      const duplicate = await Invoice.findOne({ ...getTenantFilter(req), invoiceNo: req.body.invoiceNo, _id: { $ne: invoice._id } });
       if (duplicate) return res.status(400).json({ message: `Invoice number "${req.body.invoiceNo}" already exists.` });
       invoice.invoiceNo = req.body.invoiceNo;
     }
@@ -1120,7 +1144,7 @@ exports.updateInvoice = async (req, res) => {
     if (String(oldPoId || '') === String(newPoId || '')) {
       // Linked PO remains the same
       if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId)) {
-        const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, user: companyId });
+        const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, ...getTenantFilter(req) });
         if (linkedPo) {
           let updated = false;
           if (oldIsActive && newIsActive) {
@@ -1155,7 +1179,7 @@ exports.updateInvoice = async (req, res) => {
       // Linked PO has changed
       // 1. Revert Old PO if it was active
       if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId) && oldIsActive) {
-        const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, user: companyId });
+        const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, ...getTenantFilter(req) });
         if (oldPo) {
           oldPo.billedAmount = Math.max(0, roundToTwo((oldPo.billedAmount || 0) - oldGrandTotal));
           if (oldPo.billedAmount >= oldPo.grandTotal) {
@@ -1171,7 +1195,7 @@ exports.updateInvoice = async (req, res) => {
 
       // 2. Apply to New PO if new invoice is active
       if (newPoId && mongoose.Types.ObjectId.isValid(newPoId) && newIsActive) {
-        const newPo = await PurchaseOrder.findOne({ _id: newPoId, user: companyId });
+        const newPo = await PurchaseOrder.findOne({ _id: newPoId, ...getTenantFilter(req) });
         if (!newPo) {
           return res.status(404).json({ message: 'New Purchase Order not found' });
         }
@@ -1203,7 +1227,7 @@ exports.updateInvoice = async (req, res) => {
 exports.deleteInvoice = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId });
+    const invoice = await Invoice.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
     // --- Subscription Plan Check for Deletes ---
@@ -1218,7 +1242,7 @@ exports.deleteInvoice = async (req, res) => {
     const isOldActive = ACTIVE_INVOICE_STATUSES.includes(invoice.status || 'DRAFT');
 
     if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId) && isOldActive) {
-      const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, user: companyId });
+      const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, ...getTenantFilter(req) });
       if (oldPo) {
         oldPo.billedAmount = Math.max(0, roundToTwo((oldPo.billedAmount || 0) - oldGrandTotal));
         if (oldPo.billedAmount >= oldPo.grandTotal) {
@@ -1234,7 +1258,7 @@ exports.deleteInvoice = async (req, res) => {
 
     await Invoice.updateOne({ _id: invoice._id }, { $set: { isDeleted: true, deletedAt: new Date() } });
     await CashLedgerEntry.updateMany(
-      { sourceModel: 'Invoice', sourceId: invoice._id, user: companyId },
+      { sourceModel: 'Invoice', sourceId: invoice._id, ...getTenantFilter(req) },
       { $set: { isDeleted: true, deletedAt: new Date() } }
     );
     await removeIncomeForInvoice(invoice._id, invoice.user);
@@ -1260,7 +1284,7 @@ exports.bulkDeleteInvoices = async (req, res) => {
     }
 
     const validIds = ids.filter(id => mongoose.Types.ObjectId.isValid(id));
-    const invoices = await Invoice.find({ _id: { $in: validIds }, user: companyId });
+    const invoices = await Invoice.find({ _id: { $in: validIds }, ...getTenantFilter(req) });
     if (!invoices.length) {
       return res.status(404).json({ message: 'No matching invoices found' });
     }
@@ -1271,7 +1295,7 @@ exports.bulkDeleteInvoices = async (req, res) => {
       const isOldActive = ACTIVE_INVOICE_STATUSES.includes(invoice.status || 'DRAFT');
 
       if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId) && isOldActive) {
-        const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, user: companyId });
+        const oldPo = await PurchaseOrder.findOne({ _id: oldPoId, ...getTenantFilter(req) });
         if (oldPo) {
           oldPo.billedAmount = Math.max(0, roundToTwo((oldPo.billedAmount || 0) - oldGrandTotal));
           if (oldPo.billedAmount >= oldPo.grandTotal) {
@@ -1290,11 +1314,11 @@ exports.bulkDeleteInvoices = async (req, res) => {
 
     const matchedIds = invoices.map(inv => inv._id);
     await Invoice.updateMany(
-      { _id: { $in: matchedIds }, user: companyId },
+      { _id: { $in: matchedIds }, ...getTenantFilter(req) },
       { $set: { isDeleted: true, deletedAt: new Date() } }
     );
     await CashLedgerEntry.updateMany(
-      { sourceModel: 'Invoice', sourceId: { $in: matchedIds }, user: companyId },
+      { sourceModel: 'Invoice', sourceId: { $in: matchedIds }, ...getTenantFilter(req) },
       { $set: { isDeleted: true, deletedAt: new Date() } }
     );
 
@@ -1313,7 +1337,7 @@ exports.updateInvoiceStatus = async (req, res) => {
       return res.status(400).json({ message: 'Status is required' });
     }
 
-    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId });
+    const invoice = await Invoice.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
     const oldStatus = invoice.status || 'DRAFT';
@@ -1336,7 +1360,7 @@ exports.updateInvoiceStatus = async (req, res) => {
     const newIsActive = ACTIVE_INVOICE_STATUSES.includes(status);
     const oldPoId = invoice.purchaseOrderRef;
     if (oldPoId && mongoose.Types.ObjectId.isValid(oldPoId)) {
-      const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, user: companyId });
+      const linkedPo = await PurchaseOrder.findOne({ _id: oldPoId, ...getTenantFilter(req) });
       if (linkedPo) {
         let updated = false;
         if (oldIsActive && newIsActive) {
@@ -1400,7 +1424,7 @@ exports.bulkCreateInvoices = async (req, res) => {
     }
     // -------------------------------
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
@@ -1421,12 +1445,12 @@ exports.bulkCreateInvoices = async (req, res) => {
       }
 
       let client = await Client.findOne({
-        user: companyId,
+        ...getTenantFilter(req),
         name: { $regex: buildExactNameRegex(clientName) },
       });
 
       if (!client) {
-        client = new Client({
+        client = new Client(attachTenant(req, {
           name: clientName || 'Unknown Client',
           email: invData.clientEmail || '',
           phone: invData.clientPhone || '',
@@ -1438,8 +1462,7 @@ exports.bulkCreateInvoices = async (req, res) => {
             country: 'India',
           },
           placeOfSupply: invData.placeOfSupply || invData.clientState || 'Delhi',
-          user: companyId,
-        });
+        }));
         await client.save();
       } else {
         let shouldSaveClient = false;
@@ -1492,6 +1515,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       if (isAuto) {
         invoiceNo = await generateNextUniqueInvoiceNumber({
           userId: companyId,
+          profileId: req.activeProfileId,
           invoicePrefix: userSettings?.invoicePrefix || 'INV',
         });
       }
@@ -1523,7 +1547,7 @@ exports.bulkCreateInvoices = async (req, res) => {
       const finalDate = parseImportedDate(invData.date);
 
       if (!isAuto) {
-        const existingInvoice = await Invoice.findOne({ user: companyId, invoiceNo });
+        const existingInvoice = await Invoice.findOne({ ...getTenantFilter(req), invoiceNo });
         if (existingInvoice && isSameImportedInvoice(existingInvoice, finalDate, finalGrandTotal)) {
           skippedInvoices.push({
             importRowId,
@@ -1539,6 +1563,7 @@ exports.bulkCreateInvoices = async (req, res) => {
         if (existingInvoice) {
           invoiceNo = await generateNextUniqueInvoiceNumber({
             userId: companyId,
+            profileId: req.activeProfileId,
             invoicePrefix: 'INV',
           });
           renumberedInvoices.push({
@@ -1573,7 +1598,7 @@ exports.bulkCreateInvoices = async (req, res) => {
         : { totalCGST, totalSGST, totalIGST };
         let savedInvoice = null;
         for (let attempt = 0; attempt < 25; attempt += 1) {
-          const invoice = new Invoice({
+          const invoice = new Invoice(attachTenant(req, {
             invoiceNo,
             invoiceType,
             date: finalDate,
@@ -1623,8 +1648,7 @@ exports.bulkCreateInvoices = async (req, res) => {
             notes: String(invData.notes || '').trim(),
             terms: invData.terms || '',
             exciseDuty: buildExciseDutySnapshot(invData.exciseDuty, finalExciseTotal),
-            user: companyId
-          });
+          }));
 
           try {
             savedInvoice = await invoice.save();
@@ -1636,6 +1660,7 @@ exports.bulkCreateInvoices = async (req, res) => {
             const previousInvoiceNo = invoiceNo;
             invoiceNo = await generateNextUniqueInvoiceNumber({
               userId: companyId,
+              profileId: req.activeProfileId,
               invoicePrefix: 'INV',
             });
             renumberedInvoices.push({
@@ -1703,9 +1728,9 @@ exports.getGSTReport = async (req, res) => {
     const { startDate, endDate } = req.query;
     const parsedDateRange = parseOptionalDateRange(req.query);
     
-    // Filter by user
+    // Filter by tenant
     const matchStage = {
-      user: companyId,
+      ...getTenantMatch(req),
       status: { $in: ACTIVE_INVOICE_STATUSES },
     };
 
@@ -1764,11 +1789,9 @@ exports.getGSTReport = async (req, res) => {
       totalTax: 0,
       totalGrandTotal: 0
     };
+    delete totals._id;
 
-    res.json({
-      totals,
-      details: result.details
-    });
+    res.json({ totals, details: result.details });
   } catch (error) {
     console.error('Error fetching GST Report:', error);
     if (error.message === 'Invalid startDate' || error.message === 'Invalid endDate') {
@@ -1785,9 +1808,9 @@ exports.getRevenueReport = async (req, res) => {
     const { startDate, endDate, businessUnit, groupBy } = req.query;
     const parsedDateRange = parseOptionalDateRange(req.query);
     
-    // Filter by user
+    // Filter by tenant
     const matchStage = {
-      user: companyId,
+      ...getTenantMatch(req),
       status: { $in: ACTIVE_INVOICE_STATUSES },
     };
 
@@ -1847,7 +1870,7 @@ exports.getPaymentCollection = async (req, res) => {
     const companyId = req.companyId || req.user._id;
     // Find all invoices where balance is > 0
     const matchStage = { 
-      user: companyId,
+      ...getTenantMatch(req),
       balanceDue: { $gt: 0 },
       status: { $in: ACTIVE_INVOICE_STATUSES },
     };
@@ -1890,7 +1913,7 @@ exports.getAccountStatement = async (req, res) => {
     }
 
     const matchStage = { 
-      user: companyId,
+      ...getTenantMatch(req),
       "client.clientRef": new mongoose.Types.ObjectId(clientId),
       status: { $in: ACTIVE_INVOICE_STATUSES },
     };
@@ -1937,7 +1960,7 @@ exports.getInvoiceAttachment = async (req, res) => {
       return res.status(404).json({ message: 'Invoice not found' });
     }
 
-    const invoice = await Invoice.findOne({ _id: req.params.id, user: companyId });
+    const invoice = await Invoice.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
     const attachment = invoice.attachments.id(req.params.attachmentId) || invoice.attachments[req.params.attachmentId];
@@ -1949,3 +1972,160 @@ exports.getInvoiceAttachment = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+/**
+ * Send invoice directly to client via configured SMTP server
+ * POST /api/invoices/:id/send-email
+ */
+exports.sendInvoiceEmail = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    const tenantFilter = getTenantFilter(req);
+    const invoice = await Invoice.findOne({ _id: id, ...tenantFilter }).populate('client');
+    if (!invoice) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    const settings = await Settings.findOne(tenantFilter).lean() || {};
+    const companyName = settings.companyName || 'Flance';
+
+    const { 
+      recipientEmail, 
+      subject, 
+      message, 
+      cc, 
+      attachPdf = true, 
+      template = 'classic',
+      attachInvoiceFiles = true,
+      selectedAttachmentIds,
+      extraAttachments,
+    } = req.body;
+    const targetRecipient = (recipientEmail || invoice.client?.email || invoice.clientEmail || '').trim();
+
+    if (!targetRecipient) {
+      return res.status(400).json({
+        message: 'No recipient email address found for this invoice. Please provide a recipient email.',
+      });
+    }
+
+    const emailSubject = (subject || `Invoice ${invoice.invoiceNo || ''} from ${companyName}`).trim();
+    const mailService = require('../utils/mailService');
+    const { buildInvoiceEmailHtml } = require('../utils/invoiceEmailTemplate');
+
+    const emailHtml = buildInvoiceEmailHtml({
+      invoice,
+      settings,
+      customMessage: message,
+    });
+
+    const attachments = [];
+
+    // 1. Official PDF Document
+    if (attachPdf !== false) {
+      try {
+        const { generateInvoicePdf } = require('../services/pdfGeneratorService');
+        if (typeof generateInvoicePdf === 'function') {
+          const pdfBuffer = await generateInvoicePdf({ invoice, settings, template });
+          if (pdfBuffer) {
+            attachments.push({
+              filename: `${invoice.invoiceNo || 'Invoice'}.pdf`,
+              content: pdfBuffer,
+              contentType: 'application/pdf',
+            });
+          }
+        }
+      } catch (pdfErr) {
+        console.warn('[Invoice Email] PDF generation warning (email will still send without PDF):', pdfErr.message);
+      }
+    }
+
+    // 2. Attachments stored inside the invoice
+    if (attachInvoiceFiles !== false && Array.isArray(invoice.attachments) && invoice.attachments.length > 0) {
+      const selectedSet = Array.isArray(selectedAttachmentIds) && selectedAttachmentIds.length > 0
+        ? new Set(selectedAttachmentIds.map(String))
+        : null;
+
+      for (const att of invoice.attachments) {
+        let buf = att && att.buffer;
+        if (buf) {
+          if (selectedSet && !selectedSet.has(String(att._id))) {
+            continue;
+          }
+          if (!Buffer.isBuffer(buf)) {
+            buf = Buffer.from(buf);
+          }
+          attachments.push({
+            filename: att.originalName || 'Attachment',
+            content: buf,
+            contentType: att.mimeType || 'application/octet-stream',
+          });
+        }
+      }
+    }
+
+    // 3. Additional attachments uploaded on-the-fly in Send Modal
+    if (Array.isArray(extraAttachments) && extraAttachments.length > 0) {
+      for (const extra of extraAttachments) {
+        if (extra && extra.content && extra.filename) {
+          try {
+            const rawContent = typeof extra.content === 'string'
+              ? extra.content.replace(/^data:[^;]+;base64,/, '')
+              : extra.content;
+            const buf = Buffer.isBuffer(rawContent)
+              ? rawContent
+              : Buffer.from(rawContent, 'base64');
+
+            attachments.push({
+              filename: extra.filename,
+              content: buf,
+              contentType: extra.contentType || 'application/octet-stream',
+            });
+          } catch (extraErr) {
+            console.warn('[Invoice Email] Failed to parse extra attachment:', extra.filename, extraErr.message);
+          }
+        }
+      }
+    }
+
+    const mailOptions = {
+      to: targetRecipient,
+      subject: emailSubject,
+      html: emailHtml,
+      attachments: attachments.length ? attachments : undefined,
+      settings,
+    };
+
+    if (cc && typeof cc === 'string' && cc.trim()) {
+      mailOptions.cc = cc.trim();
+    }
+
+    const info = await mailService.sendMail(mailOptions);
+
+    // Auto-advance DRAFT status to SENT
+    if (invoice.status === 'DRAFT') {
+      invoice.status = 'SENT';
+      await invoice.save();
+    }
+
+    return res.json({
+      success: true,
+      message: `Invoice ${invoice.invoiceNo} successfully sent to ${targetRecipient}!`,
+      messageId: info.messageId,
+      recipient: targetRecipient,
+    });
+  } catch (error) {
+    console.error('sendInvoiceEmail error:', error);
+    const { formatSmtpError } = require('../utils/mailService');
+    const friendlyMessage = typeof formatSmtpError === 'function' ? formatSmtpError(error) : error.message;
+    return res.status(400).json({
+      success: false,
+      message: friendlyMessage || 'Failed to send invoice email',
+    });
+  }
+};
+
+

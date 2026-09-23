@@ -2,12 +2,13 @@ const Item = require('../models/Item');
 const Counter = require('../models/Counter');
 const escapeRegex = require('../utils/escapeRegex');
 const { buildUserCounterId } = require('../utils/counterKey');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 // Get all items
 exports.getItems = async (req, res) => {
   try {
     const companyId = req.companyId || req.user?._id;
-    if (!companyId) { return res.status(401).json({ message: 'Not authorized' }); }
+    if (!companyId && !req.activeProfileId) { return res.status(401).json({ message: 'Not authorized' }); }
 
     const exportAll = req.query.all === 'true';
     const page = parseInt(req.query.page, 10) || 1;
@@ -15,7 +16,7 @@ exports.getItems = async (req, res) => {
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    let query = { user: companyId };
+    let query = { ...getTenantFilter(req) };
 
     if (search) {
       const safeSearch = escapeRegex(search);
@@ -55,7 +56,7 @@ exports.createItem = async (req, res) => {
 
     if (!sku || sku.trim() === '') {
       const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(companyId, 'skuSeq') },
+        { id: buildUserCounterId(companyId, 'skuSeq', req.activeProfileId) },
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
@@ -64,11 +65,10 @@ exports.createItem = async (req, res) => {
       sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
     }
 
-    const item = new Item({
+    const item = new Item(attachTenant(req, {
       sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess,
       salesInfo, purchaseInfo, openingQuantity, defaultTaxRate, rate,
-      user: companyId
-    });
+    }));
 
     const newItem = await item.save();
     res.status(201).json(newItem);
@@ -94,7 +94,7 @@ exports.bulkCreateItems = async (req, res) => {
 
         if (!sku || sku.trim() === '') {
           const counter = await Counter.findOneAndUpdate(
-            { id: buildUserCounterId(companyId, 'skuSeq') },
+            { id: buildUserCounterId(companyId, 'skuSeq', req.activeProfileId) },
             { $inc: { seq: 1 } },
             { returnDocument: 'after', upsert: true }
           );
@@ -103,7 +103,7 @@ exports.bulkCreateItems = async (req, res) => {
           sku = `${prefix}-${resolvedType}-${counter.seq.toString().padStart(3, '0')}`;
         }
 
-        const item = new Item({
+        const item = new Item(attachTenant(req, {
           sku,
           name: itemData.name,
           type: itemData.type,
@@ -114,8 +114,7 @@ exports.bulkCreateItems = async (req, res) => {
           sellingPrice: itemData.sellingPrice,
           taxRate: itemData.taxRate,
           cess: itemData.cess,
-          user: companyId
-        });
+        }));
         
         const savedItem = await item.save();
         createdItems.push(savedItem);
@@ -142,8 +141,7 @@ exports.bulkCreateItems = async (req, res) => {
 // Get item by ID
 exports.getItemById = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const item = await Item.findOne({ _id: req.params.id, user: companyId });
+    const item = await Item.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!item) {
       return res.status(404).json({ message: 'Item not found' });
     }
@@ -156,11 +154,8 @@ exports.getItemById = async (req, res) => {
 // Update item
 exports.updateItem = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     let { sku, name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess, salesInfo, purchaseInfo, openingQuantity, defaultTaxRate, rate } = req.body;
 
-    // If sku is blank, preserve the existing item's SKU — do NOT auto-generate a new one on update
-    // (Auto-generation is only for creation)
     const updateData = {
       name, type, description, hsnCode, unit, purchasePrice, sellingPrice, taxRate, cess,
       salesInfo, purchaseInfo, openingQuantity, defaultTaxRate, rate
@@ -169,11 +164,10 @@ exports.updateItem = async (req, res) => {
       updateData.sku = sku;
     }
 
-    // Remove undefined fields to not overwrite existing values with nulls if omitted in request
     Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
 
     const item = await Item.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...getTenantFilter(req) },
       updateData,
       { returnDocument: 'after', runValidators: true }
     );
@@ -189,8 +183,7 @@ exports.updateItem = async (req, res) => {
 // Delete item
 exports.deleteItem = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const item = await Item.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const item = await Item.findOneAndUpdate({ _id: req.params.id, ...getTenantFilter(req) }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!item) {
       return res.status(404).json({ message: 'Item not found' });
     }
@@ -199,3 +192,4 @@ exports.deleteItem = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+

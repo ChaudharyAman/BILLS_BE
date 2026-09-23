@@ -18,6 +18,7 @@ router.post('/bulk', protect, authorize('invoices', 'create'), invoiceController
 router.post('/bulk-delete', protect, authorize('invoices', 'delete'), invoiceController.bulkDeleteInvoices);
 router.put('/:id', protect, authorize('invoices', 'edit'), invoiceController.updateInvoice);
 router.put('/:id/status', protect, authorize('invoices', 'edit'), invoiceController.updateInvoiceStatus);
+router.post('/:id/send-email', protect, authorize('invoices', 'edit'), invoiceController.sendInvoiceEmail);
 router.delete('/:id', protect, authorize('invoices', 'delete'), invoiceController.deleteInvoice);
 
 module.exports = router;

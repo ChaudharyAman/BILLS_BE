@@ -10,6 +10,7 @@ const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalcul
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseImportedDate } = require('../utils/dateRange');
 const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
@@ -21,6 +22,7 @@ function processItems(items, invoiceType, isIntraState) {
 
 // --- Resolve or auto-create vendor from PDF import ---
 async function resolveVendor({
+  req,
   userId,
   vendorRef,
   vendorName,
@@ -32,8 +34,9 @@ async function resolveVendor({
   vendorEmail,
   vendorPAN,
 }) {
+  const tenantFilter = req ? getTenantFilter(req) : { user: userId };
   if (vendorRef && mongoose.Types.ObjectId.isValid(vendorRef)) {
-    const vendor = await VendorModel.findOne({ _id: vendorRef, user: userId });
+    const vendor = await VendorModel.findOne({ _id: vendorRef, ...tenantFilter });
     if (!vendor) throw new Error('Vendor not found');
 
     // Self-heal: If existing vendor is missing key details, populate them from PDF
@@ -80,7 +83,7 @@ async function resolveVendor({
   if (!name) throw new Error('Vendor name is required for PDF import');
   const safe = escapeRegex(name);
   const existing = await VendorModel.findOne({
-    user: userId,
+    ...tenantFilter,
     isVendor: true,
     name: { $regex: new RegExp('^\\s*' + safe + '\\s*$', 'i') },
   });
@@ -127,8 +130,7 @@ async function resolveVendor({
 
   const gstin = String(vendorGST || '').trim().toUpperCase();
   const state = String(vendorAddressObject?.state || placeOfSupply || '').trim();
-  const vendor = new VendorModel({
-    user: userId,
+  const vendorPayload = {
     name,
     gstin: gstin || undefined,
     gstTreatment: gstin ? 'Registered Business' : 'Unregistered Business',
@@ -154,7 +156,9 @@ async function resolveVendor({
     pan: vendorPAN ? String(vendorPAN).trim().toUpperCase() : undefined,
     isVendor: true,
     isClient: false,
-  });
+  };
+  const vendor = new VendorModel(req ? attachTenant(req, vendorPayload) : { user: userId, ...vendorPayload });
+
   return vendor.save();
 }
 
@@ -171,7 +175,7 @@ exports.getPurchaseOrders = async (req, res) => {
     const status = String(req.query.status || '').trim().toUpperCase();
     const skip = (page - 1) * limit;
 
-    let query = { user: companyId };
+    let query = { ...getTenantFilter(req) };
 
     if (req.query.businessUnit && mongoose.Types.ObjectId.isValid(req.query.businessUnit)) {
       query.businessUnit = req.query.businessUnit;
@@ -185,7 +189,7 @@ exports.getPurchaseOrders = async (req, res) => {
       const safeSearch = escapeRegex(search);
       const Client = require('../models/Client');
       const matchedClients = await Client.find({
-        user: companyId,
+        ...getTenantFilter(req),
         name: { $regex: safeSearch, $options: 'i' }
       }).select('_id').lean();
 
@@ -224,7 +228,7 @@ exports.getPurchaseOrderById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Purchase Order not found' });
     }
-    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId }).select('-attachments.buffer');
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, ...getTenantFilter(req) }).select('-attachments.buffer');
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
     res.json(purchaseOrder);
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -257,6 +261,7 @@ exports.createPurchaseOrder = async (req, res) => {
     // -------------------------------
 
     const vendor = await resolveVendor({
+      req,
       userId: companyId,
       vendorRef: req.body.vendorRef,
       vendorName: req.body.vendorName,
@@ -286,7 +291,7 @@ exports.createPurchaseOrder = async (req, res) => {
       email: vendor.email || '',
     };
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const purchaseOrderPrefix = userSettings?.purchaseOrderPrefix || 'PO';
     let poNumber = buildCustomDocumentNumber({
       prefix: purchaseOrderPrefix,
@@ -296,13 +301,13 @@ exports.createPurchaseOrder = async (req, res) => {
     });
 
     if (poNumber) {
-      const existing = await PurchaseOrder.findOne({ user: companyId, poNumber });
+      const existing = await PurchaseOrder.findOne({ ...getTenantFilter(req), poNumber });
       if (existing) {
         return res.status(400).json({ message: `Purchase order number "${poNumber}" already exists.` });
       }
     } else {
       const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(companyId, 'purchaseOrderNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+        { id: buildUserCounterId(companyId, 'purchaseOrderNo', req.activeProfileId) }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
       );
       poNumber = buildAutoDocumentNumber(purchaseOrderPrefix, counter.seq);
     }
@@ -320,8 +325,8 @@ exports.createPurchaseOrder = async (req, res) => {
     const finalDiscount = Number(discountTotal) || 0;
     const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
 
-    const purchaseOrder = new PurchaseOrder({
-      user: companyId, poNumber, invoiceType: invoiceType || 'Tax Invoice',
+    const purchaseOrder = new PurchaseOrder(attachTenant(req, {
+      poNumber, invoiceType: invoiceType || 'Tax Invoice',
       date, validUntil, paymentMode, paymentTerms,
       vendor: vendorSnapshot, items: processedItems,
       subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
@@ -332,7 +337,7 @@ exports.createPurchaseOrder = async (req, res) => {
       status: status || 'DRAFT', shippingAddress, transport,
       placeOfSupply: vendorState, reverseCharge: !!reverseCharge, notes, privateNotes, terms,
       attachments: processIncomingAttachments(req.body.attachments, []),
-    });
+    }));
 
     const saved = await purchaseOrder.save();
     res.status(201).json(saved);
@@ -349,7 +354,7 @@ exports.updatePurchaseOrder = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Purchase Order not found' });
     }
-    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId });
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
 
     // --- Subscription Plan Check for Edits ---
@@ -394,6 +399,7 @@ exports.updatePurchaseOrder = async (req, res) => {
       customChargeLabel, discountTotal, status, notes, privateNotes, terms, reverseCharge } = req.body;
 
     const vendor = await resolveVendor({
+      req,
       userId: companyId,
       vendorRef,
       vendorName: req.body.vendorName,
@@ -423,7 +429,7 @@ exports.updatePurchaseOrder = async (req, res) => {
       email: vendor.email || '',
     };
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const purchaseOrderPrefix = userSettings?.purchaseOrderPrefix || 'PO';
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
@@ -447,7 +453,7 @@ exports.updatePurchaseOrder = async (req, res) => {
     });
 
     if (requestedPoNumber && requestedPoNumber !== purchaseOrder.poNumber) {
-      const duplicate = await PurchaseOrder.findOne({ user: companyId, poNumber: requestedPoNumber, _id: { $ne: purchaseOrder._id } });
+      const duplicate = await PurchaseOrder.findOne({ ...getTenantFilter(req), poNumber: requestedPoNumber, _id: { $ne: purchaseOrder._id } });
       if (duplicate) {
         return res.status(400).json({ message: `Purchase order number "${requestedPoNumber}" already exists.` });
       }
@@ -481,7 +487,7 @@ exports.updatePurchaseOrder = async (req, res) => {
 exports.deletePurchaseOrder = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId });
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
 
     // --- Subscription Plan Check for Deletes ---
@@ -500,18 +506,18 @@ exports.deletePurchaseOrder = async (req, res) => {
 exports.convertToInvoice = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId });
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
     if (purchaseOrder.status === 'BILLED') return res.status(400).json({ message: 'Already converted to invoice' });
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const counter = await Counter.findOneAndUpdate(
-      { id: buildUserCounterId(companyId, 'invoiceNo') }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
+      { id: buildUserCounterId(companyId, 'invoiceNo', req.activeProfileId) }, { $inc: { seq: 1 } }, { returnDocument: 'after', upsert: true }
     );
     const invoiceNo = buildAutoDocumentNumber(userSettings?.invoicePrefix || 'INV', counter.seq);
 
     // Fetch fresh vendor data to ensure correct address format specially for old purchaseOrders
-    const vendor = await VendorModel.findOne({ _id: purchaseOrder.vendor.vendorRef, user: companyId });
+    const vendor = await VendorModel.findOne({ _id: purchaseOrder.vendor.vendorRef, ...getTenantFilter(req) });
     let vendorSnapshot = purchaseOrder.vendor;
     let resolvedShipping = purchaseOrder.shippingAddress;
 
@@ -557,8 +563,8 @@ exports.convertToInvoice = async (req, res) => {
     const finalDiscount = Number(purchaseOrder.discountTotal) || 0;
     const grandTotal = subTotal + taxTotal + totalExcise + finalShipping + finalPackaging - finalDiscount;
 
-    const invoice = new Invoice({
-      user: purchaseOrder.user, invoiceNo, invoiceType: purchaseOrder.invoiceType,
+    const invoice = new Invoice(attachTenant(req, {
+      invoiceNo, invoiceType: purchaseOrder.invoiceType,
       date: new Date(), dueDate: purchaseOrder.validUntil,
       paymentMode: purchaseOrder.paymentMode, paymentTerms: purchaseOrder.paymentTerms,
       client: vendorSnapshot, items: processedItems,
@@ -572,7 +578,7 @@ exports.convertToInvoice = async (req, res) => {
       placeOfSupply: purchaseOrder.placeOfSupply, reverseCharge: purchaseOrder.reverseCharge,
       notes: purchaseOrder.notes, terms: purchaseOrder.terms, status: 'DRAFT',
       purchaseOrderRef: purchaseOrder._id,
-    });
+    }));
 
     const savedInvoice = await invoice.save();
     await syncIncomeFromInvoice(savedInvoice);
@@ -592,7 +598,7 @@ exports.convertToInvoice = async (req, res) => {
 exports.markPurchaseOrderReceived = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId });
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
     if (purchaseOrder.status === 'BILLED') {
       return res.status(400).json({ message: 'Already converted to invoice' });
@@ -620,7 +626,7 @@ exports.updatePurchaseOrderStatus = async (req, res) => {
     if (!status) {
       return res.status(400).json({ message: 'Status is required' });
     }
-    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId });
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
     if (purchaseOrder.status === 'BILLED') {
       return res.status(400).json({ message: 'Billed purchase orders cannot be updated.' });
@@ -660,24 +666,23 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
     }
     // -------------------------------
 
-    const userSettings = await Settings.findOne({ user: companyId });
+    const userSettings = await Settings.findOne(getTenantFilter(req));
     const COMPANY_STATE = userSettings?.address?.state || process.env.COMPANY_STATE || 'Delhi';
     const COMPANY_GSTIN = userSettings?.gstin || process.env.COMPANY_GSTIN || '';
 
     const createdPurchaseOrders = [];
     for (const qData of purchaseOrders) {
-      let vendor = await VendorModel.findOne({ name: qData.vendorName, user: companyId, isVendor: true });
+      let vendor = await VendorModel.findOne({ name: qData.vendorName, ...getTenantFilter(req), isVendor: true });
       if (!vendor) {
-         vendor = new VendorModel({
+         vendor = new VendorModel(attachTenant(req, {
             name: qData.vendorName || 'Unknown Vendor',
             email: qData.vendorEmail || '',
             phone: qData.vendorPhone || '',
             gstin: qData.vendorGST || '',
             billingAddress: { state: qData.vendorState || '' },
-            user: companyId,
             isVendor: true,
             isClient: false
-         });
+         }));
          await vendor.save();
       }
 
@@ -685,7 +690,7 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
       const isIntraState = !isInterStateSupply(vendorState, COMPANY_STATE, COMPANY_GSTIN);
 
       const counter = await Counter.findOneAndUpdate(
-        { id: buildUserCounterId(companyId, 'purchaseOrderNo') },
+        { id: buildUserCounterId(companyId, 'purchaseOrderNo', req.activeProfileId) },
         { $inc: { seq: 1 } },
         { returnDocument: 'after', upsert: true }
       );
@@ -703,7 +708,7 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
       const finalDiscount = Number(qData.discountTotal) || 0;
       const grandTotal = subTotal + taxTotal + finalShipping + finalPackaging - finalDiscount;
 
-      const purchaseOrder = new PurchaseOrder({
+      const purchaseOrder = new PurchaseOrder(attachTenant(req, {
         poNumber,
         invoiceType,
         date: parseImportedDate(qData.date),
@@ -740,8 +745,7 @@ exports.bulkCreatePurchaseOrders = async (req, res) => {
         shippingCharges: finalShipping, packagingCharges: finalPackaging,
         discountTotal: finalDiscount, grandTotal,
         status: qData.status || 'DRAFT',
-        user: companyId
-      });
+      }));
       
       const savedPurchaseOrder = await purchaseOrder.save();
       createdPurchaseOrders.push(savedPurchaseOrder);
@@ -760,7 +764,7 @@ exports.getPurchaseOrderAttachment = async (req, res) => {
       return res.status(404).json({ message: 'Purchase Order not found' });
     }
 
-    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, user: companyId });
+    const purchaseOrder = await PurchaseOrder.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!purchaseOrder) return res.status(404).json({ message: 'Purchase Order not found' });
 
     const attachment = purchaseOrder.attachments.id(req.params.attachmentId) || purchaseOrder.attachments[req.params.attachmentId];

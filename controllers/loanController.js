@@ -1,12 +1,12 @@
 const Loan = require('../models/Loan');
 const Employee = require('../models/Employee');
 const mongoose = require('mongoose');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 exports.getLoans = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const { employee, status } = req.query;
-    const query = { user: companyId };
+    const query = { ...getTenantFilter(req) };
 
     if (employee && mongoose.Types.ObjectId.isValid(String(employee))) {
       query.employee = employee;
@@ -29,12 +29,11 @@ exports.getLoans = async (req, res) => {
 
 exports.getLoanById = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Loan not found' });
     }
 
-    const loan = await Loan.findOne({ _id: req.params.id, user: companyId })
+    const loan = await Loan.findOne({ _id: req.params.id, ...getTenantFilter(req) })
       .populate('employee', 'firstName lastName employeeId designation');
 
     if (!loan) {
@@ -50,14 +49,13 @@ exports.getLoanById = async (req, res) => {
 
 exports.createLoan = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const { employee, principalAmount, emiAmount, interestRate, status } = req.body;
 
     if (!employee || !mongoose.Types.ObjectId.isValid(String(employee))) {
       return res.status(400).json({ message: 'Valid employee ID is required' });
     }
 
-    const emp = await Employee.findOne({ _id: employee, user: companyId });
+    const emp = await Employee.findOne({ _id: employee, ...getTenantFilter(req) });
     if (!emp) {
       return res.status(404).json({ message: 'Employee not found' });
     }
@@ -68,15 +66,14 @@ exports.createLoan = async (req, res) => {
       return res.status(400).json({ message: 'Principal amount and EMI amount must be positive numbers' });
     }
 
-    const loan = await Loan.create({
-      user: companyId,
+    const loan = await Loan.create(attachTenant(req, {
       employee,
       principalAmount: pAmt,
       emiAmount: eAmt,
       interestRate: Number(interestRate) || 0,
       remainingBalance: pAmt,
       status: status || 'pending_approval'
-    });
+    }));
 
     res.status(201).json(loan);
   } catch (error) {
@@ -87,7 +84,6 @@ exports.createLoan = async (req, res) => {
 
 exports.updateLoanStatus = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     const { status, approverRemarks } = req.body;
     if (!['active', 'rejected', 'closed'].includes(status)) {
       return res.status(400).json({ message: 'Invalid status update' });
@@ -97,7 +93,7 @@ exports.updateLoanStatus = async (req, res) => {
       return res.status(404).json({ message: 'Loan not found' });
     }
 
-    const loan = await Loan.findOne({ _id: req.params.id, user: companyId });
+    const loan = await Loan.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!loan) {
       return res.status(404).json({ message: 'Loan not found' });
     }
@@ -114,12 +110,14 @@ exports.updateLoanStatus = async (req, res) => {
 
 exports.deleteLoan = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) {
       return res.status(404).json({ message: 'Loan not found' });
     }
 
-    const loan = await Loan.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const loan = await Loan.findOneAndUpdate(
+      { _id: req.params.id, ...getTenantFilter(req) },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
     if (!loan) {
       return res.status(404).json({ message: 'Loan not found' });
     }
@@ -130,3 +128,4 @@ exports.deleteLoan = async (req, res) => {
     res.status(500).json({ message: 'Server error deleting loan' });
   }
 };
+

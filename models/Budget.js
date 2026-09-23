@@ -3,6 +3,7 @@ const softDeletePlugin = require('../middleware/softDeletePlugin');
 
 const BudgetSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
   name: { type: String, required: true, trim: true },
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null, index: true },
   department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
@@ -68,6 +69,7 @@ BudgetSchema.pre('findOneAndUpdate', async function() {
   }
 });
 
+BudgetSchema.index({ profile: 1, category: 1, startDate: 1, endDate: 1 });
 BudgetSchema.index({ user: 1, category: 1, startDate: 1, endDate: 1 });
 
 BudgetSchema.plugin(softDeletePlugin);

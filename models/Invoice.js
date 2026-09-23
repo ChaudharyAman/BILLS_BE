@@ -51,6 +51,12 @@ const InvoiceSchema = new mongoose.Schema({
     ref: 'User',
     index: true
   },
+  profile: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ClientProfile',
+    required: false,
+    index: true
+  },
   invoiceNo: {
     type: String,
     required: true,
@@ -226,7 +232,8 @@ const InvoiceSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-InvoiceSchema.index({ user: 1, invoiceNo: 1 }, { unique: true });
+InvoiceSchema.index({ user: 1, profile: 1, invoiceNo: 1 }, { unique: true, sparse: true });
+InvoiceSchema.index({ profile: 1, date: 1 });
 InvoiceSchema.index({ user: 1, date: 1 });
 InvoiceSchema.index({ user: 1, invoiceType: 1 });
 InvoiceSchema.index({ user: 1, gstInvoiceType: 1 });

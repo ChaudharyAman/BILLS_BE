@@ -1,10 +1,12 @@
 const mongoose = require('mongoose');
 const Role = require('../models/Role');
+const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 
 exports.getRoles = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    let data = await Role.find({ user: companyId }).sort({ name: 1 }).lean();
+    const tenantFilter = getTenantFilter(req);
+    let data = await Role.find(tenantFilter).sort({ name: 1 }).lean();
     
     const defaultRoleTemplates = [
       {
@@ -64,7 +66,7 @@ exports.getRoles = async (req, res) => {
         compensationModel: 'SALARIED',
         paymentBasis: 'MONTHLY',
       }
-    ];
+    ].map(tpl => attachTenant(req, tpl));
 
     const existingNames = new Set(data.map(r => r.name));
     const missingRoles = defaultRoleTemplates.filter(r => !existingNames.has(r.name));
@@ -78,7 +80,7 @@ exports.getRoles = async (req, res) => {
           throw insertError;
         }
       }
-      data = await Role.find({ user: companyId }).sort({ name: 1 }).lean();
+      data = await Role.find(tenantFilter).sort({ name: 1 }).lean();
     }
     res.json(data);
   } catch (error) {
@@ -88,11 +90,10 @@ exports.getRoles = async (req, res) => {
 
 exports.getRoleById = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Role not found' });
     }
-    const role = await Role.findOne({ _id: req.params.id, user: companyId });
+    const role = await Role.findOne({ _id: req.params.id, ...getTenantFilter(req) });
     if (!role) return res.status(404).json({ message: 'Role not found' });
     res.json(role);
   } catch (error) {
@@ -103,7 +104,7 @@ exports.getRoleById = async (req, res) => {
 exports.createRole = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const role = await Role.create({ ...req.body, user: companyId });
+    const role = await Role.create(attachTenant(req, { ...req.body, user: companyId }));
     res.status(201).json(role);
   } catch (error) {
     if (error.code === 11000) {
@@ -115,12 +116,11 @@ exports.createRole = async (req, res) => {
 
 exports.updateRole = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Role not found' });
     }
     const role = await Role.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...getTenantFilter(req) },
       { $set: req.body },
       { returnDocument: 'after', runValidators: true }
     );
@@ -136,19 +136,19 @@ exports.updateRole = async (req, res) => {
 
 exports.deleteRole = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Role not found' });
     }
     
     // Check if any active employee is using this role
     const Employee = mongoose.model('Employee');
-    const employeeWithRole = await Employee.findOne({ role: req.params.id, user: companyId }).lean();
+    const tenantFilter = getTenantFilter(req);
+    const employeeWithRole = await Employee.findOne({ role: req.params.id, ...tenantFilter }).lean();
     if (employeeWithRole) {
       return res.status(400).json({ message: 'Cannot delete role as it is assigned to one or more employees.' });
     }
 
-    const role = await Role.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const role = await Role.findOneAndUpdate({ _id: req.params.id, ...tenantFilter }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!role) return res.status(404).json({ message: 'Role not found' });
     res.json({ message: 'Role deleted successfully' });
   } catch (error) {

@@ -32,13 +32,14 @@ const getCategory        = () => require('../models/Category');
 
 // Mirrors resolveParty from expenseController without touching req/res
 async function resolveParty({
-  userId, partyRef, partyName, isVendor, isClient,
+  userId, profileId = null, partyRef, partyName, isVendor, isClient,
   partyGST, partyAddressObject, partyPhone, partyEmail, partyPAN, placeOfSupply,
 }) {
   const ClientModel = getClient();
+  const tenantFilter = profileId ? { user: userId, profile: profileId } : { user: userId };
 
   if (partyRef && mongoose.Types.ObjectId.isValid(partyRef)) {
-    const party = await ClientModel.findOne({ _id: partyRef, user: userId });
+    const party = await ClientModel.findOne({ _id: partyRef, ...tenantFilter });
     if (party) return party;
   }
 
@@ -50,15 +51,15 @@ async function resolveParty({
 
   let existing = null;
   if (gstinClean) {
-    existing = await ClientModel.findOne({ user: userId, gstin: gstinClean });
+    existing = await ClientModel.findOne({ ...tenantFilter, gstin: gstinClean });
   }
   if (!existing && panClean) {
-    existing = await ClientModel.findOne({ user: userId, pan: panClean });
+    existing = await ClientModel.findOne({ ...tenantFilter, pan: panClean });
   }
   if (!existing && name) {
     const escaped = escapeRegex(name).replace(/\s+/g, '\\s+');
     const regex   = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
-    existing = await ClientModel.findOne({ user: userId, name: { $regex: regex } });
+    existing = await ClientModel.findOne({ ...tenantFilter, name: { $regex: regex } });
   }
 
   if (existing) {
@@ -82,7 +83,9 @@ async function resolveParty({
   const state  = String(partyAddressObject?.state || placeOfSupply || '').trim();
 
   const party = new ClientModel({
-    user: userId, name, isVendor: !!isVendor, isClient: !!isClient,
+    user: userId,
+    ...(profileId ? { profile: profileId } : {}),
+    name, isVendor: !!isVendor, isClient: !!isClient,
     gstin: gstin || undefined,
     gstTreatment: gstin ? 'Registered Business' : 'Unregistered Business',
     placeOfSupply: state || 'Delhi',
@@ -102,7 +105,7 @@ async function resolveParty({
 }
 
 // Auto-generate next document number using existing Counter pattern
-async function nextDocNumber(userId, settings, modelName) {
+async function nextDocNumber(userId, settings, modelName, profileId = null) {
   const prefixMap = {
     expenses:       settings?.expensePrefix       || 'EXP',
     invoices:       settings?.invoicePrefix        || 'INV',
@@ -110,7 +113,7 @@ async function nextDocNumber(userId, settings, modelName) {
     purchaseorders: settings?.purchaseOrderPrefix  || 'PO',
   };
   const prefix = prefixMap[modelName] || 'DOC';
-  const counterKey = `${modelName}_${userId}`;
+  const counterKey = profileId ? `${modelName}_${userId}_${profileId}` : `${modelName}_${userId}`;
 
   const counter = await Counter.findOneAndUpdate(
     { id: counterKey },
@@ -189,18 +192,19 @@ function formatLineItems(rawItems = [], grandTotal = 0, defaultItemName = 'Item'
   return items;
 }
 
-async function createExpenseFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Vendor') {
+async function createExpenseFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Vendor', profileId = null) {
   const Expense    = getExpense();
 
   const vendorName = String(overrides?.vendorName || parsedData?.vendorName || fallbackName || 'Vendor').trim();
   const vendor = await resolveParty({
     userId,
+    profileId,
     partyName: vendorName,
     partyGST:  parsedData?.vendorGST  || '',
     isVendor: true, isClient: false,
   });
 
-  const docNumber = await nextDocNumber(userId, settings, 'expenses');
+  const docNumber = await nextDocNumber(userId, settings, 'expenses', profileId);
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
@@ -208,6 +212,7 @@ async function createExpenseFromSubmission(userId, parsedData, overrides, settin
 
   const expense = await Expense.create({
     user: userId,
+    ...(profileId ? { profile: profileId } : {}),
     expenseNumber: overrides?.expenseNumber || docNumber,
     date:          overrides?.date          || parsedData?.invoiceDate || new Date(),
     vendor:        vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: vendorName },
@@ -223,18 +228,19 @@ async function createExpenseFromSubmission(userId, parsedData, overrides, settin
   return expense;
 }
 
-async function createInvoiceFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Customer') {
+async function createInvoiceFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Customer', profileId = null) {
   const Invoice = getInvoice();
 
   const clientName = String(overrides?.clientName || parsedData?.clientName || fallbackName || 'Customer').trim();
   const client = await resolveParty({
     userId,
+    profileId,
     partyName: clientName,
     partyGST:  parsedData?.clientGST  || '',
     isVendor: false, isClient: true,
   });
 
-  const docNumber  = await nextDocNumber(userId, settings, 'invoices');
+  const docNumber  = await nextDocNumber(userId, settings, 'invoices', profileId);
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
@@ -243,6 +249,7 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
 
   const invoice = await Invoice.create({
     user: userId,
+    ...(profileId ? { profile: profileId } : {}),
     invoiceNo:   overrides?.invoiceNo || parsedData?.invoiceNumber || docNumber,
     date:        overrides?.date      || parsedData?.invoiceDate   || new Date(),
     dueDate:     overrides?.dueDate   || parsedData?.dueDate       || null,
@@ -261,18 +268,19 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
   return invoice;
 }
 
-async function createIncomeFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Customer') {
+async function createIncomeFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Customer', profileId = null) {
   const Income = getIncome();
 
   const clientName = String(overrides?.clientName || parsedData?.clientName || parsedData?.vendorName || fallbackName || 'Customer').trim();
   const client = await resolveParty({
     userId,
+    profileId,
     partyName: clientName,
     partyGST:  parsedData?.clientGST  || '',
     isVendor: false, isClient: true,
   });
 
-  const docNumber  = await nextDocNumber(userId, settings, 'incomes');
+  const docNumber  = await nextDocNumber(userId, settings, 'incomes', profileId);
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
@@ -280,6 +288,7 @@ async function createIncomeFromSubmission(userId, parsedData, overrides, setting
 
   const income = await Income.create({
     user: userId,
+    ...(profileId ? { profile: profileId } : {}),
     incomeNumber: overrides?.incomeNumber || docNumber,
     date:         overrides?.date         || parsedData?.invoiceDate || new Date(),
     client:       client ? { clientRef: client._id, name: client.name } : { name: clientName },
@@ -295,24 +304,26 @@ async function createIncomeFromSubmission(userId, parsedData, overrides, setting
   return income;
 }
 
-async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Vendor') {
+async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Vendor', profileId = null) {
   const PurchaseOrder = getPurchaseOrder();
 
   const vendorName = String(overrides?.vendorName || parsedData?.vendorName || fallbackName || 'Vendor').trim();
   const vendor = await resolveParty({
     userId,
+    profileId,
     partyName: vendorName,
     partyGST:  parsedData?.vendorGST  || '',
     isVendor: true, isClient: false,
   });
 
-  const docNumber  = await nextDocNumber(userId, settings, 'purchaseorders');
+  const docNumber  = await nextDocNumber(userId, settings, 'purchaseorders', profileId);
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
 
   const po = await PurchaseOrder.create({
     user: userId,
+    ...(profileId ? { profile: profileId } : {}),
     poNumber:    overrides?.poNumber || docNumber,
     date:        overrides?.date     || parsedData?.invoiceDate || new Date(),
     vendor:      vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: vendorName },
@@ -741,22 +752,23 @@ exports.approveSubmission = async (req, res) => {
 
     const createRecordForData = async (data, customOverrides = {}, fileAttachments = []) => {
       const fallbackName = submission.submitterName || (category === 'invoice' || category === 'income' ? 'Customer' : 'Vendor');
+      const profileId = req.activeProfileId || submission.profile || null;
       let rec, coll;
       switch (category) {
         case 'expense':
-          rec = await createExpenseFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
+          rec = await createExpenseFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName, profileId);
           coll = 'expenses';
           break;
         case 'invoice':
-          rec = await createInvoiceFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
+          rec = await createInvoiceFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName, profileId);
           coll = 'invoices';
           break;
         case 'income':
-          rec = await createIncomeFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
+          rec = await createIncomeFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName, profileId);
           coll = 'incomes';
           break;
         case 'purchaseorder':
-          rec = await createPurchaseOrderFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName);
+          rec = await createPurchaseOrderFromSubmission(companyId, data, customOverrides, settings, fileAttachments, fallbackName, profileId);
           coll = 'purchaseorders';
           break;
         default:

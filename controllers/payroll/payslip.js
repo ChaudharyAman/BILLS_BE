@@ -402,8 +402,32 @@ const emailPayslip = async (req, res) => {
 
     let emailSent = false;
 
-    // 1. Try Brevo HTTP API first (High reliability)
-    if (brevoApiKey && brevoApiKey.startsWith('xkeysib-')) {
+    // 1. Custom Tenant SMTP if enabled in Settings
+    if (settings?.smtp?.enabled && settings.smtp.host) {
+      try {
+        console.log(`[EMAIL] Dispatching payslip via custom SMTP (${settings.smtp.host}) to ${employeeEmail}`);
+        const mailService = require('../../utils/mailService');
+        await mailService.sendMail({
+          to: employeeEmail,
+          subject: subjectStr,
+          html: emailHtmlBody,
+          attachments: [
+            {
+              filename: attachmentFilename,
+              content: pdfBuffer,
+              contentType: 'application/pdf',
+            },
+          ],
+          settings,
+        });
+        emailSent = true;
+      } catch (smtpErr) {
+        console.error('[EMAIL] Custom SMTP failed, falling back to system mailer:', smtpErr.message);
+      }
+    }
+
+    // 2. Try Brevo HTTP API (High reliability fallback)
+    if (!emailSent && brevoApiKey && brevoApiKey.startsWith('xkeysib-')) {
       try {
         console.log(`[EMAIL] Dispatching payslip via Brevo API to ${employeeEmail}`);
         const brevoPayload = {
@@ -429,31 +453,14 @@ const emailPayslip = async (req, res) => {
         console.log(`[EMAIL] Brevo API Success messageId: ${apiRes.data?.messageId}`);
         emailSent = true;
       } catch (apiErr) {
-        console.error('[EMAIL] Brevo API failed, falling back to SMTP:', apiErr.response?.data || apiErr.message);
+        console.error('[EMAIL] Brevo API failed, falling back to system SMTP:', apiErr.response?.data || apiErr.message);
       }
     }
 
-    // 2. Fallback to Nodemailer SMTP
+    // 3. Fallback to System Nodemailer SMTP
     if (!emailSent) {
-      const smtpHost = process.env.SMTP_HOST || process.env.EMAIL_HOST || 'smtp-relay.brevo.com';
-      const smtpPort = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT) || 587;
-      const smtpUser = process.env.SMTP_USER || process.env.EMAIL_USER || '';
-      const smtpPass = process.env.SMTP_PASS || brevoApiKey || '';
-      const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
-
-      const transportOptions = {
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpSecure,
-        tls: { rejectUnauthorized: false }
-      };
-      if (smtpUser) {
-        transportOptions.auth = { user: smtpUser, pass: smtpPass };
-      }
-
-      const transporter = nodemailer.createTransport(transportOptions);
-      await transporter.sendMail({
-        from: `"${senderName}" <${senderEmail}>`,
+      const mailService = require('../../utils/mailService');
+      await mailService.sendMail({
         to: employeeEmail,
         subject: subjectStr,
         html: emailHtmlBody,
@@ -464,6 +471,7 @@ const emailPayslip = async (req, res) => {
             contentType: 'application/pdf',
           },
         ],
+        settings: null, // triggers env fallback
       });
     }
 
