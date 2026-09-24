@@ -16,6 +16,8 @@ router.post('/folders', protect, companyDocumentController.createFolder);
 router.delete('/folders/:id', protect, companyDocumentController.deleteFolder);
 router.get('/:id/view', protect, companyDocumentController.viewDocument);
 router.get('/:id/download', protect, companyDocumentController.downloadDocument);
+router.post('/send-email', protect, companyDocumentController.sendDocumentEmail);
+router.post('/:id/send-email', protect, companyDocumentController.sendDocumentEmail);
 router.patch('/:id', protect, companyDocumentController.updateDocument);
 router.delete('/:id', protect, companyDocumentController.deleteDocument);
 

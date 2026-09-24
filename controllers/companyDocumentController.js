@@ -349,3 +349,134 @@ exports.deleteFolder = async (req, res) => {
     res.status(500).json({ message: error.message || 'Failed to delete folder' });
   }
 };
+
+// POST /api/company-documents/send-email or POST /api/company-documents/:id/send-email
+exports.sendDocumentEmail = async (req, res) => {
+  try {
+    const tenantFilter = getTenantFilter(req);
+    const { documentIds, documentId, recipientEmail, cc, subject, message } = req.body;
+
+    const targetRecipient = (recipientEmail || '').trim();
+    if (!targetRecipient) {
+      return res.status(400).json({ message: 'Recipient email address is required.' });
+    }
+
+    const rawIds = Array.isArray(documentIds) && documentIds.length > 0
+      ? documentIds
+      : (documentId ? [documentId] : (req.params.id ? [req.params.id] : []));
+
+    const validIds = rawIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (validIds.length === 0) {
+      return res.status(400).json({ message: 'Please select at least one document to send.' });
+    }
+
+    const docs = await CompanyDocument.find({
+      _id: { $in: validIds },
+      ...tenantFilter,
+      isDeleted: { $ne: true },
+    });
+
+    if (!docs.length) {
+      return res.status(404).json({ message: 'Selected document(s) not found.' });
+    }
+
+    const Settings = require('../models/Settings');
+    const settings = await Settings.findOne(tenantFilter).lean() || {};
+    const companyName = settings.companyName || 'Flance';
+
+    const attachments = [];
+    for (const d of docs) {
+      if (d.buffer) {
+        const buf = Buffer.isBuffer(d.buffer) ? d.buffer : Buffer.from(d.buffer);
+        attachments.push({
+          filename: d.originalName || `${d.title || 'Document'}.pdf`,
+          content: buf,
+          contentType: d.mimeType || 'application/octet-stream',
+        });
+      }
+    }
+
+    const mailService = require('../utils/mailService');
+    const defaultSubject = `Document${docs.length > 1 ? 's' : ''}: ${docs[0].title || 'Shared Document'} from ${companyName}`;
+    const emailSubject = (subject || defaultSubject).trim();
+
+    const emailHtml = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head><meta charset="utf-8"></head>
+      <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1e293b;">
+        <table width="100%" border="0" cellpadding="0" cellspacing="0" style="padding: 32px 16px;">
+          <tr>
+            <td align="center">
+              <table width="100%" border="0" cellpadding="0" cellspacing="0" style="max-width: 580px; background-color: #ffffff; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 20px rgba(0,0,0,0.05);">
+                <tr>
+                  <td style="padding: 24px 32px; border-bottom: 1px solid #f1f5f9; background: #ffffff;">
+                    <h2 style="margin: 0; font-size: 20px; font-weight: 700; color: #0f172a;">${companyName}</h2>
+                    <div style="font-size: 12px; color: #64748b; margin-top: 4px;">Shared Documents Vault</div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 24px 32px;">
+                    <p style="margin: 0 0 14px; font-size: 14px; color: #334155; line-height: 1.5;">
+                      Hello,
+                    </p>
+                    <p style="margin: 0 0 16px; font-size: 14px; color: #475569; line-height: 1.5;">
+                      Please find the attached document${docs.length > 1 ? 's' : ''} shared by <strong>${companyName}</strong>.
+                    </p>
+                    ${message ? `
+                      <div style="margin: 16px 0; padding: 14px 18px; background-color: #f8fafc; border-left: 4px solid #0d9488; border-radius: 8px; font-size: 13px; color: #334155; line-height: 1.5;">
+                        ${message.replace(/\n/g, '<br/>')}
+                      </div>
+                    ` : ''}
+                    <div style="margin-top: 20px; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 16px; background-color: #fafbfc;">
+                      <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; margin-bottom: 8px;">Attached Document${docs.length > 1 ? 's' : ''} (${docs.length})</div>
+                      ${docs.map((d) => `
+                        <div style="padding: 6px 0; font-size: 13px; color: #1e293b; border-bottom: 1px dashed #e2e8f0; display: flex; justify-content: space-between;">
+                          <span>📄 <strong>${d.title}</strong> <span style="font-size: 11px; color: #64748b;">(${d.originalName})</span></span>
+                          <span style="font-size: 11px; color: #0d9488; font-weight: 600;">${d.category}</span>
+                        </div>
+                      `).join('')}
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 16px 32px; background-color: #f8fafc; border-top: 1px solid #f1f5f9; font-size: 11px; color: #94a3b8; text-align: center;">
+                    Sent securely via ${companyName}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `;
+
+    const mailOptions = {
+      to: targetRecipient,
+      subject: emailSubject,
+      html: emailHtml,
+      attachments,
+      settings,
+    };
+    if (cc && typeof cc === 'string' && cc.trim()) {
+      mailOptions.cc = cc.trim();
+    }
+
+    const info = await mailService.sendMail(mailOptions);
+    return res.json({
+      success: true,
+      message: `Document${docs.length > 1 ? 's' : ''} successfully sent to ${targetRecipient}!`,
+      messageId: info.messageId,
+      recipient: targetRecipient,
+    });
+  } catch (error) {
+    console.error('Error sending company document email:', error);
+    const { formatSmtpError } = require('../utils/mailService');
+    const friendlyMessage = typeof formatSmtpError === 'function' ? formatSmtpError(error) : error.message;
+    return res.status(400).json({
+      success: false,
+      message: friendlyMessage || 'Failed to send document email',
+    });
+  }
+};
