@@ -18,6 +18,7 @@ const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = re
 const { getTenantFilter, getTenantMatch, attachTenant } = require('../utils/tenantHelper');
 
 const User = require('../models/User');
+const CompanyDocument = require('../models/CompanyDocument');
 const PDF_IMPORT_SOURCE = 'pdf';
 const ACTIVE_INVOICE_STATUSES = ['SENT', 'PAID', 'RECEIVED', 'PARTIAL', 'UNPAID'];
 const TDS_SECTION_LABELS = {
@@ -2003,6 +2004,7 @@ exports.sendInvoiceEmail = async (req, res) => {
       attachInvoiceFiles = true,
       selectedAttachmentIds,
       extraAttachments,
+      companyDocumentIds,
     } = req.body;
     const targetRecipient = (recipientEmail || invoice.client?.email || invoice.clientEmail || '').trim();
 
@@ -2087,6 +2089,33 @@ exports.sendInvoiceEmail = async (req, res) => {
           } catch (extraErr) {
             console.warn('[Invoice Email] Failed to parse extra attachment:', extra.filename, extraErr.message);
           }
+        }
+      }
+    }
+
+    // 4. Company documents selected from Documents Vault (folder storage)
+    if (Array.isArray(companyDocumentIds) && companyDocumentIds.length > 0) {
+      const validCompanyDocIds = companyDocumentIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+      if (validCompanyDocIds.length > 0) {
+        try {
+          const companyDocs = await CompanyDocument.find({
+            _id: { $in: validCompanyDocIds },
+            ...tenantFilter,
+            isDeleted: { $ne: true },
+          });
+
+          for (const cDoc of companyDocs) {
+            if (cDoc && cDoc.buffer) {
+              const buf = Buffer.isBuffer(cDoc.buffer) ? cDoc.buffer : Buffer.from(cDoc.buffer);
+              attachments.push({
+                filename: cDoc.originalName || `${cDoc.title || 'Document'}.pdf`,
+                content: buf,
+                contentType: cDoc.mimeType || 'application/octet-stream',
+              });
+            }
+          }
+        } catch (cDocErr) {
+          console.warn('[Invoice Email] Failed to attach company document from vault:', cDocErr.message);
         }
       }
     }
