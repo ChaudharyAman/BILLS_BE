@@ -92,7 +92,7 @@ const SettingsSchema = new mongoose.Schema({
     maxSubmissionsPerDay: { type: Number, default: 100, min: 1, max: 10000 },
   },
 
-  // SMTP Mail Server Configuration
+  // SMTP Mail Server Configuration (Single / Legacy & Synchronized Default)
   smtp: {
     enabled:   { type: Boolean, default: false },
     host:      { type: String, default: '' },
@@ -106,6 +106,24 @@ const SettingsSchema = new mongoose.Schema({
     fromName:  { type: String, default: '' },
     replyTo:   { type: String, default: '' },
   },
+
+  // Multiple SMTP Mail Server Configurations
+  smtpConfigs: [{
+    title:     { type: String, default: 'Default SMTP' },
+    enabled:   { type: Boolean, default: true },
+    isDefault: { type: Boolean, default: false },
+    host:      { type: String, default: '' },
+    port:      { type: Number, default: 587 },
+    secure:    { type: Boolean, default: false },
+    auth: {
+      user:    { type: String, default: '' },
+      pass:    { type: String, default: '' }, // Stored encrypted via encryptPIIField
+    },
+    fromEmail: { type: String, default: '' },
+    fromName:  { type: String, default: '' },
+    replyTo:   { type: String, default: '' },
+    createdAt: { type: Date, default: Date.now },
+  }],
 
 }, { timestamps: true });
 

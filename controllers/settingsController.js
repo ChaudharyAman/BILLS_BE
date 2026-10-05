@@ -19,6 +19,15 @@ const maskIntegrationSecrets = (settingsDoc) => {
   if (obj.smtp?.auth?.pass) {
     obj.smtp.auth.pass = SECRET_MASK;
   }
+  if (Array.isArray(obj.smtpConfigs)) {
+    obj.smtpConfigs = obj.smtpConfigs.map((cfg) => {
+      const copy = { ...cfg };
+      if (copy.auth?.pass) {
+        copy.auth = { ...copy.auth, pass: SECRET_MASK };
+      }
+      return copy;
+    });
+  }
   return obj;
 };
 
@@ -44,11 +53,31 @@ exports.getSettings = async (req, res) => {
       settings = await Settings.findById(settings._id).populate('user', 'username email phone avatar');
     }
 
+    // Auto-populate smtpConfigs if missing but legacy smtp exists
+    if ((!settings.smtpConfigs || settings.smtpConfigs.length === 0) && settings.smtp && settings.smtp.host) {
+      settings.smtpConfigs = [{
+        title: 'Primary SMTP',
+        enabled: Boolean(settings.smtp.enabled),
+        isDefault: true,
+        host: settings.smtp.host || '',
+        port: Number(settings.smtp.port) || 587,
+        secure: Boolean(settings.smtp.secure),
+        auth: {
+          user: settings.smtp.auth?.user || '',
+          pass: settings.smtp.auth?.pass || '',
+        },
+        fromEmail: settings.smtp.fromEmail || '',
+        fromName: settings.smtp.fromName || '',
+        replyTo: settings.smtp.replyTo || '',
+      }];
+    }
+
     const isShareMode = Boolean(req.isSharedAccess || req.isSharedViewOnly || req.profileAccessSource === 'share' || req.isShareToken);
     if (isShareMode) {
       const sanitized = settings.toObject ? settings.toObject() : { ...settings };
       // Completely strip sensitive credentials so they are never exposed in share sessions
       delete sanitized.smtp;
+      delete sanitized.smtpConfigs;
       delete sanitized.integration;
       delete sanitized.publicSubmissions;
       if (sanitized.user && typeof sanitized.user === 'object') {
@@ -125,7 +154,7 @@ exports.updateSettings = async (req, res) => {
       companyName, contactName, website, email, phone, gstin, pan,
       address, defaultTerms, defaultNotes, bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
-      defaultCurrency, timezone, dateFormat, integration, smtp,
+      defaultCurrency, timezone, dateFormat, integration, smtp, smtpConfigs,
       signatureEnabled, showSignatureOnInvoices, showSignatureOnQuotes, showSignatureOnPurchaseOrders, showLogoOnDocuments,
       logoUrl, signatureUrl
     } = req.body;
@@ -142,7 +171,55 @@ exports.updateSettings = async (req, res) => {
       }
     }
 
-    // Process custom SMTP settings with password encryption / preservation
+    // Process multiple SMTP configurations
+    let safeSmtpConfigs = undefined;
+    if (smtpConfigs !== undefined) {
+      try {
+        const rawConfigs = typeof smtpConfigs === 'string' ? JSON.parse(smtpConfigs) : smtpConfigs;
+        if (Array.isArray(rawConfigs)) {
+          safeSmtpConfigs = rawConfigs.map((cfg, idx) => {
+            const cleanCfg = { ...cfg };
+            cleanCfg.title = (cleanCfg.title || `SMTP Server ${idx + 1}`).trim();
+            cleanCfg.host = (cleanCfg.host || '').trim();
+            cleanCfg.port = Number(cleanCfg.port) || 587;
+            cleanCfg.secure = cleanCfg.secure === true || cleanCfg.secure === 'true' || Number(cleanCfg.port) === 465;
+            cleanCfg.enabled = cleanCfg.enabled !== false;
+            cleanCfg.isDefault = Boolean(cleanCfg.isDefault);
+            cleanCfg.fromEmail = (cleanCfg.fromEmail || '').trim();
+            cleanCfg.fromName = (cleanCfg.fromName || '').trim();
+            cleanCfg.replyTo = (cleanCfg.replyTo || '').trim();
+
+            if (!cleanCfg.auth) cleanCfg.auth = { user: '', pass: '' };
+            cleanCfg.auth.user = (cleanCfg.auth.user || '').trim();
+
+            const existing = settings?.smtpConfigs?.find(
+              (c) => (c._id && cleanCfg._id && c._id.toString() === cleanCfg._id.toString()) ||
+                     (c.title && c.title === cleanCfg.title)
+            );
+
+            if (cleanCfg.auth.pass === SECRET_MASK || !cleanCfg.auth.pass) {
+              cleanCfg.auth.pass = existing?.auth?.pass || (cleanCfg.isDefault ? settings?.smtp?.auth?.pass : '') || '';
+            } else {
+              let passToSave = String(cleanCfg.auth.pass).trim();
+              if (/gmail|google/i.test(cleanCfg.host || '') || /^[a-zA-Z\s]{16,24}$/.test(passToSave)) {
+                const noSpace = passToSave.replace(/\s+/g, '');
+                if (noSpace.length === 16) passToSave = noSpace;
+              }
+              cleanCfg.auth.pass = encryptPIIField(passToSave);
+            }
+            return cleanCfg;
+          });
+
+          if (safeSmtpConfigs.length > 0 && !safeSmtpConfigs.some((c) => c.isDefault)) {
+            safeSmtpConfigs[0].isDefault = true;
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to parse smtpConfigs payload:', err.message);
+      }
+    }
+
+    // Process legacy/fallback custom SMTP settings with password encryption / preservation
     let safeSmtp = undefined;
     if (smtp !== undefined) {
       try {
@@ -235,7 +312,24 @@ exports.updateSettings = async (req, res) => {
       if (newLogoUrl) settingsData.logoUrl = newLogoUrl;
       if (newSignatureUrl) settingsData.signatureUrl = newSignatureUrl;
       if (safeIntegration !== undefined) settingsData.integration = safeIntegration;
-      if (safeSmtp !== undefined) settingsData.smtp = safeSmtp;
+      if (safeSmtpConfigs !== undefined) {
+        settingsData.smtpConfigs = safeSmtpConfigs;
+        const def = safeSmtpConfigs.find(c => c.isDefault) || safeSmtpConfigs[0];
+        if (def) {
+          settingsData.smtp = {
+            enabled: Boolean(def.enabled),
+            host: def.host,
+            port: def.port,
+            secure: def.secure,
+            auth: { user: def.auth?.user || '', pass: def.auth?.pass || '' },
+            fromEmail: def.fromEmail || '',
+            fromName: def.fromName || '',
+            replyTo: def.replyTo || '',
+          };
+        }
+      } else if (safeSmtp !== undefined) {
+        settingsData.smtp = safeSmtp;
+      }
       settings = new Settings(settingsData);
     } else {
       // Update existing
@@ -246,14 +340,42 @@ exports.updateSettings = async (req, res) => {
         if (!settings.integration) {
           settings.integration = {};
         }
-        // Assign fields to the existing integration subdocument to preserve omitted secrets
         Object.assign(settings.integration, safeIntegration);
       }
-      if (safeSmtp !== undefined) {
+      if (safeSmtpConfigs !== undefined) {
+        settings.smtpConfigs = safeSmtpConfigs;
+        const def = safeSmtpConfigs.find(c => c.isDefault) || safeSmtpConfigs[0];
+        if (def) {
+          settings.smtp = {
+            enabled: Boolean(def.enabled),
+            host: def.host,
+            port: def.port,
+            secure: def.secure,
+            auth: { user: def.auth?.user || '', pass: def.auth?.pass || '' },
+            fromEmail: def.fromEmail || '',
+            fromName: def.fromName || '',
+            replyTo: def.replyTo || '',
+          };
+        }
+      } else if (safeSmtp !== undefined) {
         if (!settings.smtp) {
           settings.smtp = {};
         }
         Object.assign(settings.smtp, safeSmtp);
+        if (!settings.smtpConfigs || settings.smtpConfigs.length === 0) {
+          settings.smtpConfigs = [{
+            title: 'Primary SMTP',
+            enabled: Boolean(settings.smtp.enabled),
+            isDefault: true,
+            host: settings.smtp.host || '',
+            port: settings.smtp.port || 587,
+            secure: Boolean(settings.smtp.secure),
+            auth: settings.smtp.auth,
+            fromEmail: settings.smtp.fromEmail,
+            fromName: settings.smtp.fromName,
+            replyTo: settings.smtp.replyTo,
+          }];
+        }
       }
     }
 
@@ -463,6 +585,128 @@ exports.regeneratePublicToken = async (req, res) => {
 };
 
 /**
+ * POST /api/settings/public-submissions/send-email
+ * Share public submission portal upload URL via email.
+ */
+exports.sendPublicPortalEmail = async (req, res) => {
+  try {
+    const { recipientEmail, customSubject, customMessage, smtpConfigId, portalLink: requestedLink } = req.body;
+
+    if (!recipientEmail || !recipientEmail.trim()) {
+      return res.status(400).json({ message: 'Recipient email address is required.' });
+    }
+
+    const companyId = req.companyId || req.user?._id;
+    const tenantFilter = getTenantFilter(req);
+    let settings = await Settings.findOne(tenantFilter);
+    if (!settings) {
+      settings = new Settings(attachTenant(req, { user: companyId }));
+      await settings.save();
+    }
+
+    const ps = settings.publicSubmissions;
+    if (!ps?.enabled || !ps?.token) {
+      return res.status(400).json({ message: 'Public submission portal is not active or token has not been generated.' });
+    }
+
+    const portalUrl = (requestedLink && requestedLink.trim()) || buildPortalLink(ps.token);
+    const companyName = ps.companyDisplayName || settings.companyName || req.user?.username || 'Our Company';
+    const subject = (customSubject && customSubject.trim()) || `Document Upload Request: ${companyName}`;
+
+    // Format allowed categories for display
+    const catLabels = {
+      invoice: 'Invoices & Bills',
+      expense: 'Expense Receipts',
+      income: 'Proof of Payment / Receipts',
+      purchaseorder: 'Purchase Orders',
+      custom: 'Custom Documents',
+    };
+    const allowed = (ps.allowedCategories || ['invoice', 'expense', 'income', 'purchaseorder'])
+      .map((c) => catLabels[c] || c)
+      .join(', ');
+
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 28px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
+        <div style="margin-bottom: 24px; text-align: center;">
+          <div style="display: inline-block; padding: 8px 18px; background-color: #f0fdfa; border: 1px solid #ccfbf1; border-radius: 9999px; color: #0d9488; font-size: 13px; font-weight: 700;">
+            📥 Document Upload Request
+          </div>
+          <h2 style="color: #0f172a; margin-top: 16px; margin-bottom: 8px; font-size: 22px; font-weight: 700;">
+            Upload Documents to ${companyName}
+          </h2>
+          <p style="color: #64748b; font-size: 14px; margin: 0; line-height: 1.5;">
+            You have been invited to securely submit invoices, receipts, and bills directly to our finance inbox.
+          </p>
+        </div>
+
+        ${customMessage ? `
+          <div style="margin: 20px 0; padding: 14px 18px; background-color: #f8fafc; border-left: 4px solid #0d9488; border-radius: 6px; font-size: 13px; color: #334155; line-height: 1.5;">
+            <em>"${customMessage}"</em>
+          </div>
+        ` : ''}
+
+        <div style="margin: 22px 0; padding: 16px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; font-size: 13px;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+              <td style="padding: 6px 0; color: #64748b; font-weight: 500; width: 38%;">Organization:</td>
+              <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${companyName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Accepted Documents:</td>
+              <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${allowed || 'Invoices, Receipts, Bills'}</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Access:</td>
+              <td style="padding: 6px 0; font-weight: 600; color: #059669;">Direct Upload (No login required)</td>
+            </tr>
+          </table>
+        </div>
+
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${portalUrl}" style="background-color: #0d9488; color: #ffffff; padding: 13px 32px; border-radius: 10px; text-decoration: none; font-weight: 700; font-size: 14px; display: inline-block; box-shadow: 0 2px 4px rgba(13, 148, 136, 0.2);">
+            Open Document Upload Portal →
+          </a>
+        </div>
+
+        <p style="font-size: 12px; color: #94a3b8; word-break: break-all; margin-top: 24px; border-top: 1px solid #f1f5f9; padding-top: 16px;">
+          Direct portal link: <a href="${portalUrl}" style="color: #0d9488;">${portalUrl}</a>
+        </p>
+      </div>
+    `;
+
+    await sendMail({
+      to: recipientEmail.trim(),
+      subject,
+      html,
+      settings,
+      overrideConfig: smtpConfigId ? { configId: smtpConfigId } : undefined,
+    });
+
+    let senderIdentifier = '';
+    if (smtpConfigId && Array.isArray(settings?.smtpConfigs)) {
+      const match = settings.smtpConfigs.find(
+        (c) => (c._id && c._id.toString() === smtpConfigId.toString()) || c.title === smtpConfigId
+      );
+      if (match) {
+        senderIdentifier = match.fromEmail || match.auth?.user || match.title;
+      }
+    } else if (settings?.smtp?.fromEmail || settings?.smtp?.auth?.user) {
+      senderIdentifier = settings.smtp.fromEmail || settings.smtp.auth?.user;
+    }
+
+    const viaText = senderIdentifier ? ` via ${senderIdentifier}` : '';
+
+    return res.json({
+      success: true,
+      message: `Upload portal link successfully sent to ${recipientEmail.trim()}${viaText}!`,
+    });
+  } catch (error) {
+    console.error('sendPublicPortalEmail error:', error);
+    return res.status(500).json({ message: error.message || 'Failed to send portal email.' });
+  }
+};
+
+/**
  * POST /api/settings/smtp/test
  * Test SMTP credentials and send a test verification email.
  */
@@ -473,27 +717,56 @@ exports.testSmtpConnection = async (req, res) => {
       return res.status(401).json({ message: 'Not authorized' });
     }
 
-    const { testRecipient, host, port, secure, user, pass, fromEmail, fromName, replyTo } = req.body;
+    const { testRecipient, host, port, secure, user, pass, fromEmail, fromName, replyTo, title, configId } = req.body;
     const recipient = (testRecipient || req.user?.email || '').trim();
 
     if (!recipient) {
       return res.status(400).json({ message: 'Recipient email address is required for sending the test email.' });
     }
 
+    const tenantFilter = getTenantFilter(req);
+    const settings = await Settings.findOne(tenantFilter);
+
     let overrideConfig = null;
 
-    if (host) {
+    if (configId && settings?.smtpConfigs?.length) {
+      const match = settings.smtpConfigs.find((c) => c._id?.toString() === configId.toString());
+      if (match) {
+        let resolvedPass = match.auth?.pass;
+        if (resolvedPass) {
+          resolvedPass = decryptPIIField(resolvedPass);
+        }
+        overrideConfig = {
+          title: match.title,
+          host: match.host.trim(),
+          port: Number(match.port) || 587,
+          secure: match.secure === true || Number(match.port) === 465,
+          user: (match.auth?.user || '').trim(),
+          pass: resolvedPass || '',
+          fromEmail: (match.fromEmail || match.auth?.user || req.user?.email || '').trim(),
+          fromName: match.fromName || 'Flance Mailer',
+          replyTo: match.replyTo ? match.replyTo.trim() : undefined,
+        };
+      }
+    }
+
+    if (!overrideConfig && host) {
       let resolvedPass = pass;
       // If pass is masked or empty, read existing stored password from settings
       if (!resolvedPass || resolvedPass === SECRET_MASK) {
-        const tenantFilter = getTenantFilter(req);
-        const settings = await Settings.findOne(tenantFilter);
-        if (settings?.smtp?.auth?.pass) {
+        if (configId && settings?.smtpConfigs) {
+          const match = settings.smtpConfigs.find((c) => c._id?.toString() === configId.toString());
+          if (match?.auth?.pass) {
+            resolvedPass = decryptPIIField(match.auth.pass);
+          }
+        }
+        if (!resolvedPass && settings?.smtp?.auth?.pass) {
           resolvedPass = decryptPIIField(settings.smtp.auth.pass);
         }
       }
 
       overrideConfig = {
+        title: title || 'SMTP Server',
         host: host.trim(),
         port: Number(port) || 587,
         secure: secure === true || secure === 'true' || Number(port) === 465,
@@ -505,21 +778,19 @@ exports.testSmtpConnection = async (req, res) => {
       };
     }
 
-    const tenantFilter = getTenantFilter(req);
-    const settings = await Settings.findOne(tenantFilter);
-
     // Verify SMTP connection
     await verifySmtp(overrideConfig || settings?.smtp);
 
     // Send styled verification email
-    const subject = `[Flance] SMTP Test Verification - ${new Date().toLocaleTimeString()}`;
+    const configTitle = overrideConfig?.title || 'Default SMTP Server';
+    const subject = `[Flance] SMTP Test Verification: ${configTitle} - ${new Date().toLocaleTimeString()}`;
     const testHtml = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 24px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
         <div style="text-align: center; margin-bottom: 24px;">
           <div style="display: inline-block; padding: 8px 16px; background: #ecfdf5; border-radius: 9999px; color: #059669; font-weight: 600; font-size: 13px;">
             ✓ SMTP Connected Successfully
           </div>
-          <h2 style="color: #0f172a; margin-top: 16px; margin-bottom: 8px; font-size: 20px;">Your Email Server is Working!</h2>
+          <h2 style="color: #0f172a; margin-top: 16px; margin-bottom: 8px; font-size: 20px;">${configTitle} is Working!</h2>
           <p style="color: #64748b; font-size: 14px; line-height: 1.5; margin: 0;">
             This confirmation email was successfully delivered using your custom SMTP configuration in <strong>Flance</strong>.
           </p>
@@ -530,7 +801,8 @@ exports.testSmtpConnection = async (req, res) => {
             Connection Details
           </div>
           <table style="width: 100%; font-size: 13px; color: #334155; border-collapse: collapse;">
-            <tr><td style="padding: 4px 0; color: #64748b; width: 35%;">SMTP Host:</td><td style="padding: 4px 0; font-weight: 600;">${overrideConfig?.host || settings?.smtp?.host || 'Default'}</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b; width: 35%;">Configuration:</td><td style="padding: 4px 0; font-weight: 600;">${configTitle}</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b;">SMTP Host:</td><td style="padding: 4px 0; font-weight: 600;">${overrideConfig?.host || settings?.smtp?.host || 'Default'}</td></tr>
             <tr><td style="padding: 4px 0; color: #64748b;">Port & Encryption:</td><td style="padding: 4px 0; font-weight: 600;">${overrideConfig?.port || settings?.smtp?.port || 587} (${(overrideConfig?.secure || settings?.smtp?.secure) ? 'SSL/TLS' : 'STARTTLS'})</td></tr>
             <tr><td style="padding: 4px 0; color: #64748b;">Sender:</td><td style="padding: 4px 0; font-weight: 600;">${overrideConfig?.fromEmail || settings?.smtp?.fromEmail || 'Default'}</td></tr>
             <tr><td style="padding: 4px 0; color: #64748b;">Delivered At:</td><td style="padding: 4px 0; font-weight: 600;">${new Date().toUTCString()}</td></tr>
@@ -547,7 +819,7 @@ exports.testSmtpConnection = async (req, res) => {
       to: recipient,
       subject,
       html: testHtml,
-      text: `Flance SMTP Test Email\n\nYour SMTP server is working correctly!\nHost: ${overrideConfig?.host || settings?.smtp?.host}\nTimestamp: ${new Date().toISOString()}`,
+      text: `Flance SMTP Test Email\n\nYour SMTP server (${configTitle}) is working correctly!\nHost: ${overrideConfig?.host || settings?.smtp?.host}\nTimestamp: ${new Date().toISOString()}`,
       settings,
       overrideConfig,
     });

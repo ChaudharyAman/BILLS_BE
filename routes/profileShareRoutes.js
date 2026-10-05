@@ -17,6 +17,7 @@ router.get('/', protect, authorize('teamMembers', 'view'), profileShareControlle
 router.post('/', protect, authorize('teamMembers', 'create'), profileShareController.createShare);
 router.patch('/:shareId', protect, authorize('teamMembers', 'edit'), profileShareController.updateShare);
 router.post('/:shareId/revoke', protect, authorize('teamMembers', 'delete'), profileShareController.revokeShare);
+router.post('/:shareId/send-email', protect, authorize('teamMembers', 'create'), profileShareController.sendShareEmail);
 
 // Export router and public resolver router
 const publicShareRouter = express.Router();

@@ -17,6 +17,7 @@ router.post('/smtp/test', protect, authorize('settings', 'edit'), settingsContro
 // ── Public Submission Portal config ──────────────────────────────────────────
 // regenerate-token must be declared before the generic PATCH to avoid routing conflicts
 router.post('/public-submissions/regenerate-token', protect, authorize('settings', 'edit'), settingsController.regeneratePublicToken);
+router.post('/public-submissions/send-email', protect, authorize('settings', 'view'), settingsController.sendPublicPortalEmail);
 router.get('/public-submissions',  protect, authorize('settings', 'view'), settingsController.getPublicSubmissionsConfig);
 router.patch('/public-submissions', protect, authorize('settings', 'edit'), settingsController.updatePublicSubmissionsConfig);
 
