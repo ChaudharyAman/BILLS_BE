@@ -442,7 +442,8 @@ exports.createExpense = async (req, res) => {
       dueDate,
       status,
       terms,
-      privateNotes
+      privateNotes,
+      paymentDate
     } = req.body;
 
     let resolvedVendor = null;
@@ -513,6 +514,7 @@ exports.createExpense = async (req, res) => {
       dueDate,
       terms,
       privateNotes,
+      paymentDate: paymentDate || (paymentState.amountPaid > 0 ? (date || new Date()) : null),
       status: paymentState.status,
       tds_applicable,
       tds_section,
@@ -524,7 +526,7 @@ exports.createExpense = async (req, res) => {
     }));
 
     if (expense.category) await updateBudgetSpent(expense.category, companyId);
-    await syncExpenseCashMovement(expense, expense.date);
+    await syncExpenseCashMovement(expense, expense.paymentDate || expense.date);
 
     res.status(201).json(budgetWarning ? { data: expense, budgetWarning } : expense);
   } catch (error) {
@@ -626,7 +628,8 @@ exports.updateExpense = async (req, res) => {
       dueDate,
       terms,
       privateNotes,
-      status
+      status,
+      paymentDate
     } = req.body;
 
     let resolvedVendor = undefined;
@@ -710,6 +713,7 @@ exports.updateExpense = async (req, res) => {
       dueDate: dueDate !== undefined ? dueDate : expense.dueDate,
       terms: terms !== undefined ? terms : expense.terms,
       privateNotes: privateNotes !== undefined ? privateNotes : expense.privateNotes,
+      paymentDate: paymentDate !== undefined ? paymentDate : (paymentState.amountPaid > 0 ? (expense.paymentDate || new Date()) : null),
       status: paymentState.status !== undefined ? paymentState.status : expense.status,
       tds_applicable: finalTdsApplicable,
       tds_section: finalTdsSection,
@@ -792,7 +796,7 @@ exports.updateExpense = async (req, res) => {
       await updateBudgetSpent(expense.category._id || expense.category, companyId);
     }
 
-    await syncExpenseCashMovement(expense, expense.date);
+    await syncExpenseCashMovement(expense, req.body.paymentDate || expense.paymentDate || expense.date);
 
     res.json(expense);
   } catch (error) {

@@ -55,6 +55,7 @@ const ExpenseSchema = new mongoose.Schema({
 
   // Logistics
   paymentMethod: String,
+  paymentDate: Date,
   reverseCharge: { type: Boolean, default: false },
 
   // Items
