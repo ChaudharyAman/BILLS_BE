@@ -348,10 +348,39 @@ exports.updateProforma = async (req, res) => {
     });
     if (status) proforma.status = status;
 
-    const saved = await proforma.save();
+    let saved;
+    try {
+      saved = await proforma.save();
+    } catch (saveErr) {
+      if (saveErr.code === 11000) {
+        const indexMatch = saveErr.message && saveErr.message.match(/index:\s*([^\s]+)/);
+        const collidingIndex = indexMatch ? indexMatch[1] : null;
+        const isObsoleteIndex = collidingIndex && (
+          collidingIndex === 'proformaNo_1' ||
+          (collidingIndex.startsWith('user_1_proformaNo_1') && proforma.profile)
+        );
+
+        if (isObsoleteIndex) {
+          try {
+            await Proforma.collection.dropIndex(collidingIndex);
+            console.log(`[proformaController] Dropped obsolete index ${collidingIndex} on update collision.`);
+            saved = await proforma.save();
+          } catch (retryErr) {
+            throw retryErr;
+          }
+        } else {
+          return res.status(400).json({ message: `Proforma number "${proforma.proformaNo}" already exists in this profile.` });
+        }
+      } else {
+        throw saveErr;
+      }
+    }
     res.json(saved);
   } catch (e) {
     console.error('updateProforma error:', e);
+    if (e.code === 11000) {
+      return res.status(400).json({ message: 'Proforma number already exists in this profile.' });
+    }
     res.status(400).json({ message: e.message });
   }
 };

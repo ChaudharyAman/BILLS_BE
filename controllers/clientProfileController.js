@@ -127,7 +127,7 @@ exports.createProfile = async (req, res) => {
             purchaseOrderPrefix: `${uniqueCode}-PO`,
           }
         },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' }
       );
 
       // 2. Auto-seed AccessRole system roles for this profile

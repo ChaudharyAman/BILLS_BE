@@ -72,7 +72,7 @@ const updatePayrollConfig = async (req, res) => {
       config = await PayrollConfig.findOneAndUpdate(
         { _id: existingConfig._id },
         { $set: update },
-        { new: true }
+        { returnDocument: 'after' }
       );
     } else {
       const mergedData = {

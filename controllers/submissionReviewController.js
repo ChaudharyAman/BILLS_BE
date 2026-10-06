@@ -259,7 +259,7 @@ async function createExpenseFromSubmission(userId, parsedData, overrides, settin
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
   const balanceDue = overrides?.balanceDue !== undefined ? Number(overrides.balanceDue) : grandTotal;
 
-  const expense = await Expense.create({
+  const expensePayload = {
     user: userId,
     ...(profileId ? { profile: profileId } : {}),
     expenseNumber,
@@ -273,8 +273,23 @@ async function createExpenseFromSubmission(userId, parsedData, overrides, settin
     status: 'UNPAID',
     attachments: attachments || [],
     privateNotes: `Imported from public submission`,
-  });
-  return expense;
+  };
+
+  try {
+    return await Expense.create(expensePayload);
+  } catch (err) {
+    if (err.code === 11000) {
+      if (err.message && err.message.includes('expenseNumber_1')) {
+        try {
+          await Expense.collection.dropIndex('expenseNumber_1');
+          console.log('[Submission] Successfully dropped obsolete expenseNumber_1 index on collision.');
+        } catch (_) {}
+      }
+      expensePayload.expenseNumber = `${settings?.expensePrefix || 'EXP'}-${Date.now().toString().slice(-6)}`;
+      return await Expense.create(expensePayload);
+    }
+    throw err;
+  }
 }
 
 async function createInvoiceFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Customer', profileId = null) {
@@ -304,7 +319,7 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
   const balanceDue = overrides?.balanceDue !== undefined ? Number(overrides.balanceDue) : grandTotal;
   const roundOff   = overrides?.roundOff !== undefined ? Number(overrides.roundOff) : Number(parsedData?.roundOff || 0);
 
-  const invoice = await Invoice.create({
+  const invoicePayload = {
     user: userId,
     ...(profileId ? { profile: profileId } : {}),
     invoiceNo,
@@ -321,8 +336,23 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
     status: 'DRAFT',
     attachments: attachments || [],
     notes: `Imported from public submission`,
-  });
-  return invoice;
+  };
+
+  try {
+    return await Invoice.create(invoicePayload);
+  } catch (err) {
+    if (err.code === 11000) {
+      if (err.message && err.message.includes('invoiceNo_1')) {
+        try {
+          await Invoice.collection.dropIndex('invoiceNo_1');
+          console.log('[Submission] Successfully dropped obsolete invoiceNo_1 index on collision.');
+        } catch (_) {}
+      }
+      invoicePayload.invoiceNo = `${settings?.invoicePrefix || 'INV'}-${Date.now().toString().slice(-6)}`;
+      return await Invoice.create(invoicePayload);
+    }
+    throw err;
+  }
 }
 
 async function createIncomeFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Customer', profileId = null) {
@@ -351,7 +381,7 @@ async function createIncomeFromSubmission(userId, parsedData, overrides, setting
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
   const balanceDue = overrides?.balanceDue !== undefined ? Number(overrides.balanceDue) : grandTotal;
 
-  const income = await Income.create({
+  const incomePayload = {
     user: userId,
     ...(profileId ? { profile: profileId } : {}),
     incomeNumber,
@@ -365,8 +395,23 @@ async function createIncomeFromSubmission(userId, parsedData, overrides, setting
     status: 'UNPAID',
     attachments: attachments || [],
     privateNotes: `Imported from public submission`,
-  });
-  return income;
+  };
+
+  try {
+    return await Income.create(incomePayload);
+  } catch (err) {
+    if (err.code === 11000) {
+      if (err.message && err.message.includes('incomeNumber_1')) {
+        try {
+          await Income.collection.dropIndex('incomeNumber_1');
+          console.log('[Submission] Successfully dropped obsolete incomeNumber_1 index on collision.');
+        } catch (_) {}
+      }
+      incomePayload.incomeNumber = `INC-${Date.now().toString().slice(-6)}`;
+      return await Income.create(incomePayload);
+    }
+    throw err;
+  }
 }
 
 async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, settings, attachments = [], fallbackName = 'Vendor', profileId = null) {
@@ -394,7 +439,7 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
 
-  const po = await PurchaseOrder.create({
+  const poPayload = {
     user: userId,
     ...(profileId ? { profile: profileId } : {}),
     poNumber,
@@ -407,8 +452,23 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
     status: 'DRAFT',
     attachments: attachments || [],
     notes: `Imported from public submission`,
-  });
-  return po;
+  };
+
+  try {
+    return await PurchaseOrder.create(poPayload);
+  } catch (err) {
+    if (err.code === 11000) {
+      if (err.message && err.message.includes('poNumber_1')) {
+        try {
+          await PurchaseOrder.collection.dropIndex('poNumber_1');
+          console.log('[Submission] Successfully dropped obsolete poNumber_1 index on collision.');
+        } catch (_) {}
+      }
+      poPayload.poNumber = `${settings?.purchaseOrderPrefix || 'PO'}-${Date.now().toString().slice(-6)}`;
+      return await PurchaseOrder.create(poPayload);
+    }
+    throw err;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

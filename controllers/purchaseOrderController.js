@@ -339,10 +339,39 @@ exports.createPurchaseOrder = async (req, res) => {
       attachments: processIncomingAttachments(req.body.attachments, []),
     }));
 
-    const saved = await purchaseOrder.save();
+    let saved;
+    try {
+      saved = await purchaseOrder.save();
+    } catch (saveErr) {
+      if (saveErr.code === 11000) {
+        const indexMatch = saveErr.message && saveErr.message.match(/index:\s*([^\s]+)/);
+        const collidingIndex = indexMatch ? indexMatch[1] : null;
+        const isObsoleteIndex = collidingIndex && (
+          collidingIndex === 'poNumber_1' ||
+          (collidingIndex.startsWith('user_1_poNumber_1') && req.activeProfileId)
+        );
+
+        if (isObsoleteIndex) {
+          try {
+            await PurchaseOrder.collection.dropIndex(collidingIndex);
+            console.log(`[purchaseOrderController] Dropped obsolete index ${collidingIndex} on create collision.`);
+            saved = await purchaseOrder.save();
+          } catch (retryErr) {
+            throw retryErr;
+          }
+        } else {
+          return res.status(400).json({ message: `Purchase order number "${poNumber}" already exists in this profile.` });
+        }
+      } else {
+        throw saveErr;
+      }
+    }
     res.status(201).json(saved);
   } catch (e) {
     console.error('createPurchaseOrder error:', e);
+    if (e.code === 11000) {
+      return res.status(400).json({ message: 'Purchase order number already exists in this profile.' });
+    }
     res.status(400).json({ message: e.message });
   }
 };
@@ -475,10 +504,39 @@ exports.updatePurchaseOrder = async (req, res) => {
       purchaseOrder.attachments = processIncomingAttachments(req.body.attachments, purchaseOrder.attachments);
     }
 
-    const saved = await purchaseOrder.save();
+    let saved;
+    try {
+      saved = await purchaseOrder.save();
+    } catch (saveErr) {
+      if (saveErr.code === 11000) {
+        const indexMatch = saveErr.message && saveErr.message.match(/index:\s*([^\s]+)/);
+        const collidingIndex = indexMatch ? indexMatch[1] : null;
+        const isObsoleteIndex = collidingIndex && (
+          collidingIndex === 'poNumber_1' ||
+          (collidingIndex.startsWith('user_1_poNumber_1') && purchaseOrder.profile)
+        );
+
+        if (isObsoleteIndex) {
+          try {
+            await PurchaseOrder.collection.dropIndex(collidingIndex);
+            console.log(`[purchaseOrderController] Dropped obsolete index ${collidingIndex} on update collision.`);
+            saved = await purchaseOrder.save();
+          } catch (retryErr) {
+            throw retryErr;
+          }
+        } else {
+          return res.status(400).json({ message: `Purchase order number "${purchaseOrder.poNumber}" already exists in this profile.` });
+        }
+      } else {
+        throw saveErr;
+      }
+    }
     res.json(saved);
   } catch (e) {
     console.error('updatePurchaseOrder error:', e);
+    if (e.code === 11000) {
+      return res.status(400).json({ message: 'Purchase order number already exists in this profile.' });
+    }
     res.status(400).json({ message: e.message });
   }
 };

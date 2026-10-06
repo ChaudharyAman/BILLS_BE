@@ -423,6 +423,22 @@ exports.createIncome = async (req, res) => {
     res.status(201).json(income);
   } catch (error) {
     console.error('Error creating income', error);
+    if (error.code === 11000) {
+      const indexMatch = error.message && error.message.match(/index:\s*([^\s]+)/);
+      const collidingIndex = indexMatch ? indexMatch[1] : null;
+      const isObsoleteIndex = collidingIndex && (
+        collidingIndex === 'incomeNumber_1' ||
+        (collidingIndex.startsWith('user_1_incomeNumber_1') && req.activeProfileId)
+      );
+
+      if (isObsoleteIndex) {
+        try {
+          await Income.collection.dropIndex(collidingIndex);
+          console.log(`[incomeController] Dropped obsolete index ${collidingIndex} on create collision.`);
+        } catch (_) {}
+      }
+      return res.status(400).json({ message: `Income number "${req.body.incomeNumber}" already exists in this profile.` });
+    }
     res.status(error.statusCode || 500).json({ message: error.message || 'Server Error creating income' });
   }
 };
@@ -637,18 +653,53 @@ exports.updateIncome = async (req, res) => {
     // Remove undefined fields so we don't overwrite with nulls
     Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
 
-    income = await Income.findByIdAndUpdate(
-      req.params.id,
-      { $set: updateData },
-      { returnDocument: 'after', runValidators: true }
-    )
-      .select('-attachments.buffer')
-      .populate('category', 'name type color icon')
-      .populate('subCategory', 'name type color icon parent');
+    try {
+      income = await Income.findByIdAndUpdate(
+        req.params.id,
+        { $set: updateData },
+        { returnDocument: 'after', runValidators: true }
+      )
+        .select('-attachments.buffer')
+        .populate('category', 'name type color icon')
+        .populate('subCategory', 'name type color icon parent');
+    } catch (saveErr) {
+      if (saveErr.code === 11000) {
+        const indexMatch = saveErr.message && saveErr.message.match(/index:\s*([^\s]+)/);
+        const collidingIndex = indexMatch ? indexMatch[1] : null;
+        const isObsoleteIndex = collidingIndex && (
+          collidingIndex === 'incomeNumber_1' ||
+          (collidingIndex.startsWith('user_1_incomeNumber_1') && income.profile)
+        );
+
+        if (isObsoleteIndex) {
+          try {
+            await Income.collection.dropIndex(collidingIndex);
+            console.log(`[incomeController] Dropped obsolete index ${collidingIndex} on update collision.`);
+            income = await Income.findByIdAndUpdate(
+              req.params.id,
+              { $set: updateData },
+              { returnDocument: 'after', runValidators: true }
+            )
+              .select('-attachments.buffer')
+              .populate('category', 'name type color icon')
+              .populate('subCategory', 'name type color icon parent');
+          } catch (retryErr) {
+            throw retryErr;
+          }
+        } else {
+          return res.status(400).json({ message: `Income number "${updateData.incomeNumber || income.incomeNumber}" already exists in this profile.` });
+        }
+      } else {
+        throw saveErr;
+      }
+    }
 
     res.json(income);
   } catch (error) {
     console.error('Error updating income', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'Income number already exists in this profile.' });
+    }
     res.status(error.statusCode || 500).json({ message: error.message || 'Server Error updating income' });
   }
 };
