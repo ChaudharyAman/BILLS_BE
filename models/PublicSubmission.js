@@ -80,7 +80,11 @@ const PublicSubmissionSchema = new mongoose.Schema({
   // Stored for internal investigation only — never returned in any API response.
   ipAddress: { type: String, default: '' },
 
-}, { timestamps: true }); // createdAt + updatedAt
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true },
+}); // createdAt + updatedAt
 
 // ── Indexes ──────────────────────────────────────────────────────────────────
 // Primary review-dashboard query: "all pending submissions for this user, newest first"

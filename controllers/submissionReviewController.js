@@ -468,19 +468,49 @@ exports.getSubmissions = async (req, res) => {
         { 'parsedData.invoiceNumber': { $regex: safeSearch, $options: 'i' } },
         { 'files.originalName': { $regex: safeSearch, $options: 'i' } },
       ];
-      // Match by reference number suffix (e.g. SUB-567D1287 or 567D1287)
-      const cleanRef = search.toUpperCase().replace(/^SUB\s*[-–—]?\s*/, '').trim();
-      if (/^[0-9A-F]{4,24}$/i.test(cleanRef)) {
+
+      // Handle Anonymous submitter searches (empty / null / 'Anonymous')
+      if (/^anon(ymous)?$/i.test(search)) {
+        searchConditions.push(
+          { submitterName: '' },
+          { submitterName: null },
+          { submitterName: { $exists: false } },
+          { submitterName: { $regex: '^anonymous$', $options: 'i' } }
+        );
+      }
+
+      // Match by reference number (e.g. SUB-97089FDC, SUB-97, 97089FDC, or typing SUB / SUB-)
+      const isSubPrefixOnly = /^SUB\s*[-–—]?\s*$/i.test(search);
+      const startsWithSub = /^SUB\s*[-–—]?/i.test(search);
+      const cleanHex = search.replace(/^SUB\s*[-–—]?\s*/i, '').trim().replace(/\s+/g, '');
+
+      if (isSubPrefixOnly) {
+        // Any submission matches the reference number prefix "SUB-"
+        searchConditions.push({ _id: { $exists: true } });
+      } else if (cleanHex && /^[0-9A-Fa-f]{1,24}$/.test(cleanHex)) {
+        let regexPattern;
+        if (startsWithSub) {
+          // Explicit "SUB-xxx": cleanHex is at the START of the 8-character reference suffix.
+          // In 24-char ObjectId, characters 1-16 are prefix, characters 17-24 are reference suffix.
+          regexPattern = '^[0-9a-f]{16}' + cleanHex;
+        } else {
+          // Hex string without "SUB-": matches anywhere within the 8-character reference suffix.
+          const L = cleanHex.length;
+          const maxAfter = Math.max(0, 8 - L);
+          regexPattern = cleanHex + '[0-9a-f]{0,' + maxAfter + '}$';
+        }
+
         searchConditions.push({
           $expr: {
             $regexMatch: {
               input: { $toString: '$_id' },
-              regex: `${cleanRef}$`,
+              regex: regexPattern,
               options: 'i',
             },
           },
         });
       }
+
       if (query.$or) {
         query.$and = [{ $or: query.$or }, { $or: searchConditions }];
         delete query.$or;
