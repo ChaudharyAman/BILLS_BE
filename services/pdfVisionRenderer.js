@@ -56,12 +56,12 @@ async function renderPdfPagesToImages(pdfBuffer, options = {}) {
         viewport,
       }).promise;
 
-      const pngBuffer = canvas.toBuffer('image/png');
+      const imageBuffer = canvas.toBuffer('image/jpeg', 85);
       images.push({
         pageNumber,
-        mimeType: 'image/png',
-        buffer: pngBuffer,
-        dataUrl: `data:image/png;base64,${pngBuffer.toString('base64')}`,
+        mimeType: 'image/jpeg',
+        buffer: imageBuffer,
+        dataUrl: `data:image/jpeg;base64,${imageBuffer.toString('base64')}`,
       });
     }
   } finally {

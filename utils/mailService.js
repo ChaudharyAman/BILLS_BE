@@ -74,21 +74,40 @@ function resolveMailTransport(settings = null, overrideConfig = null) {
     };
   }
 
-  // 2. Custom SMTP configured and enabled in Settings
-  const smtp = settings?.smtp;
-  if (smtp && smtp.enabled && smtp.host) {
-    const port = Number(smtp.port) || 587;
-    const secure = smtp.secure === true || port === 465;
-    let rawPass = smtp.auth?.pass || '';
+  // 2. Custom SMTP configured in smtpConfigs or legacy smtp in Settings
+  let targetSmtp = null;
+
+  if (Array.isArray(settings?.smtpConfigs) && settings.smtpConfigs.length > 0) {
+    if (overrideConfig?.configId) {
+      targetSmtp = settings.smtpConfigs.find(
+        (c) => (c._id && c._id.toString() === overrideConfig.configId.toString()) || c.title === overrideConfig.configId
+      );
+    }
+    if (!targetSmtp) {
+      targetSmtp = settings.smtpConfigs.find((c) => c.isDefault && c.enabled && c.host) ||
+                   settings.smtpConfigs.find((c) => c.enabled && c.host) ||
+                   settings.smtpConfigs[0];
+    }
+  }
+
+  // Fallback to legacy settings.smtp
+  if (!targetSmtp && settings?.smtp && settings.smtp.enabled && settings.smtp.host) {
+    targetSmtp = settings.smtp;
+  }
+
+  if (targetSmtp && targetSmtp.host) {
+    const port = Number(targetSmtp.port) || 587;
+    const secure = targetSmtp.secure === true || port === 465;
+    let rawPass = targetSmtp.auth?.pass || '';
     if (rawPass) {
       rawPass = decryptPIIField(rawPass);
     }
 
-    const { user, pass } = sanitizeSmtpCredentials(smtp.auth?.user, rawPass, smtp.host);
+    const { user, pass } = sanitizeSmtpCredentials(targetSmtp.auth?.user, rawPass, targetSmtp.host);
     const auth = user ? { user, pass } : undefined;
 
     const transportOptions = {
-      host: smtp.host.trim(),
+      host: targetSmtp.host.trim(),
       port,
       secure,
       auth,
@@ -99,14 +118,14 @@ function resolveMailTransport(settings = null, overrideConfig = null) {
       socketTimeout: 15000,
     };
 
-    const fromEmail = (smtp.fromEmail || user || settings.email || 'no-reply@mybillflow.com').trim();
-    const fromName = smtp.fromName || settings.companyName || 'Flance';
+    const fromEmail = (targetSmtp.fromEmail || user || settings.email || 'no-reply@mybillflow.com').trim();
+    const fromName = targetSmtp.fromName || settings.companyName || 'Flance';
 
     return {
       transporter: nodemailer.createTransport(transportOptions),
       fromEmail,
       fromName,
-      replyTo: smtp.replyTo || undefined,
+      replyTo: targetSmtp.replyTo || undefined,
       isCustom: true,
     };
   }

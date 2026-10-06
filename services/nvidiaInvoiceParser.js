@@ -3,8 +3,12 @@ const { parseInvoice } = require('../utils/invoiceParser');
 const { renderPdfPagesToImages } = require('./pdfVisionRenderer');
 
 const NVIDIA_BASE_URL = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
-const NVIDIA_MODEL = process.env.NVIDIA_INVOICE_MODEL || process.env.NVIDIA_MODEL || 'meta/llama-3.2-11b-vision-instruct';
-const NVIDIA_VISION_MODEL = process.env.NVIDIA_INVOICE_VISION_MODEL || 'meta/llama-3.2-11b-vision-instruct';
+function getActiveInvoiceModel() {
+  return process.env.NVIDIA_INVOICE_MODEL || process.env.NVIDIA_MODEL || 'meta/llama-3.2-11b-vision-instruct';
+}
+function getActiveVisionModel() {
+  return process.env.NVIDIA_INVOICE_VISION_MODEL || 'meta/llama-3.2-11b-vision-instruct';
+}
 const TEXT_CHUNK_LINE_LIMIT = Number(process.env.NVIDIA_INVOICE_TEXT_CHUNK_LINES || 80);
 const TEXT_CHUNK_LIMIT = Number(process.env.NVIDIA_INVOICE_TEXT_CHUNK_LIMIT || 6);
 const TEXT_SINGLE_PASS_CHAR_LIMIT = Number(process.env.NVIDIA_INVOICE_TEXT_SINGLE_PASS_CHAR_LIMIT || 7000);
@@ -272,35 +276,58 @@ ${pagePayload}`;
 }
 
 function parseJsonObject(content = '') {
-  const text = String(content || '').trim();
+  let text = String(content || '').trim();
   if (!text) return {};
 
-  const cleaned = text
-    .replace(/```json\s*/gi, '')
-    .replace(/```\s*/g, '')
+  text = text
+    .replace(/^```json\s*/im, '')
+    .replace(/^```\s*/im, '')
+    .replace(/\s*```$/m, '')
     .trim();
 
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  return JSON.parse(match ? match[0] : cleaned);
+  const startIdx = text.indexOf('{');
+  const endIdx = text.lastIndexOf('}');
+
+  if (startIdx !== -1 && endIdx > startIdx) {
+    let candidate = text.slice(startIdx, endIdx + 1);
+    candidate = candidate.replace(/,\s*([\]}])/g, '$1');
+    try {
+      return JSON.parse(candidate);
+    } catch (_) {
+      const openBraces = (candidate.match(/\{/g) || []).length;
+      const closeBraces = (candidate.match(/\}/g) || []).length;
+      if (openBraces > closeBraces) {
+        candidate = candidate + '}'.repeat(openBraces - closeBraces);
+        try {
+          return JSON.parse(candidate);
+        } catch (__) {}
+      }
+    }
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    console.warn('[AI Parser] Could not strictly parse JSON, returning empty object for graceful fallback:', err.message);
+    return {};
+  }
 }
 
-async function parsePossiblyLooseInvoiceJson(content, fileName, options = {}) {
-  try {
-    return parseJsonObject(content);
-  } catch (error) {
-    const structuredContent = await callNvidiaChat({
-      model: NVIDIA_MODEL,
-      messages: [{ role: 'user', content: buildInvoiceStructuringPrompt(content, fileName, options) }],
-      maxTokens: 2200,
-      timeoutMs: Number(process.env.NVIDIA_INVOICE_TIMEOUT_MS || 30000),
-    });
-    return parseJsonObject(structuredContent);
-  }
+function parsePossiblyLooseInvoiceJson(content, fileName, options = {}) {
+  return parseJsonObject(content);
 }
 
 function splitRawTextIntoChunks(rawText) {
   const normalized = String(rawText || '').replace(/\r\n/g, '\n').trim();
   if (!normalized) return [];
+
+  const lines = normalized.split('\n').map(line => line.trimEnd()).filter(Boolean);
+
+  // Single-pass priority: if text fits within reasonable single-pass limits,
+  // execute in ONE unified call. This is 5x faster and avoids sequential round-trip timeouts.
+  if (normalized.length <= TEXT_SINGLE_PASS_CHAR_LIMIT && lines.length <= (TEXT_CHUNK_LINE_LIMIT * 2)) {
+    return [{ pageNumber: 1, content: normalized, source: 'single' }];
+  }
 
   const pageBreakChunks = normalized
     .split(/\f+/)
@@ -313,11 +340,6 @@ function splitRawTextIntoChunks(rawText) {
       content,
       source: 'page',
     }));
-  }
-
-  const lines = normalized.split('\n').map(line => line.trimEnd()).filter(Boolean);
-  if (lines.length <= TEXT_CHUNK_LINE_LIMIT && normalized.length <= TEXT_SINGLE_PASS_CHAR_LIMIT) {
-    return [{ pageNumber: 1, content: normalized, source: 'single' }];
   }
 
   const chunks = [];
@@ -456,7 +478,7 @@ function normalizeItem(item) {
 
 function normalizeInvoiceResult(parsed, fileName, rawText, options = {}) {
   const {
-    model = NVIDIA_MODEL,
+    model = getActiveInvoiceModel(),
     provider = 'nvidia-openai-compatible',
     parsedWithAI = true,
     extraWarnings = [],
@@ -883,7 +905,7 @@ function buildRejectedScannedResult(fileName, errorMessage, warningMessage = '')
       itemsCount: 0,
       processingTime: '',
       totalLines: 0,
-      model: NVIDIA_VISION_MODEL,
+      model: getActiveVisionModel(),
       provider: 'nvidia-vision',
       parsedWithAI: true,
     },
@@ -897,7 +919,7 @@ async function extractTextPagesSequentially(rawText, fileName, options = {}) {
   const results = [];
   for (const chunk of chunks) {
     const content = await callNvidiaChat({
-      model: NVIDIA_MODEL,
+      model: getActiveInvoiceModel(),
       messages: [{
         role: 'user',
         content: buildTextPagePrompt(chunk.content, chunk.pageNumber, chunks.length, fileName, options),
@@ -921,7 +943,7 @@ async function extractScannedPagesSequentially(images, fileName, options = {}) {
 
   for (const image of images) {
     const content = await callNvidiaChat({
-      model: NVIDIA_VISION_MODEL,
+      model: getActiveVisionModel(),
       messages: [
         {
           role: 'user',
@@ -947,7 +969,7 @@ async function extractScannedPagesSequentially(images, fileName, options = {}) {
   return results;
 }
 
-async function consolidatePageExtractions(pageExtractions, fileName, options = {}, model = NVIDIA_MODEL) {
+async function consolidatePageExtractions(pageExtractions, fileName, options = {}, model = getActiveInvoiceModel()) {
   const content = await callNvidiaChat({
     model,
     messages: [{
@@ -961,20 +983,37 @@ async function consolidatePageExtractions(pageExtractions, fileName, options = {
   return parsePossiblyLooseInvoiceJson(content, fileName, options);
 }
 
-async function callNvidiaChat({ model, messages, maxTokens = 2200, timeoutMs }) {
+const INVOICE_SYSTEM_PROMPT = 'You are an automated invoice parsing engine. Your job is to extract invoice fields and line items into strictly valid JSON. Return ONLY the JSON object. Do not include markdown formatting, conversational replies, or preambles. Start immediately with { and end with }.';
+
+async function callNvidiaChat({ model, messages, maxTokens = 3500, timeoutMs }) {
   const apiKey = process.env.NVIDIA_API_KEY;
+  const isReasoningModel = /kimi|deepseek-r1|qwq/i.test(String(model));
+  const defaultTimeout = isReasoningModel ? 85000 : 70000;
+  const effectiveTimeout = Math.max(Number(timeoutMs) || 0, Number(process.env.NVIDIA_INVOICE_TIMEOUT_MS) || 0, defaultTimeout);
+
+  const hasSystem = (messages || []).some(m => m.role === 'system');
+  const finalizedMessages = hasSystem ? messages : [
+    { role: 'system', content: INVOICE_SYSTEM_PROMPT },
+    ...(messages || []),
+  ];
+
+  const payload = {
+    model,
+    messages: finalizedMessages,
+    temperature: isReasoningModel ? 0.6 : 0.1,
+    max_tokens: isReasoningModel ? Math.max(maxTokens, 4096) : maxTokens,
+    stream: false,
+  };
+
+  if (isReasoningModel) {
+    payload.reasoning_effort = process.env.NVIDIA_REASONING_EFFORT || 'low';
+  }
+
   const response = await axios.post(
     `${NVIDIA_BASE_URL}/chat/completions`,
+    payload,
     {
-      model,
-      messages,
-      temperature: 0.1,
-      max_tokens: maxTokens,
-      response_format: { type: 'json_object' },
-      stream: false,
-    },
-    {
-      timeout: timeoutMs,
+      timeout: effectiveTimeout,
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -1000,11 +1039,11 @@ async function parseInvoiceWithNvidia(rawText, fileName, options = {}) {
           await extractTextPagesSequentially(rawText, fileName, options),
           fileName,
           options,
-          NVIDIA_MODEL
+          getActiveInvoiceModel()
         )
       : await parsePossiblyLooseInvoiceJson(
           await callNvidiaChat({
-            model: NVIDIA_MODEL,
+            model: getActiveInvoiceModel(),
             messages: [{ role: 'user', content: buildInvoicePrompt(rawText, fileName, options) }],
             timeoutMs: Number(process.env.NVIDIA_INVOICE_TIMEOUT_MS || 30000),
           }),
@@ -1013,7 +1052,7 @@ async function parseInvoiceWithNvidia(rawText, fileName, options = {}) {
         );
 
     const normalized = normalizeInvoiceResult(parsed, fileName, rawText, {
-      model: NVIDIA_MODEL,
+      model: getActiveInvoiceModel(),
       provider: 'nvidia-openai-compatible',
       parsedWithAI: true,
       extraWarnings: useMultiPass
@@ -1056,9 +1095,9 @@ async function parseScannedInvoicePdfWithNvidia(pdfBuffer, fileName, options = {
     }
 
     const pageExtractions = await extractScannedPagesSequentially(rendered.images, fileName, options);
-    const parsed = await consolidatePageExtractions(pageExtractions, fileName, options, NVIDIA_MODEL);
+    const parsed = await consolidatePageExtractions(pageExtractions, fileName, options, getActiveInvoiceModel());
     const result = normalizeInvoiceResult(parsed, fileName, '', {
-      model: NVIDIA_VISION_MODEL,
+      model: getActiveVisionModel(),
       provider: 'nvidia-vision',
       parsedWithAI: true,
       extraWarnings: [

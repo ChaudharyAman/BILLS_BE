@@ -80,6 +80,7 @@ const extractInvoiceFromPDF = async (req, res) => {
  * @access  Protected
  */
 const extractInvoiceFromPDFAI = async (req, res) => {
+  const startTime = Date.now();
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No PDF file uploaded.' });
@@ -87,18 +88,22 @@ const extractInvoiceFromPDFAI = async (req, res) => {
 
     const fileName = req.file.originalname || 'unknown.pdf';
     const documentType = getPdfTarget(req);
+    console.log(`[PDF AI] Received "${fileName}" (${(req.file.size / 1024).toFixed(1)} KB, target: ${documentType})`);
 
     let pdfData = { text: '', total: 1 };
     let parseWarning = '';
     try {
       pdfData = await readPdfText(req.file.buffer);
     } catch (pdfErr) {
-      console.error('AI Invoice PDF Parse Error:', pdfErr);
+      console.error('[PDF AI] Read text error:', pdfErr.message);
       parseWarning = `Embedded PDF text could not be read, so OCR/vision fallback was used: ${pdfErr.message}`;
     }
 
     const rawText = pdfData.text || '';
-    const result = (!rawText || rawText.trim().length < 20)
+    const isScanned = !rawText || rawText.trim().length < 20;
+    console.log(`[PDF AI] Text length: ${rawText.length}, pages: ${pdfData.total || 1}, mode: ${isScanned ? 'scanned-vision' : 'direct-text'}`);
+
+    const result = isScanned
       ? await parseScannedInvoicePdfWithNvidia(req.file.buffer, fileName, { documentType })
       : await parseInvoiceWithNvidia(rawText, fileName, { documentType });
 
@@ -113,9 +118,10 @@ const extractInvoiceFromPDFAI = async (req, res) => {
       textLength: rawText.length,
     };
 
+    console.log(`[PDF AI] Completed "${fileName}" in ${Date.now() - startTime}ms (parsedWithAI: ${result.metadata?.parsedWithAI})`);
     res.json(result);
   } catch (error) {
-    console.error('AI invoice PDF extraction error:', error);
+    console.error(`[PDF AI] Extraction error after ${Date.now() - startTime}ms:`, error);
     res.status(500).json({
       message: 'Internal server error during AI invoice PDF processing.',
       error: error.message,

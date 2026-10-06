@@ -4,6 +4,8 @@ const jwt = require('jsonwebtoken');
 const ProfileShare = require('../models/ProfileShare');
 const ClientProfile = require('../models/ClientProfile');
 const User = require('../models/User');
+const Settings = require('../models/Settings');
+const mailService = require('../utils/mailService');
 
 const DEFAULT_HIDDEN_FIELDS = [
   'settings.bankDetails',
@@ -304,5 +306,121 @@ exports.resolveSharedLink = async (req, res) => {
   } catch (error) {
     console.error('resolveSharedLink error:', error.message);
     res.status(500).json({ message: error.message });
+  }
+};
+
+/**
+ * Send share link via email using configured mailer
+ */
+exports.sendShareEmail = async (req, res) => {
+  try {
+    const { profileId, shareId } = req.params;
+    const { recipientEmail, customSubject, customMessage, includePasscode, passcode, smtpConfigId } = req.body;
+
+    if (!recipientEmail || !recipientEmail.trim()) {
+      return res.status(400).json({ message: 'Recipient email is required.' });
+    }
+
+    const share = await ProfileShare.findById(shareId).populate('profile');
+    if (!share || String(share.profile._id) !== profileId) {
+      return res.status(404).json({ message: 'Share link not found.' });
+    }
+
+    if (share.status === 'revoked') {
+      return res.status(400).json({ message: 'Cannot share a revoked link.' });
+    }
+
+    const profile = share.profile;
+    const senderName = req.user?.username || req.user?.name || 'A team member';
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+    const shareUrl = `${clientUrl}/shared/${share.token}`;
+
+    const tenantFilter = req.user?.companyId ? { companyId: req.user.companyId } : { user: req.user?._id };
+    const settings = await Settings.findOne(tenantFilter);
+
+    const subject = customSubject?.trim() || `Workspace Access: ${profile.name}`;
+    const accessLevelText = share.rules?.accessLevel === 'CAN_EDIT' ? 'Full Edit Access' : 'View Only';
+    const expirationText = share.expiresAt ? new Date(share.expiresAt).toLocaleDateString() : 'Never expires';
+
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff; color: #1e293b;">
+        <div style="border-bottom: 1px solid #f1f5f9; padding-bottom: 16px; margin-bottom: 20px;">
+          <h2 style="margin: 0; color: #0f172a; font-size: 20px;">${senderName} shared a workspace with you</h2>
+        </div>
+        
+        <p style="font-size: 14px; line-height: 1.6; color: #475569;">
+          You have been granted secure access to the <strong>${profile.name}</strong> workspace.
+        </p>
+
+        ${customMessage ? `
+          <div style="margin: 16px 0; padding: 14px 18px; background-color: #f8fafc; border-left: 4px solid #3b82f6; border-radius: 6px; font-size: 13px; color: #334155; line-height: 1.5;">
+            <em>"${customMessage}"</em>
+          </div>
+        ` : ''}
+
+        <div style="margin: 20px 0; padding: 16px; background-color: #f1f5f9; border-radius: 12px; font-size: 13px;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+              <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Workspace:</td>
+              <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${profile.name}</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Access Level:</td>
+              <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${accessLevelText}</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Expiration:</td>
+              <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${expirationText}</td>
+            </tr>
+            ${includePasscode && passcode ? `
+            <tr>
+              <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Passcode:</td>
+              <td style="padding: 6px 0; font-family: monospace; font-weight: 700; color: #d97706;">${passcode}</td>
+            </tr>
+            ` : ''}
+          </table>
+        </div>
+
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${shareUrl}" style="background-color: #2563eb; color: #ffffff; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; display: inline-block;">
+            Open Shared Workspace
+          </a>
+        </div>
+
+        <p style="font-size: 12px; color: #94a3b8; word-break: break-all; margin-top: 24px; border-top: 1px solid #f1f5f9; padding-top: 16px;">
+          Direct link: <a href="${shareUrl}" style="color: #2563eb;">${shareUrl}</a>
+        </p>
+      </div>
+    `;
+
+    await mailService.sendMail({
+      to: recipientEmail.trim(),
+      subject,
+      html,
+      settings,
+      overrideConfig: smtpConfigId ? { configId: smtpConfigId } : undefined,
+    });
+
+    let senderIdentifier = '';
+    if (smtpConfigId && Array.isArray(settings?.smtpConfigs)) {
+      const match = settings.smtpConfigs.find(
+        (c) => (c._id && c._id.toString() === smtpConfigId.toString()) || c.title === smtpConfigId
+      );
+      if (match) {
+        senderIdentifier = match.fromEmail || match.auth?.user || match.title;
+      }
+    } else if (settings?.smtp?.fromEmail || settings?.smtp?.auth?.user) {
+      senderIdentifier = settings.smtp.fromEmail || settings.smtp.auth?.user;
+    }
+
+    const viaText = senderIdentifier ? ` via ${senderIdentifier}` : '';
+
+    return res.json({
+      success: true,
+      message: `Share link successfully emailed to ${recipientEmail.trim()}${viaText}!`,
+    });
+  } catch (error) {
+    console.error('sendShareEmail error:', error);
+    return res.status(500).json({ message: error.message || 'Failed to send share email.' });
   }
 };
