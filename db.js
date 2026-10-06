@@ -31,7 +31,33 @@ const reconcileModelIndexes = async (Model) => {
         continue;
       }
 
-      // 3. Stale payroll index lacking isDeleted partial filter
+      // 3. Legacy unscoped profile-first unique indexes:
+      // Any unique index whose key starts with profile (or only contains profile) but lacks user / companyId / owner.
+      // e.g. profile_1_invoiceNo_1, profile_1_expenseNumber_1, profile_1_sourceInvoice_1, profile_1_name_1, etc.
+      const startsWithProfile = Number(existing.key?.profile) === 1;
+      const hasTenantOwner = ('user' in (existing.key || {})) || ('companyId' in (existing.key || {})) || ('owner' in (existing.key || {}));
+      if (existing.unique && startsWithProfile && !hasTenantOwner) {
+        console.log(`[db.js] Dropping legacy user-unscoped profile unique index: ${Model.collection.collectionName}.${existing.name}`);
+        try {
+          await Model.collection.dropIndex(existing.name);
+        } catch (_) {}
+        continue;
+      }
+
+      // 4. Stale Income sourceInvoice unique index lacking objectId partial filter
+      // (Without this partial filter, documents with sourceInvoice: null collide and throw E11000 duplicate key error)
+      if (Model.modelName === 'Income' && existing.unique && 'sourceInvoice' in (existing.key || {})) {
+        const hasValidPartial = existing.partialFilterExpression?.sourceInvoice?.['$type'] === 'objectId';
+        if (!hasValidPartial) {
+          console.log(`[db.js] Dropping stale income sourceInvoice unique index lacking objectId filter: ${Model.collection.collectionName}.${existing.name}`);
+          try {
+            await Model.collection.dropIndex(existing.name);
+          } catch (_) {}
+          continue;
+        }
+      }
+
+      // 5. Stale payroll index lacking isDeleted partial filter
       if (Model.modelName === 'Payroll' && existing.unique && (!existing.partialFilterExpression || existing.partialFilterExpression.isDeleted !== false)) {
         console.log(`[db.js] Dropping stale payroll index: ${Model.collection.collectionName}.${existing.name}`);
         try {
@@ -40,7 +66,7 @@ const reconcileModelIndexes = async (Model) => {
         continue;
       }
 
-      // 4. Stale settings user_1 or non-unique profile_1
+      // 6. Stale settings user_1 or stale profile_1
       if (Model.modelName === 'Settings') {
         if (existing.name === 'user_1' && existing.unique) {
           console.log(`[db.js] Dropping stale unique settings.user_1 index`);
@@ -49,8 +75,8 @@ const reconcileModelIndexes = async (Model) => {
           } catch (_) {}
           continue;
         }
-        if (existing.name === 'profile_1' && !existing.unique) {
-          console.log(`[db.js] Dropping stale non-unique settings.profile_1 index`);
+        if (existing.name === 'profile_1') {
+          console.log(`[db.js] Dropping stale settings.profile_1 index`);
           try {
             await Model.collection.dropIndex(existing.name);
           } catch (_) {}
@@ -162,5 +188,8 @@ const connectDB = async () => {
     throw error;
   }
 };
+
+connectDB.reconcileDatabaseIndexes = reconcileDatabaseIndexes;
+connectDB.reconcileModelIndexes = reconcileModelIndexes;
 
 module.exports = connectDB;

@@ -655,10 +655,6 @@ exports.sendPublicPortalEmail = async (req, res) => {
               <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Accepted Documents:</td>
               <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${allowed || 'Invoices, Receipts, Bills'}</td>
             </tr>
-            <tr>
-              <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Access:</td>
-              <td style="padding: 6px 0; font-weight: 600; color: #059669;">Direct Upload (No login required)</td>
-            </tr>
           </table>
         </div>
 

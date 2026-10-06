@@ -112,7 +112,17 @@ IncomeSchema.pre('save', function() {
 
 // Compound unique index: same income number is allowed across different users and profiles
 IncomeSchema.index({ user: 1, profile: 1, incomeNumber: 1 }, { unique: true, sparse: true });
-IncomeSchema.index({ user: 1, profile: 1, sourceInvoice: 1 }, { unique: true, sparse: true });
+IncomeSchema.index({ user: 1, incomeNumber: 1 }, { unique: true, partialFilterExpression: { profile: null } });
+
+// Source invoice uniqueness: only enforced when sourceInvoice is an actual ObjectId (not null or missing)
+IncomeSchema.index(
+  { user: 1, profile: 1, sourceInvoice: 1 },
+  { unique: true, partialFilterExpression: { sourceInvoice: { $type: 'objectId' } } }
+);
+IncomeSchema.index(
+  { user: 1, sourceInvoice: 1 },
+  { unique: true, partialFilterExpression: { profile: null, sourceInvoice: { $type: 'objectId' } } }
+);
 
 IncomeSchema.plugin(softDeletePlugin);
 

@@ -101,7 +101,21 @@ async function resolveParty({
     email: partyEmail ? String(partyEmail).trim().toLowerCase() : undefined,
     pan:   partyPAN   ? String(partyPAN).trim().toUpperCase()   : undefined,
   });
-  return party.save();
+
+  try {
+    return await party.save();
+  } catch (err) {
+    if (err.code === 11000) {
+      const escaped = escapeRegex(name).replace(/\s+/g, '\\s+');
+      const found = await ClientModel.findOne({
+        user: userId,
+        ...(profileId ? { profile: profileId } : { profile: null }),
+        name: { $regex: new RegExp(`^\\s*${escaped}\\s*$`, 'i') },
+      });
+      if (found) return found;
+    }
+    throw err;
+  }
 }
 
 // Auto-generate next document number using existing Counter pattern
@@ -121,6 +135,33 @@ async function nextDocNumber(userId, settings, modelName, profileId = null) {
     { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
   );
   return buildAutoDocumentNumber(prefix, counter.seq);
+}
+
+// Ensure unique document number against collisions with existing records
+async function ensureUniqueDocNumber(Model, fieldName, desiredNumber, userId, profileId, fallbackPrefix, settings) {
+  const tenantFilter = {
+    user: userId,
+    ...(profileId ? { profile: profileId } : { profile: null }),
+  };
+
+  let candidate = desiredNumber ? String(desiredNumber).trim() : '';
+  let exists = candidate ? await Model.findOne({ ...tenantFilter, [fieldName]: candidate }).select('_id').lean() : true;
+
+  if (!exists) {
+    return candidate;
+  }
+
+  let attempts = 0;
+  while (exists && attempts < 50) {
+    attempts++;
+    candidate = await nextDocNumber(userId, settings, Model.collection.collectionName, profileId);
+    exists = await Model.findOne({ ...tenantFilter, [fieldName]: candidate }).select('_id').lean();
+    if (!exists) {
+      return candidate;
+    }
+  }
+
+  return `${desiredNumber || fallbackPrefix}-${Date.now().toString().slice(-4)}`;
 }
 
 // Write AuditLog entry (same pattern as payrollController)
@@ -204,7 +245,15 @@ async function createExpenseFromSubmission(userId, parsedData, overrides, settin
     isVendor: true, isClient: false,
   });
 
-  const docNumber = await nextDocNumber(userId, settings, 'expenses', profileId);
+  const expenseNumber = await ensureUniqueDocNumber(
+    Expense,
+    'expenseNumber',
+    overrides?.expenseNumber || null,
+    userId,
+    profileId,
+    settings?.expensePrefix || 'EXP',
+    settings
+  );
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
@@ -213,7 +262,7 @@ async function createExpenseFromSubmission(userId, parsedData, overrides, settin
   const expense = await Expense.create({
     user: userId,
     ...(profileId ? { profile: profileId } : {}),
-    expenseNumber: overrides?.expenseNumber || docNumber,
+    expenseNumber,
     date:          overrides?.date          || parsedData?.invoiceDate || new Date(),
     vendor:        vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: vendorName },
     items:         formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'Expense Item'),
@@ -240,7 +289,15 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
     isVendor: false, isClient: true,
   });
 
-  const docNumber  = await nextDocNumber(userId, settings, 'invoices', profileId);
+  const invoiceNo = await ensureUniqueDocNumber(
+    Invoice,
+    'invoiceNo',
+    overrides?.invoiceNo || parsedData?.invoiceNumber || null,
+    userId,
+    profileId,
+    settings?.invoicePrefix || 'INV',
+    settings
+  );
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
@@ -250,7 +307,7 @@ async function createInvoiceFromSubmission(userId, parsedData, overrides, settin
   const invoice = await Invoice.create({
     user: userId,
     ...(profileId ? { profile: profileId } : {}),
-    invoiceNo:   overrides?.invoiceNo || parsedData?.invoiceNumber || docNumber,
+    invoiceNo,
     date:        overrides?.date      || parsedData?.invoiceDate   || new Date(),
     dueDate:     overrides?.dueDate   || parsedData?.dueDate       || null,
     client:      client ? { clientRef: client._id, name: client.name } : { name: clientName },
@@ -280,7 +337,15 @@ async function createIncomeFromSubmission(userId, parsedData, overrides, setting
     isVendor: false, isClient: true,
   });
 
-  const docNumber  = await nextDocNumber(userId, settings, 'incomes', profileId);
+  const incomeNumber = await ensureUniqueDocNumber(
+    Income,
+    'incomeNumber',
+    overrides?.incomeNumber || null,
+    userId,
+    profileId,
+    'INC',
+    settings
+  );
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
@@ -289,7 +354,7 @@ async function createIncomeFromSubmission(userId, parsedData, overrides, setting
   const income = await Income.create({
     user: userId,
     ...(profileId ? { profile: profileId } : {}),
-    incomeNumber: overrides?.incomeNumber || docNumber,
+    incomeNumber,
     date:         overrides?.date         || parsedData?.invoiceDate || new Date(),
     client:       client ? { clientRef: client._id, name: client.name } : { name: clientName },
     items:        formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'Income Item'),
@@ -316,7 +381,15 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
     isVendor: true, isClient: false,
   });
 
-  const docNumber  = await nextDocNumber(userId, settings, 'purchaseorders', profileId);
+  const poNumber = await ensureUniqueDocNumber(
+    PurchaseOrder,
+    'poNumber',
+    overrides?.poNumber || parsedData?.poNumber || null,
+    userId,
+    profileId,
+    settings?.purchaseOrderPrefix || 'PO',
+    settings
+  );
   const grandTotal = Number(overrides?.grandTotal || parsedData?.totalAmount || 0);
   const subTotal   = Number(overrides?.subTotal   || parsedData?.subTotal    || 0);
   const taxTotal   = Number(overrides?.taxAmount  || parsedData?.taxAmount   || 0);
@@ -324,7 +397,7 @@ async function createPurchaseOrderFromSubmission(userId, parsedData, overrides, 
   const po = await PurchaseOrder.create({
     user: userId,
     ...(profileId ? { profile: profileId } : {}),
-    poNumber:    overrides?.poNumber || docNumber,
+    poNumber,
     date:        overrides?.date     || parsedData?.invoiceDate || new Date(),
     vendor:      vendor ? { vendorRef: vendor._id, name: vendor.name } : { name: vendorName },
     items:       formatLineItems(overrides?.items || parsedData?.items, grandTotal, 'PO Item'),
@@ -383,6 +456,36 @@ exports.getSubmissions = async (req, res) => {
       }
       if (orConditions.length > 0) {
         query.$or = orConditions;
+      }
+    }
+
+    const search = String(req.query.search || req.query.q || '').trim();
+    if (search) {
+      const safeSearch = escapeRegex(search);
+      const searchConditions = [
+        { submitterName: { $regex: safeSearch, $options: 'i' } },
+        { submitterEmail: { $regex: safeSearch, $options: 'i' } },
+        { 'parsedData.invoiceNumber': { $regex: safeSearch, $options: 'i' } },
+        { 'files.originalName': { $regex: safeSearch, $options: 'i' } },
+      ];
+      // Match by reference number suffix (e.g. SUB-567D1287 or 567D1287)
+      const cleanRef = search.toUpperCase().replace(/^SUB\s*[-–—]?\s*/, '').trim();
+      if (/^[0-9A-F]{4,24}$/i.test(cleanRef)) {
+        searchConditions.push({
+          $expr: {
+            $regexMatch: {
+              input: { $toString: '$_id' },
+              regex: `${cleanRef}$`,
+              options: 'i',
+            },
+          },
+        });
+      }
+      if (query.$or) {
+        query.$and = [{ $or: query.$or }, { $or: searchConditions }];
+        delete query.$or;
+      } else {
+        query.$or = searchConditions;
       }
     }
 
