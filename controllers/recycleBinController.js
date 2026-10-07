@@ -148,7 +148,7 @@ const restoreItem = async (req, res) => {
     const item = await Model.findOneAndUpdate(
       { _id: id, ...tenantFilter },
       { $set: { isDeleted: false }, $unset: { deletedAt: 1 } },
-      { new: true }
+      { returnDocument: 'after' }
     ).setOptions({ withDeleted: true, forceRestore: !!forceRestore });
 
     if (!item) {
@@ -218,7 +218,7 @@ const bulkRestoreItems = async (req, res) => {
         const item = await Model.findOneAndUpdate(
           { _id: id, ...tenantFilter },
           { $set: { isDeleted: false }, $unset: { deletedAt: 1 } },
-          { new: true }
+          { returnDocument: 'after' }
         ).setOptions({ withDeleted: true, forceRestore: !!forceRestore });
 
         if (item) restoredCount++;

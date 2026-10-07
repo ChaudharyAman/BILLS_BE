@@ -442,7 +442,8 @@ exports.createExpense = async (req, res) => {
       dueDate,
       status,
       terms,
-      privateNotes
+      privateNotes,
+      paymentDate
     } = req.body;
 
     let resolvedVendor = null;
@@ -513,6 +514,7 @@ exports.createExpense = async (req, res) => {
       dueDate,
       terms,
       privateNotes,
+      paymentDate: paymentDate || (paymentState.amountPaid > 0 ? (date || new Date()) : null),
       status: paymentState.status,
       tds_applicable,
       tds_section,
@@ -524,11 +526,27 @@ exports.createExpense = async (req, res) => {
     }));
 
     if (expense.category) await updateBudgetSpent(expense.category, companyId);
-    await syncExpenseCashMovement(expense, expense.date);
+    await syncExpenseCashMovement(expense, expense.paymentDate || expense.date);
 
     res.status(201).json(budgetWarning ? { data: expense, budgetWarning } : expense);
   } catch (error) {
     console.error('Error creating expense', error);
+    if (error.code === 11000) {
+      const indexMatch = error.message && error.message.match(/index:\s*([^\s]+)/);
+      const collidingIndex = indexMatch ? indexMatch[1] : null;
+      const isObsoleteIndex = collidingIndex && (
+        collidingIndex === 'expenseNumber_1' ||
+        (collidingIndex.startsWith('user_1_expenseNumber_1') && req.activeProfileId)
+      );
+
+      if (isObsoleteIndex) {
+        try {
+          await Expense.collection.dropIndex(collidingIndex);
+          console.log(`[expenseController] Dropped obsolete index ${collidingIndex} on create collision.`);
+        } catch (_) {}
+      }
+      return res.status(400).json({ message: `Expense number "${req.body.expenseNumber}" already exists in this profile.` });
+    }
     if (error.message === 'Amount paid cannot exceed payable amount') {
       return res.status(422).json({ message: error.message });
     }
@@ -610,7 +628,8 @@ exports.updateExpense = async (req, res) => {
       dueDate,
       terms,
       privateNotes,
-      status
+      status,
+      paymentDate
     } = req.body;
 
     let resolvedVendor = undefined;
@@ -694,6 +713,7 @@ exports.updateExpense = async (req, res) => {
       dueDate: dueDate !== undefined ? dueDate : expense.dueDate,
       terms: terms !== undefined ? terms : expense.terms,
       privateNotes: privateNotes !== undefined ? privateNotes : expense.privateNotes,
+      paymentDate: paymentDate !== undefined ? paymentDate : (paymentState.amountPaid > 0 ? (expense.paymentDate || new Date()) : null),
       status: paymentState.status !== undefined ? paymentState.status : expense.status,
       tds_applicable: finalTdsApplicable,
       tds_section: finalTdsSection,
@@ -739,7 +759,32 @@ exports.updateExpense = async (req, res) => {
     expense.tdsAmount = finalTdsAmount;
     expense.tdsReceivable = finalTdsAmount;
 
-    await expense.save();
+    try {
+      await expense.save();
+    } catch (saveErr) {
+      if (saveErr.code === 11000) {
+        const indexMatch = saveErr.message && saveErr.message.match(/index:\s*([^\s]+)/);
+        const collidingIndex = indexMatch ? indexMatch[1] : null;
+        const isObsoleteIndex = collidingIndex && (
+          collidingIndex === 'expenseNumber_1' ||
+          (collidingIndex.startsWith('user_1_expenseNumber_1') && expense.profile)
+        );
+
+        if (isObsoleteIndex) {
+          try {
+            await Expense.collection.dropIndex(collidingIndex);
+            console.log(`[expenseController] Dropped obsolete index ${collidingIndex} on update collision.`);
+            await expense.save();
+          } catch (retryErr) {
+            throw retryErr;
+          }
+        } else {
+          return res.status(400).json({ message: `Expense number "${expense.expenseNumber}" already exists in this profile.` });
+        }
+      } else {
+        throw saveErr;
+      }
+    }
 
     expense = await Expense.findOne({ _id: expense._id, ...getTenantFilter(req) })
       .select('-attachments.buffer')
@@ -751,11 +796,14 @@ exports.updateExpense = async (req, res) => {
       await updateBudgetSpent(expense.category._id || expense.category, companyId);
     }
 
-    await syncExpenseCashMovement(expense, expense.date);
+    await syncExpenseCashMovement(expense, req.body.paymentDate || expense.paymentDate || expense.date);
 
     res.json(expense);
   } catch (error) {
     console.error('Error updating expense', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ message: `Expense number already exists.` });
+    }
     if (error.message === 'Amount paid cannot exceed payable amount') {
       return res.status(422).json({ message: error.message });
     }

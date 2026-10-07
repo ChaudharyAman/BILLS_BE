@@ -151,7 +151,7 @@ exports.pauseRecurringTransaction = async (req, res) => {
     const rt = await RecurringTransaction.findOneAndUpdate(
       { _id: req.params.id, user: companyId },
       { $set: { isActive: false } },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!rt) return res.status(404).json({ message: 'Recurring transaction not found' });
     res.json(rt);

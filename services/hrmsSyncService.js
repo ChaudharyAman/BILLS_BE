@@ -109,7 +109,7 @@ const resolvePayrollRoleTemplate = async (userId, hrmsPayType) => {
         includeGratuityInCTC: template.includeGratuityInCTC,
       }
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
   );
 
   return {

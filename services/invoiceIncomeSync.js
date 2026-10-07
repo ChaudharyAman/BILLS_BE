@@ -36,8 +36,11 @@ function mapInvoiceItemsToIncomeItems(items = []) {
 
 async function buildSyncedIncomeNumber(invoice, session = null) {
   const baseNumber = String(invoice.invoiceNo || '').trim() || `INV-${invoice._id}`;
+  const profileFilter = invoice.profile ? { profile: invoice.profile } : { profile: null };
+
   const currentMatchQuery = Income.findOne({
     user: invoice.user,
+    ...profileFilter,
     sourceInvoice: invoice._id,
   }).select('incomeNumber');
   if (session) currentMatchQuery.session(session);
@@ -49,6 +52,7 @@ async function buildSyncedIncomeNumber(invoice, session = null) {
 
   const conflictingQuery = Income.findOne({
     user: invoice.user,
+    ...profileFilter,
     incomeNumber: baseNumber,
     sourceInvoice: { $ne: invoice._id },
   }).select('_id');
@@ -65,6 +69,7 @@ async function buildSyncedIncomeNumber(invoice, session = null) {
     const candidate = `${baseNumber}-INV${counter}`;
     const takenQuery = Income.findOne({
       user: invoice.user,
+      ...profileFilter,
       incomeNumber: candidate,
       sourceInvoice: { $ne: invoice._id },
     }).select('_id');
@@ -112,6 +117,7 @@ async function syncIncomeFromInvoice(invoice, session = null) {
 
   const payload = {
     user: invoice.user,
+    ...(invoice.profile ? { profile: invoice.profile } : {}),
     sourceType: 'invoice',
     sourceInvoice: invoice._id,
     businessUnit: invoice.businessUnit || null,
@@ -141,18 +147,39 @@ async function syncIncomeFromInvoice(invoice, session = null) {
     balanceDue: invoice.balanceDue !== undefined ? Number(invoice.balanceDue) : 0,
   };
 
-  const query = Income.findOneAndUpdate(
-    { user: invoice.user, sourceInvoice: invoice._id },
-    { $set: payload },
-    {
-      upsert: true,
-      returnDocument: 'after',
-      runValidators: true,
-      setDefaultsOnInsert: true,
+  const syncQuery = () => {
+    const q = Income.findOneAndUpdate(
+      {
+        user: invoice.user,
+        sourceInvoice: invoice._id,
+        ...(invoice.profile ? { profile: invoice.profile } : {}),
+      },
+      { $set: payload },
+      {
+        upsert: true,
+        returnDocument: 'after',
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+    if (session) q.session(session);
+    return q;
+  };
+
+  try {
+    return await syncQuery();
+  } catch (err) {
+    if (err.code === 11000) {
+      if (err.message && err.message.includes('incomeNumber_1')) {
+        try {
+          await Income.collection.dropIndex('incomeNumber_1');
+          console.log('[invoiceIncomeSync] Dropped obsolete incomeNumber_1 index on sync collision.');
+          return await syncQuery();
+        } catch (_) {}
+      }
     }
-  );
-  if (session) query.session(session);
-  return query;
+    throw err;
+  }
 }
 
 async function removeIncomeForInvoice(invoiceId, userId, session = null) {

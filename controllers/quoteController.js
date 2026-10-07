@@ -54,14 +54,14 @@ async function generateNextUniqueQuoteNumber({ userId, profileId, quotePrefix })
   await Counter.findOneAndUpdate(
     { id: counterId },
     { $max: { seq: maxExistingSeq } },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true }
   );
 
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const counter = await Counter.findOneAndUpdate(
       { id: counterId },
       { $inc: { seq: 1 } },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+      { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true }
     );
 
     const candidate = buildAutoDocumentNumber(normalizedPrefix, counter.seq);
@@ -458,12 +458,38 @@ exports.updateQuote = async (req, res) => {
     });
     if (status) quote.status = status;
 
-    const saved = await quote.save();
+    let saved;
+    try {
+      saved = await quote.save();
+    } catch (saveErr) {
+      if (saveErr.code === 11000) {
+        const indexMatch = saveErr.message && saveErr.message.match(/index:\s*([^\s]+)/);
+        const collidingIndex = indexMatch ? indexMatch[1] : null;
+        const isObsoleteIndex = collidingIndex && (
+          collidingIndex === 'quoteNo_1' ||
+          (collidingIndex.startsWith('user_1_quoteNo_1') && quote.profile)
+        );
+
+        if (isObsoleteIndex) {
+          try {
+            await Quote.collection.dropIndex(collidingIndex);
+            console.log(`[quoteController] Dropped obsolete index ${collidingIndex} on update collision.`);
+            saved = await quote.save();
+          } catch (retryErr) {
+            throw retryErr;
+          }
+        } else {
+          return res.status(400).json({ message: `Quote number "${quote.quoteNo}" already exists in this profile.` });
+        }
+      } else {
+        throw saveErr;
+      }
+    }
     res.json(saved);
   } catch (e) {
     console.error('updateQuote error:', e);
     if (isQuoteNumberDuplicateError(e)) {
-      return res.status(400).json({ message: 'Quote number already exists. Please use another quote number.' });
+      return res.status(400).json({ message: 'Quote number already exists in this profile. Please use another quote number.' });
     }
     res.status(400).json({ message: e.message });
   }

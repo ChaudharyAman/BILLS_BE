@@ -40,6 +40,57 @@ const SettingsSchema = new mongoose.Schema({
   showSignatureOnPurchaseOrders: { type: Boolean, default: true },
   showLogoOnDocuments:           { type: Boolean, default: true },
 
+  // Invoice Print Template & Columns Visibility Settings
+  invoiceTemplate: {
+    defaultTemplate: {
+      type: String,
+      enum: ['modern', 'classic'],
+      default: 'modern',
+    },
+    // Shared columns configuration
+    columns: {
+      sno:           { type: Boolean, default: true },
+      name:          { type: Boolean, default: true },
+      description:   { type: Boolean, default: true },
+      hsnSac:        { type: Boolean, default: true },
+      qty:           { type: Boolean, default: true },
+      unit:          { type: Boolean, default: true },
+      listPrice:     { type: Boolean, default: false },
+      rate:          { type: Boolean, default: true },
+      discount:      { type: Boolean, default: true },
+      taxableAmount: { type: Boolean, default: true },
+      taxBreakdown:  { type: Boolean, default: true },
+      total:         { type: Boolean, default: true },
+    },
+    // Modern template specific column visibility
+    modernColumns: {
+      sno:           { type: Boolean, default: true },
+      name:          { type: Boolean, default: true },
+      description:   { type: Boolean, default: true },
+      hsnSac:        { type: Boolean, default: true },
+      qty:           { type: Boolean, default: true },
+      unit:          { type: Boolean, default: true },
+      rate:          { type: Boolean, default: true },
+      discount:      { type: Boolean, default: true },
+      taxableAmount: { type: Boolean, default: true },
+      taxBreakdown:  { type: Boolean, default: true },
+      total:         { type: Boolean, default: true },
+    },
+    // Classic template specific column visibility
+    classicColumns: {
+      sno:           { type: Boolean, default: true },
+      name:          { type: Boolean, default: true },
+      description:   { type: Boolean, default: true },
+      hsnSac:        { type: Boolean, default: true },
+      qty:           { type: Boolean, default: true },
+      unit:          { type: Boolean, default: true },
+      listPrice:     { type: Boolean, default: true },
+      discount:      { type: Boolean, default: true },
+      rate:          { type: Boolean, default: true },
+      total:         { type: Boolean, default: true },
+    },
+  },
+
   // Bank Details — used as snapshot on invoices
   bankDetails: {
     accountName:   String,

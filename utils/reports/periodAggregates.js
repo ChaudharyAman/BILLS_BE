@@ -16,22 +16,37 @@ const ACTIVE_INVOICE_STATUSES = ['SENT', 'PAID', 'PARTIAL', 'UNPAID'];
 const ACTIVE_EXPENSE_STATUSES = { $nin: ['DRAFT', 'CANCELLED'] };
 
 const resolveScopeMatch = (userIdOrScope) => {
-  if (userIdOrScope && typeof userIdOrScope === 'object') {
-    if (userIdOrScope.match) return userIdOrScope.match;
-    if (userIdOrScope.profile) return { profile: new mongoose.Types.ObjectId(String(userIdOrScope.profile)) };
-    if (userIdOrScope.user) return { user: new mongoose.Types.ObjectId(String(userIdOrScope.user)) };
+  if (!userIdOrScope) return {};
+  if (typeof userIdOrScope === 'object') {
+    if (userIdOrScope.match && typeof userIdOrScope.match === 'object') return userIdOrScope.match;
+    if (userIdOrScope.profile && mongoose.Types.ObjectId.isValid(String(userIdOrScope.profile))) {
+      return { profile: new mongoose.Types.ObjectId(String(userIdOrScope.profile)) };
+    }
+    if (userIdOrScope.user && mongoose.Types.ObjectId.isValid(String(userIdOrScope.user))) {
+      return { user: new mongoose.Types.ObjectId(String(userIdOrScope.user)) };
+    }
   }
-  const id = userIdOrScope ? new mongoose.Types.ObjectId(String(userIdOrScope)) : null;
-  return id ? { user: id } : {};
+  if (mongoose.Types.ObjectId.isValid(String(userIdOrScope))) {
+    return { user: new mongoose.Types.ObjectId(String(userIdOrScope)) };
+  }
+  return {};
 };
 
 const resolveScopeFilter = (userIdOrScope) => {
-  if (userIdOrScope && typeof userIdOrScope === 'object') {
-    if (userIdOrScope.filter) return userIdOrScope.filter;
-    if (userIdOrScope.profile) return { profile: userIdOrScope.profile };
-    if (userIdOrScope.user) return { user: userIdOrScope.user };
+  if (!userIdOrScope) return {};
+  if (typeof userIdOrScope === 'object') {
+    if (userIdOrScope.filter && typeof userIdOrScope.filter === 'object') return userIdOrScope.filter;
+    if (userIdOrScope.profile && mongoose.Types.ObjectId.isValid(String(userIdOrScope.profile))) {
+      return { profile: userIdOrScope.profile };
+    }
+    if (userIdOrScope.user && mongoose.Types.ObjectId.isValid(String(userIdOrScope.user))) {
+      return { user: userIdOrScope.user };
+    }
   }
-  return userIdOrScope ? { user: userIdOrScope } : {};
+  if (mongoose.Types.ObjectId.isValid(String(userIdOrScope))) {
+    return { user: userIdOrScope };
+  }
+  return {};
 };
 
 
@@ -103,7 +118,7 @@ async function getPeriodSales(userId, startDate, endDate) {
  */
 async function getDepreciationCategoryIds(userId) {
   const deprCategories = await Category.find({
-    ...resolveScopeMatch(userId),
+    ...resolveScopeFilter(userId),
     $or: [
       { isDepreciation: true },
       { name: { $regex: /depreciation/i } },
@@ -140,7 +155,7 @@ async function getPeriodExpenses(userId, startDate, endDate, excludedCategoryIds
  */
 async function getPeriodCogs(userId, startDate, endDate) {
   const cogsCategories = await Category.find({
-    ...resolveScopeMatch(userId),
+    ...resolveScopeFilter(userId),
     isCogs: true,
     isDeleted: { $ne: true },
   }).select('_id').lean();
@@ -175,7 +190,7 @@ async function getPeriodCogs(userId, startDate, endDate) {
  */
 async function getPeriodInterestExpense(userId, startDate, endDate) {
   const interestCategories = await Category.find({
-    ...resolveScopeMatch(userId),
+    ...resolveScopeFilter(userId),
     name: { $regex: /interest\s*expense/i },
     isDeleted: { $ne: true },
   }).select('_id').lean();
@@ -398,7 +413,7 @@ async function getAssetsAsOf(userId, asOfDate) {
  */
 async function getFixedAssetsAndDepreciation(userId, startDate, endDate, asOfDate) {
   const fixedAssets = await Asset.find({
-    ...resolveScopeMatch(userId),
+    ...resolveScopeFilter(userId),
     category: 'fixed',
     status: 'active',
     isDeleted: { $ne: true },
@@ -482,7 +497,7 @@ async function getLiabilitiesAsOf(userId, asOfDate) {
  */
 async function getEquityTransactionsAsOf(userId, asOfDate) {
   const rows = await EquityTransaction.find({
-    ...resolveScopeMatch(userId),
+    ...resolveScopeFilter(userId),
     date: { $lte: asOfDate },
     isDeleted: { $ne: true },
   }).lean();
@@ -594,7 +609,7 @@ async function getCumulativeRetainedEarningsAsOf(userId, asOfDate) {
     ]),
     getEquityTransactionsAsOf(userId, asOfDate),
     Asset.find({
-      ...resolveScopeMatch(userId),
+      ...resolveScopeFilter(userId),
       category: 'fixed',
       status: 'active',
       isDeleted: { $ne: true },

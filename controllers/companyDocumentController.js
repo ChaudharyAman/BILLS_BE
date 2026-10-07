@@ -212,7 +212,7 @@ exports.updateDocument = async (req, res) => {
     const doc = await CompanyDocument.findOneAndUpdate(
       { _id: req.params.id, ...tenantFilter, isDeleted: { $ne: true } },
       { $set: updates },
-      { new: true }
+      { returnDocument: 'after' }
     ).select('-buffer');
 
     if (!doc) {

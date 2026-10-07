@@ -128,14 +128,14 @@ async function generateNextUniqueInvoiceNumber({ userId, profileId, invoicePrefi
   await Counter.findOneAndUpdate(
     { id: counterId },
     { $max: { seq: maxExistingSeq } },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true }
   );
 
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const counter = await Counter.findOneAndUpdate(
       { id: counterId },
       { $inc: { seq: 1 } },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+      { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true }
     );
 
     const candidate = buildAutoDocumentNumber(normalizedPrefix, counter.seq);
@@ -1213,13 +1213,47 @@ exports.updateInvoice = async (req, res) => {
 
     invoice.purchaseOrderRef = purchaseOrderRef || undefined;
 
-    const updatedInvoice = await invoice.save();
-    await syncIncomeFromInvoice(updatedInvoice);
+    let updatedInvoice;
+    try {
+      updatedInvoice = await invoice.save();
+    } catch (saveErr) {
+      if (saveErr.code === 11000) {
+        const indexMatch = saveErr.message && saveErr.message.match(/index:\s*([^\s]+)/);
+        const collidingIndex = indexMatch ? indexMatch[1] : null;
+        const isObsoleteIndex = collidingIndex && (
+          collidingIndex === 'invoiceNo_1' ||
+          (collidingIndex.startsWith('user_1_invoiceNo_1') && invoice.profile)
+        );
+
+        if (isObsoleteIndex) {
+          try {
+            await Invoice.collection.dropIndex(collidingIndex);
+            console.log(`[invoiceController] Dropped obsolete index ${collidingIndex} on update collision.`);
+            updatedInvoice = await invoice.save();
+          } catch (retryErr) {
+            throw retryErr;
+          }
+        } else {
+          return res.status(400).json({ message: `Invoice number "${invoice.invoiceNo}" already exists in this profile.` });
+        }
+      } else {
+        throw saveErr;
+      }
+    }
+
+    try {
+      await syncIncomeFromInvoice(updatedInvoice);
+    } catch (syncErr) {
+      console.warn('[invoiceController] Income sync warning on invoice update:', syncErr.message);
+    }
     await syncInvoiceCashMovement(updatedInvoice, updatedInvoice.date);
     res.json(updatedInvoice);
 
   } catch (error) {
     console.error('updateInvoice error:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ message: `Invoice number already exists.` });
+    }
     res.status(400).json({ message: error.message });
   }
 };
@@ -1389,12 +1423,41 @@ exports.updateInvoiceStatus = async (req, res) => {
       }
     }
 
-    const updatedInvoice = await invoice.save();
+    let updatedInvoice;
+    try {
+      updatedInvoice = await invoice.save();
+    } catch (saveErr) {
+      if (saveErr.code === 11000) {
+        const indexMatch = saveErr.message && saveErr.message.match(/index:\s*([^\s]+)/);
+        const collidingIndex = indexMatch ? indexMatch[1] : null;
+        const isObsoleteIndex = collidingIndex && (
+          collidingIndex === 'invoiceNo_1' ||
+          (collidingIndex.startsWith('user_1_invoiceNo_1') && invoice.profile)
+        );
+
+        if (isObsoleteIndex) {
+          try {
+            await Invoice.collection.dropIndex(collidingIndex);
+            console.log(`[invoiceController] Dropped obsolete index ${collidingIndex} on status collision.`);
+            updatedInvoice = await invoice.save();
+          } catch (retryErr) {
+            throw retryErr;
+          }
+        } else {
+          return res.status(400).json({ message: `Invoice number "${invoice.invoiceNo}" already exists in this profile.` });
+        }
+      } else {
+        throw saveErr;
+      }
+    }
     await syncIncomeFromInvoice(updatedInvoice);
     await syncInvoiceCashMovement(updatedInvoice, updatedInvoice.date);
     res.json(updatedInvoice);
   } catch (error) {
     console.error('updateInvoiceStatus error:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'Invoice number already exists in this profile.' });
+    }
     res.status(500).json({ message: error.message });
   }
 };

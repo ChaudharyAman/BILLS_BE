@@ -141,17 +141,26 @@ const getTeamMembers = async (req, res) => {
       .sort({ createdAt: -1 });
 
     // Include owner details in summary response
-    const owner = await User.findById(req.companyId).select('-password');
+    let owner = await User.findById(req.companyId).select('-password');
+    if (!owner && req.user) {
+      owner = req.user;
+    }
 
     res.json({
-      owner: {
+      owner: owner ? {
         _id: owner._id,
         username: owner.username,
         email: owner.email,
         isOwner: true,
+        roleName: owner.role === 'superadmin' ? 'Master Administrator' : 'Company Owner',
+      } : {
+        _id: req.companyId,
+        username: 'Owner',
+        email: '',
+        isOwner: true,
         roleName: 'Company Owner',
       },
-      teamMembers: members,
+      teamMembers: members || [],
     });
   } catch (error) {
     console.error('Get Team Members Error:', error);
