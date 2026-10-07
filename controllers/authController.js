@@ -55,21 +55,22 @@ const buildAuthResponse = (req) => {
   };
 };
 
-// Safari/Chrome Cookie Helper
+// Cookie options — HTTPS-only by design.
+// Tokens are HttpOnly + Secure: never readable from JS, only sent over TLS.
+// Local dev override: set COOKIE_ALLOW_HTTP=true in your .env file.
 const getCookieOptions = (req) => {
-  const origin = req.get('origin') || '';
-  const isLocalhost = origin.includes('localhost') || origin.includes('127.0.0.1');
-  const isHttps = req.secure || req.protocol === 'https' || req.get('x-forwarded-proto') === 'https';
+  const isProd = process.env.NODE_ENV === 'production';
+  const isHttps = req?.secure || req?.headers?.['x-forwarded-proto'] === 'https';
+  const allowHttp = !isProd && process.env.COOKIE_ALLOW_HTTP === 'true';
+  const secure = isProd ? true : (isHttps || !allowHttp);
   const envSameSite = process.env.COOKIE_SAME_SITE?.toLowerCase();
-  
-  // Browsers drop cookies if Secure is true over plain HTTP.
-  const secure = Boolean(isHttps && !isLocalhost);
-  const sameSite = envSameSite || (secure ? 'none' : 'lax');
-  
+  const sameSite = envSameSite || (secure ? (isProd ? 'none' : 'lax') : 'lax');
+
   return {
-    httpOnly: true,
-    secure,
+    httpOnly: true, // Never accessible via JavaScript (XSS mitigation)
+    secure,         // HTTPS only (encrypted TLS transit)
     sameSite,
+    path: '/',
     maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
   };
 };
@@ -273,6 +274,29 @@ exports.me = async (req, res) => {
     });
   }
 
+  // FIX: If the current request is an impersonation/switched session, do NOT generate
+  // a new token. Generating a new plain token strips isSwitchedSession + switchedBy
+  // metadata, which breaks the exit flow (requireSwitchedSession returns 400).
+  // Instead, echo the existing switched token back so the client keeps using it.
+  const tokenPayload = req.tokenPayload;
+  if (tokenPayload?.isSwitchedSession && tokenPayload?.switchedBy) {
+    const existingToken =
+      req.token ||
+      (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.split(' ')[1] : '') ||
+      req.cookies?.token ||
+      '';
+    if (existingToken) {
+      res.cookie('token', existingToken, getCookieOptions(req));
+    }
+    return res.json({
+      ...buildAuthResponse(req),
+      token: existingToken,
+      isSwitchedSession: true,
+      switchedBy: tokenPayload.switchedBy,
+    });
+  }
+
+  // Normal session: generate a refreshed token
   const token = generateToken(req.user);
   res.cookie('token', token, getCookieOptions(req));
   res.json({

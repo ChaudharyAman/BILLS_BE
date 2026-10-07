@@ -156,8 +156,21 @@ exports.updateSettings = async (req, res) => {
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
       defaultCurrency, timezone, dateFormat, integration, smtp, smtpConfigs,
       signatureEnabled, showSignatureOnInvoices, showSignatureOnQuotes, showSignatureOnPurchaseOrders, showLogoOnDocuments,
-      logoUrl, signatureUrl
+      logoUrl, signatureUrl, invoiceTemplate
     } = req.body;
+
+    // Process invoice template & columns printing preferences
+    let safeInvoiceTemplate = undefined;
+    if (invoiceTemplate !== undefined) {
+      try {
+        const rawTpl = typeof invoiceTemplate === 'string' ? JSON.parse(invoiceTemplate) : invoiceTemplate;
+        if (rawTpl && typeof rawTpl === 'object') {
+          safeInvoiceTemplate = rawTpl;
+        }
+      } catch (e) {
+        console.warn('Failed to parse invoiceTemplate payload:', e.message);
+      }
+    }
 
     // Strip write-only secret placeholders so they are not overwritten with the mask value
     let safeIntegration = integration;
@@ -330,6 +343,9 @@ exports.updateSettings = async (req, res) => {
       } else if (safeSmtp !== undefined) {
         settingsData.smtp = safeSmtp;
       }
+      if (safeInvoiceTemplate !== undefined) {
+        settingsData.invoiceTemplate = safeInvoiceTemplate;
+      }
       settings = new Settings(settingsData);
     } else {
       // Update existing
@@ -341,6 +357,33 @@ exports.updateSettings = async (req, res) => {
           settings.integration = {};
         }
         Object.assign(settings.integration, safeIntegration);
+      }
+      if (safeInvoiceTemplate !== undefined) {
+        if (!settings.invoiceTemplate) {
+          settings.invoiceTemplate = {};
+        }
+        if (safeInvoiceTemplate.defaultTemplate) {
+          settings.invoiceTemplate.defaultTemplate = safeInvoiceTemplate.defaultTemplate;
+        }
+        if (safeInvoiceTemplate.columns) {
+          settings.invoiceTemplate.columns = {
+            ...(settings.invoiceTemplate.columns?.toObject ? settings.invoiceTemplate.columns.toObject() : settings.invoiceTemplate.columns),
+            ...safeInvoiceTemplate.columns,
+          };
+        }
+        if (safeInvoiceTemplate.modernColumns) {
+          settings.invoiceTemplate.modernColumns = {
+            ...(settings.invoiceTemplate.modernColumns?.toObject ? settings.invoiceTemplate.modernColumns.toObject() : settings.invoiceTemplate.modernColumns),
+            ...safeInvoiceTemplate.modernColumns,
+          };
+        }
+        if (safeInvoiceTemplate.classicColumns) {
+          settings.invoiceTemplate.classicColumns = {
+            ...(settings.invoiceTemplate.classicColumns?.toObject ? settings.invoiceTemplate.classicColumns.toObject() : settings.invoiceTemplate.classicColumns),
+            ...safeInvoiceTemplate.classicColumns,
+          };
+        }
+        settings.markModified('invoiceTemplate');
       }
       if (safeSmtpConfigs !== undefined) {
         settings.smtpConfigs = safeSmtpConfigs;

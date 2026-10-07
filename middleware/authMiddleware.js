@@ -36,6 +36,9 @@ const protect = async (req, res, next) => {
     return res.status(401).json({ message: 'Not authorized, token invalid or expired' });
   }
 
+  req.token = token;
+  req.tokenPayload = decoded;
+
   try {
     if (decoded.isShareToken && decoded.shareId) {
       const ProfileShare = require('../models/ProfileShare');

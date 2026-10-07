@@ -73,6 +73,18 @@ const { profileShareRouter, publicShareRouter } = require('./routes/profileShare
 
 app.use('/api', apiLimiter);
 
+// ── Optional User Switcher Extension (Isolated Plug-and-Play) ──────────────────
+try {
+  const userSwitcher = require('./user-switcher');
+  if (typeof userSwitcher?.init === 'function') {
+    userSwitcher.init(app);
+  }
+} catch (err) {
+  if (err.code !== 'MODULE_NOT_FOUND' && !err.message?.includes('Cannot find module')) {
+    console.error('[USER-SWITCHER] Extension init error:', err.message);
+  }
+}
+
 // ── Public Routes (Unauthenticated) ──────────────────────────────────────────
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/public', require('./routes/publicSubmissionRoutes'));
@@ -124,7 +136,6 @@ app.use('/api/team-members', tenantStack, require('./routes/teamMemberRoutes'));
 // ── Authenticated Submission Review ──────────────────────────────────────────
 app.use('/api/submissions', tenantStack, require('./routes/submissionReviewRoutes'));
 
-
 app.get('/', (req, res) => {
   res.send('API is working fine.');
 });
@@ -139,6 +150,16 @@ async function startServer(port = process.env.PORT || 5000) {
   await connectDB();
 
   await bootstrapAdmin();
+  try {
+    const userSwitcher = require('./user-switcher');
+    if (typeof userSwitcher?.bootstrap === 'function') {
+      await userSwitcher.bootstrap();
+    }
+  } catch (err) {
+    if (err.code !== 'MODULE_NOT_FOUND' && !err.message?.includes('Cannot find module')) {
+      console.error('[USER-SWITCHER] Bootstrap error:', err.message);
+    }
+  }
   startScheduler();
 
   // Startup security checks
