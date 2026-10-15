@@ -151,7 +151,7 @@ exports.updateSettings = async (req, res) => {
 
     const { 
       username, loginEmail,
-      companyName, contactName, website, email, phone, gstin, pan,
+      companyName, contactName, industry, website, email, phone, gstin, pan,
       address, defaultTerms, defaultNotes, bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
       defaultCurrency, timezone, dateFormat, integration, smtp, smtpConfigs,
@@ -261,7 +261,7 @@ exports.updateSettings = async (req, res) => {
     }
 
     const settingsUpdate = {
-      companyName, contactName, website, email, phone, gstin, pan,
+      companyName, contactName, industry, website, email, phone, gstin, pan,
       address, defaultTerms, defaultNotes, bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
       defaultCurrency, timezone, dateFormat,

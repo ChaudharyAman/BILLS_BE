@@ -243,8 +243,8 @@ exports.switchUser = async (req, res) => {
     }
 
     // Determine identity of the administrator performing the switch
-    let masterUser = req.user;
-    if (req.tokenPayload && req.tokenPayload.isSwitchedSession && req.tokenPayload.switchedBy) {
+    let masterUser = req.masterUser || req.initiator || req.user;
+    if (!masterUser && req.tokenPayload && req.tokenPayload.isSwitchedSession && req.tokenPayload.switchedBy) {
       const initiatorId = req.tokenPayload.switchedBy.id;
       // VULN-02: Enforce initiator active check in database
       let initiator = await MasterUser.findById(initiatorId);
@@ -271,6 +271,11 @@ exports.switchUser = async (req, res) => {
     // Guard 1: Prevent self-impersonation
     if (targetUser._id.toString() === masterIdStr) {
       return res.status(400).json({ message: 'Cannot impersonate your own account' });
+    }
+
+    // Guard 1b: Prevent switching to the exact same user already being impersonated
+    if (req.tokenPayload?.isSwitchedSession && targetUser._id.toString() === req.tokenPayload.id?.toString()) {
+      return res.status(400).json({ message: 'You are already impersonating this user' });
     }
 
     // Guard 2: Prevent impersonating other Superadmins or Master User accounts
@@ -486,6 +491,24 @@ exports.getStatus = async (req, res) => {
     }
 
     if (!activeUser || activeUser.isActive === false || activeUser.status === 'suspended') {
+      if (isSwitched) {
+        // Even if the impersonated user was deactivated or deleted, retain the switched session state
+        // so the Master User can still see the impersonation banner and exit or switch to another user.
+        return res.json({
+          isSwitched: true,
+          switchedBy: decoded.switchedBy,
+          canSwitch: true,
+          currentUser: activeUser ? formatUserResponse(activeUser) : {
+            _id: decoded.id,
+            username: 'Deactivated User',
+            email: '',
+            role: decoded.role || 'client',
+            status: activeUser?.status || 'deactivated',
+            isMasterUser: false,
+            canSwitchUser: false,
+          },
+        });
+      }
       return res.json({ isSwitched: false, canSwitch: false, currentUser: null });
     }
 

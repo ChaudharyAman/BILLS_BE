@@ -1,8 +1,6 @@
 const mongoose = require('mongoose');
 const softDeletePlugin = require('../middleware/softDeletePlugin');
-
-
-
+const { schema: logisticsSchema, itemFields: logisticsItemFields } = require('../industries/logistics');
 const AttachmentSchema = new mongoose.Schema({
   originalName: { type: String, required: true },
   mimeType:     { type: String, required: true },
@@ -40,6 +38,9 @@ const InvoiceItemSchema = new mongoose.Schema({
   cessPercent: { type: Number, default: 0 },
   exciseAmount: { type: Number, default: 0 },
   
+  // Modular Industry Line Item Extensions (Logistics)
+  ...logisticsItemFields,
+
   // Final amount for this line item
   amount: { type: Number, required: true }, 
 });
@@ -127,7 +128,40 @@ const InvoiceSchema = new mongoose.Schema({
     poNumber: String,
     poDate: Date,
     eWayBillNo: String,
+    shipperName: String,
+    shipperAddress: String,
+    shipperCountry: String,
+    mblNo: String,
+    mblDate: Date,
+    hblNo: String,
+    hblDate: Date,
+    sbNo: String,
+    sbDate: Date,
+    exporterInvNo: String,
+    exporterInvDate: Date,
+    vehicleNo: String,
+    vesselName: String,
+    portOfLoading: String,
+    portOfDischarge: String,
+    finalDestination: String,
+    jobRef: String,
+    shippingLine: String,
+    packages: String,
+    grossWeight: String,
+    netWeight: String,
+    cbm: String,
+    containerNo: String,
+    flightNo: String,
+    deliveryNote: String,
+    otherReferences: String,
+    chargeableWeight: String,
+    despatchedThrough: String,
+    termsOfDelivery: String,
+    cargoDescription: String,
   },
+
+  // Dedicated Logistics & Freight Forwarding Details (Modular Industry Plugin)
+  logistics: logisticsSchema,
   
   // GST Details
   placeOfSupply: String, // State

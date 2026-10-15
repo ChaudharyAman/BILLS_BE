@@ -851,11 +851,16 @@ function buildModernInvoicePdfHtml({ invoice, settings }) {
   `;
 }
 
+const { buildLogisticsInvoicePdfHtml } = require('../industries/logistics');
+
 /**
  * Builds A4 print layout HTML for Puppeteer PDF generation.
- * Supports 'classic' (official GST print template) and 'modern'. Defaults to 'classic'.
+ * Supports 'classic' (official GST print template), 'modern', and 'logistics'. Defaults to 'classic'.
  */
 function buildInvoicePdfHtml({ invoice, settings, template = 'classic' }) {
+  if (template === 'logistics' || (template === 'classic' && (invoice?.logistics?.enabled || settings?.industry === 'Logistics'))) {
+    return buildLogisticsInvoicePdfHtml({ invoice, settings });
+  }
   if (template === 'modern') {
     return buildModernInvoicePdfHtml({ invoice, settings });
   }
@@ -867,5 +872,7 @@ module.exports = {
   buildInvoicePdfHtml,
   buildClassicInvoicePdfHtml,
   buildModernInvoicePdfHtml,
+  buildLogisticsInvoicePdfHtml,
   numberToWords,
 };
+

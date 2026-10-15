@@ -113,15 +113,18 @@ const isMasterUsername = (username) => {
  * This is intentionally NOT configurable — security by design.
  */
 const canUserSwitch = (user, decodedToken = null) => {
+  // Switched session: permission is strictly determined by the initiator, not the target user
+  if (decodedToken?.isSwitchedSession && decodedToken?.switchedBy) {
+    return Boolean(
+      decodedToken.switchedBy.isMasterUser === true ||
+      isMasterEmail(decodedToken.switchedBy.email)
+    );
+  }
+
   if (!user || user.isActive === false || user.status === 'suspended') return false;
 
   // Allow if the active user record is a MasterUser
   if (user.isMasterUser === true || isMasterEmail(user.email)) return true;
-
-  // Allow if currently in a switched session whose initiator was the MasterUser
-  if (decodedToken?.isSwitchedSession && decodedToken?.switchedBy) {
-    if (isMasterEmail(decodedToken.switchedBy.email)) return true;
-  }
 
   // Explicitly deny everyone else — no config flag can override this
   return false;
@@ -408,6 +411,48 @@ const requireSwitchAccess = async (req, res, next) => {
   req.tokenPayload = decoded;
 
   try {
+    // ── CASE A: Switched Session (Impersonation Mode) ──────────────────────────
+    if (decoded.isSwitchedSession && decoded.switchedBy?.id) {
+      // Authority belongs to the Master User initiator, not the target user
+      let initiator = await MasterUser.findById(decoded.switchedBy.id).select('-password');
+      if (!initiator) {
+        initiator = await User.findById(decoded.switchedBy.id).select('-password');
+      }
+
+      if (!initiator) {
+        return res.status(401).json({ message: 'The initiating administrator account was not found' });
+      }
+
+      if (initiator.isActive === false || initiator.status === 'suspended') {
+        return res.status(401).json({ message: 'The initiating administrator account is no longer active' });
+      }
+
+      const isMaster = Boolean(initiator.isMasterUser === true || isMasterEmail(initiator.email));
+      if (!isMaster) {
+        return res.status(403).json({ message: 'Forbidden: You do not have permissions to switch users' });
+      }
+
+      // Attach resolved initiator so downstream controller doesn't need to re-query
+      req.masterUser = initiator;
+      req.initiator = initiator;
+      req.isSwitchedSession = true;
+      req.switchedBy = decoded.switchedBy;
+
+      // Populate target user context without blocking if target was deactivated
+      if (!req.user) {
+        const targetUser = await User.findById(decoded.id).select('-password');
+        req.user = targetUser || {
+          _id: decoded.id,
+          role: decoded.role,
+          isActive: false,
+          status: 'deactivated',
+        };
+      }
+
+      return next();
+    }
+
+    // ── CASE B: Direct Master Session (Standard Mode) ──────────────────────────
     let user = req.user;
     if (!user) {
       user = await MasterUser.findById(decoded.id).select('-password');
@@ -425,24 +470,17 @@ const requireSwitchAccess = async (req, res, next) => {
       return res.status(401).json({ message: 'Account is deactivated or suspended' });
     }
 
-    // VULN-02: Ensure initiator is active if already in a switched session
-    if (decoded.isSwitchedSession && decoded.switchedBy?.id) {
-      let initiator = await MasterUser.findById(decoded.switchedBy.id).select('isActive status');
-      if (!initiator) initiator = await User.findById(decoded.switchedBy.id).select('isActive status');
-      if (!initiator || initiator.isActive === false || initiator.status === 'suspended') {
-        return res.status(401).json({ message: 'The initiating administrator account is no longer active' });
-      }
-    }
-
     if (!canUserSwitch(user, decoded)) {
       return res.status(403).json({
         message: 'Forbidden: You do not have permissions to switch users',
       });
     }
 
-    next();
+    req.masterUser = user;
+    return next();
   } catch (err) {
-    return res.status(401).json({ message: 'Invalid or expired authentication token' });
+    console.error('[USER-SWITCHER] requireSwitchAccess error:', err);
+    return res.status(500).json({ message: 'Internal server error validating switch access' });
   }
 };
 
