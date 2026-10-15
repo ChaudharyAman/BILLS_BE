@@ -30,6 +30,10 @@ const SettingsSchema = new mongoose.Schema({
   phone: String,
   website: String,
   contactName: String,
+  industry: {
+    type: String,
+    default: 'General',
+  },
   logoUrl: String,
   signatureUrl: String,
 

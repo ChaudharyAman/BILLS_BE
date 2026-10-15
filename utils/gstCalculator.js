@@ -67,15 +67,21 @@ function processDocumentItems(items = [], { invoiceType = 'Tax Invoice', isIntra
     const qty = Number(item.qty) || 0;
     const rate = Number(item.rate) || 0;
     const discountPct = Math.min(100, Math.max(0, Number(item.discount) || 0));
-    const taxableValue = roundTwo(qty * rate * (1 - discountPct / 100));
-    const taxRate = hasTax ? sanitizeGstRate(item.taxRate) : 0;
+    const exRate = Number(item.exRate) > 0 ? Number(item.exRate) : 1;
+    const foreignRate = Number(item.foreignRate) || 0;
+    const effectiveRate = foreignRate > 0 && exRate !== 1 ? roundTwo(foreignRate * exRate) : rate;
+
+    const baseAmount = roundTwo(qty * effectiveRate * (1 - discountPct / 100));
+    const isTaxExempt = Boolean(item.isTaxExempt) || (item.taxableAmount === 0 && Number(item.taxRate) === 0);
+    const taxableValue = isTaxExempt ? 0 : (item.taxableAmount !== undefined && item.taxableAmount !== null && Number(item.taxableAmount) >= 0 ? roundTwo(Number(item.taxableAmount)) : baseAmount);
+    const taxRate = (hasTax && !isTaxExempt) ? sanitizeGstRate(item.taxRate) : 0;
 
     let cgst = 0;
     let sgst = 0;
     let igst = 0;
     const itemTax = roundTwo(taxableValue * (taxRate / 100));
 
-    if (hasTax) {
+    if (hasTax && !isTaxExempt) {
       if (isIntraState) {
         cgst = roundTwo(itemTax / 2);
         sgst = roundTwo(itemTax / 2);
@@ -92,8 +98,8 @@ function processDocumentItems(items = [], { invoiceType = 'Tax Invoice', isIntra
       exciseAmount = roundTwo(bed + sed + cess);
     }
 
-    const total = roundTwo(taxableValue + itemTax + exciseAmount);
-    subTotal = roundTwo(subTotal + taxableValue);
+    const total = roundTwo(baseAmount + itemTax + exciseAmount);
+    subTotal = roundTwo(subTotal + baseAmount);
     taxTotal = roundTwo(taxTotal + itemTax);
     totalCGST = roundTwo(totalCGST + cgst);
     totalSGST = roundTwo(totalSGST + sgst);
@@ -107,7 +113,12 @@ function processDocumentItems(items = [], { invoiceType = 'Tax Invoice', isIntra
       hsnCode: item.hsnCode,
       qty,
       unit: item.unit,
-      rate,
+      rate: effectiveRate,
+      currency: item.currency || 'INR',
+      exRate,
+      foreignRate,
+      taxableAmount: item.taxableAmount !== undefined ? Number(item.taxableAmount) : taxableValue,
+      isTaxExempt,
       discount: discountPct,
       taxRate,
       taxAmount: itemTax,

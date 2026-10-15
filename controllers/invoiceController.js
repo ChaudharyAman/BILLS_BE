@@ -628,6 +628,7 @@ exports.createInvoice = async (req, res) => {
       dueDate,
       shippingAddress,
       transport,
+      logistics,
       bankDetails,
       placeOfSupply,
       paymentMode,
@@ -818,6 +819,7 @@ exports.createInvoice = async (req, res) => {
         status: finalStatus,
         shippingAddress: resolvedShippingAddress,
         transport,
+        logistics: logistics || (transport ? { enabled: Boolean(transport.shipperName || transport.mblNo || transport.jobRef), ...transport } : undefined),
         bankDetails,
         placeOfSupply: clientState,
         reverseCharge: !!reverseCharge,
@@ -905,6 +907,7 @@ exports.updateInvoice = async (req, res) => {
       dueDate,
       shippingAddress,
       transport,
+      logistics,
       bankDetails,
       placeOfSupply,
       paymentMode,
@@ -1107,6 +1110,11 @@ exports.updateInvoice = async (req, res) => {
     }
     invoice.shippingAddress = resolvedShippingAddress;
     invoice.transport = transport;
+    if (logistics !== undefined) {
+      invoice.logistics = logistics;
+    } else if (transport) {
+      invoice.logistics = { ...(invoice.logistics ? (invoice.logistics.toObject ? invoice.logistics.toObject() : invoice.logistics) : {}), ...transport };
+    }
     invoice.bankDetails = bankDetails;
     invoice.placeOfSupply = clientState;
     invoice.reverseCharge = !!reverseCharge;
