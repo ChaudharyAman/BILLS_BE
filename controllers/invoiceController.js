@@ -791,6 +791,11 @@ exports.createInvoice = async (req, res) => {
     }
 
     let newInvoice = null;
+    const hasBank = (b) => Boolean(b && (b.bankName || b.accountNumber || b.ifscCode));
+    const resolvedBankDetails = hasBank(bankDetails)
+      ? bankDetails
+      : (hasBank(userSettings?.bankDetails) ? userSettings.bankDetails : bankDetails);
+
     for (let attempt = 0; attempt < 25; attempt += 1) {
       const invoice = new Invoice(attachTenant(req, {
         invoiceNo,
@@ -820,7 +825,7 @@ exports.createInvoice = async (req, res) => {
         shippingAddress: resolvedShippingAddress,
         transport,
         logistics: logistics || (transport ? { enabled: Boolean(transport.shipperName || transport.mblNo || transport.jobRef), ...transport } : undefined),
-        bankDetails,
+        bankDetails: resolvedBankDetails,
         placeOfSupply: clientState,
         reverseCharge: !!reverseCharge,
         fy: fy || getFinancialYear(date),
@@ -885,12 +890,23 @@ exports.createInvoice = async (req, res) => {
       }
     }
 
-    await syncIncomeFromInvoice(newInvoice);
-    await syncInvoiceCashMovement(newInvoice, newInvoice.date);
-    res.status(201).json(newInvoice);
+    try {
+      await syncIncomeFromInvoice(newInvoice);
+    } catch (syncErr) {
+      console.warn('[invoiceController] Income sync warning on invoice create:', syncErr.message);
+    }
+    try {
+      await syncInvoiceCashMovement(newInvoice, newInvoice.date);
+    } catch (cashErr) {
+      console.warn('[invoiceController] Cash movement sync warning on invoice create:', cashErr.message);
+    }
+    if (!res.headersSent) {
+      res.status(201).json(newInvoice);
+    }
 
   } catch (error) {
     console.error('createInvoice error:', error);
+    if (res.headersSent) return;
     res.status(400).json({ message: error.message });
   }
 };
@@ -1115,7 +1131,12 @@ exports.updateInvoice = async (req, res) => {
     } else if (transport) {
       invoice.logistics = { ...(invoice.logistics ? (invoice.logistics.toObject ? invoice.logistics.toObject() : invoice.logistics) : {}), ...transport };
     }
-    invoice.bankDetails = bankDetails;
+    if (bankDetails !== undefined) {
+      const hasBank = (b) => Boolean(b && (b.bankName || b.accountNumber || b.ifscCode));
+      invoice.bankDetails = hasBank(bankDetails)
+        ? bankDetails
+        : (hasBank(userSettings?.bankDetails) ? userSettings.bankDetails : bankDetails);
+    }
     invoice.placeOfSupply = clientState;
     invoice.reverseCharge = !!reverseCharge;
     invoice.fy = fy || getFinancialYear(date);
@@ -1254,12 +1275,19 @@ exports.updateInvoice = async (req, res) => {
     } catch (syncErr) {
       console.warn('[invoiceController] Income sync warning on invoice update:', syncErr.message);
     }
-    await syncInvoiceCashMovement(updatedInvoice, updatedInvoice.date);
-    res.json(updatedInvoice);
+    try {
+      await syncInvoiceCashMovement(updatedInvoice, updatedInvoice.date);
+    } catch (cashErr) {
+      console.warn('[invoiceController] Cash movement sync warning on invoice update:', cashErr.message);
+    }
+    if (!res.headersSent) {
+      res.json(updatedInvoice);
+    }
 
   } catch (error) {
     console.error('updateInvoice error:', error);
-    if (error.code === 11000) {
+    if (res.headersSent) return;
+    if (isInvoiceNumberDuplicateError(error)) {
       return res.status(400).json({ message: `Invoice number already exists.` });
     }
     res.status(400).json({ message: error.message });
@@ -1458,12 +1486,23 @@ exports.updateInvoiceStatus = async (req, res) => {
         throw saveErr;
       }
     }
-    await syncIncomeFromInvoice(updatedInvoice);
-    await syncInvoiceCashMovement(updatedInvoice, updatedInvoice.date);
-    res.json(updatedInvoice);
+    try {
+      await syncIncomeFromInvoice(updatedInvoice);
+    } catch (syncErr) {
+      console.warn('[invoiceController] Income sync warning on status update:', syncErr.message);
+    }
+    try {
+      await syncInvoiceCashMovement(updatedInvoice, updatedInvoice.date);
+    } catch (cashErr) {
+      console.warn('[invoiceController] Cash movement sync warning on status update:', cashErr.message);
+    }
+    if (!res.headersSent) {
+      res.json(updatedInvoice);
+    }
   } catch (error) {
     console.error('updateInvoiceStatus error:', error);
-    if (error.code === 11000) {
+    if (res.headersSent) return;
+    if (isInvoiceNumberDuplicateError(error)) {
       return res.status(400).json({ message: 'Invoice number already exists in this profile.' });
     }
     res.status(500).json({ message: error.message });

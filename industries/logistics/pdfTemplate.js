@@ -58,7 +58,10 @@ function buildLogisticsInvoicePdfHtml({ invoice, settings }) {
   const invType = invoice.invoiceType || 'Tax Invoice';
   const grandTotal = Number(invoice.grandTotal) || 0;
   const rounded = Math.round(grandTotal) - grandTotal;
-  const bank = invoice.bankDetails || company.bankDetails || {};
+  const hasBankInfo = (b) => Boolean(b && (b.bankName || b.accountNumber || b.ifscCode));
+  const bank = hasBankInfo(invoice.bankDetails)
+    ? invoice.bankDetails
+    : (hasBankInfo(company.bankDetails) ? company.bankDetails : {});
   const isIntra = (Number(invoice.totalIGST) || 0) === 0;
 
   const rawItems = Array.isArray(invoice.items) && invoice.items.length ? invoice.items : [];

@@ -35,6 +35,8 @@ function addrStr(a) {
     .join(', ');
 }
 
+const hasBankInfo = (b) => Boolean(b && (b.bankName || b.accountNumber || b.ifscCode));
+
 /**
  * Builds responsive, email-client-friendly HTML for an invoice notification.
  */
@@ -50,7 +52,9 @@ function buildInvoiceEmailHtml({ invoice, settings, customMessage = '' }) {
   const advancePaid = Number(invoice.advancePaid) || 0;
   const amountDue = advancePaid > 0 ? Math.max(0, grandTotal - advancePaid) : (balanceDue > 0 ? balanceDue : grandTotal);
   const items = Array.isArray(invoice.items) ? invoice.items : [];
-  const bank = invoice.bankDetails || company.bankDetails || {};
+  const bank = hasBankInfo(invoice.bankDetails)
+    ? invoice.bankDetails
+    : (hasBankInfo(company.bankDetails) ? company.bankDetails : {});
   const logoUrl = (company.showLogoOnDocuments !== false && (company.logoUrl || company.logo)) ? (company.logoUrl || company.logo) : null;
 
   const itemsRows = items.map((it, idx) => `
@@ -269,7 +273,9 @@ function buildClassicInvoicePdfHtml({ invoice, settings }) {
   const invoiceNo = invoice.invoiceNo || 'INV';
   const invType = invoice.invoiceType || 'Tax Invoice';
   const grandTotal = Number(invoice.grandTotal) || 0;
-  const bank = invoice.bankDetails || company.bankDetails || {};
+  const bank = hasBankInfo(invoice.bankDetails)
+    ? invoice.bankDetails
+    : (hasBankInfo(company.bankDetails) ? company.bankDetails : {});
   const hasTax = invType === 'Tax Invoice' || invType === 'Excise Invoice' || (Number(invoice.totalCGST) > 0 || Number(invoice.totalIGST) > 0);
   const isIntra = (Number(invoice.totalIGST) || 0) === 0;
 
@@ -694,7 +700,9 @@ function buildModernInvoicePdfHtml({ invoice, settings }) {
   const invType = invoice.invoiceType || 'Tax Invoice';
   const grandTotal = Number(invoice.grandTotal) || 0;
   const items = Array.isArray(invoice.items) ? invoice.items : [];
-  const bank = invoice.bankDetails || company.bankDetails || {};
+  const bank = hasBankInfo(invoice.bankDetails)
+    ? invoice.bankDetails
+    : (hasBankInfo(company.bankDetails) ? company.bankDetails : {});
   const logoUrl = (company.showLogoOnDocuments !== false && (company.logoUrl || company.logo)) ? (company.logoUrl || company.logo) : null;
 
   const itemRowsHtml = items.map((it, idx) => `
@@ -858,7 +866,9 @@ const { buildLogisticsInvoicePdfHtml } = require('../industries/logistics');
  * Supports 'classic' (official GST print template), 'modern', and 'logistics'. Defaults to 'classic'.
  */
 function buildInvoicePdfHtml({ invoice, settings, template = 'classic' }) {
-  if (template === 'logistics' || (template === 'classic' && (invoice?.logistics?.enabled || settings?.industry === 'Logistics'))) {
+  const isLogisticsCo = String(settings?.industry || '').toLowerCase().includes('logistics') ||
+                        String(settings?.industry || '').toLowerCase().includes('freight');
+  if (template === 'logistics' || (template === 'classic' && (invoice?.logistics?.enabled || isLogisticsCo))) {
     return buildLogisticsInvoicePdfHtml({ invoice, settings });
   }
   if (template === 'modern') {
