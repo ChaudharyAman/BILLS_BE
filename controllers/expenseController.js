@@ -220,6 +220,7 @@ exports.getExpenses = async (req, res) => {
       .select('-items -terms -privateNotes -attachments.buffer')
       .populate('category', 'name type color icon')
       .populate('subCategory', 'name type color icon parent')
+      .populate('businessUnit', 'name code')
       .lean()
       .sort({ date: -1, createdAt: -1 });
 
