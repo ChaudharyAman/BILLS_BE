@@ -155,11 +155,13 @@ exports.viewDocument = async (req, res) => {
       return res.status(404).json({ message: 'Document not found' });
     }
 
+    res.removeHeader('X-Frame-Options');
     res.set({
       'Content-Type': doc.mimeType || 'application/octet-stream',
       'Content-Disposition': `inline; filename="${encodeURIComponent(doc.originalName)}"`,
       'Content-Length': doc.buffer.length,
       'Cache-Control': 'private, max-age=3600',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
     });
 
     return res.send(doc.buffer);
@@ -187,6 +189,7 @@ exports.downloadDocument = async (req, res) => {
       'Content-Type': doc.mimeType || 'application/octet-stream',
       'Content-Disposition': `attachment; filename="${encodeURIComponent(doc.originalName)}"`,
       'Content-Length': doc.buffer.length,
+      'Cross-Origin-Resource-Policy': 'cross-origin',
     });
 
     return res.send(doc.buffer);

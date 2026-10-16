@@ -14,6 +14,9 @@ const protect = async (req, res, next) => {
   if (req.cookies && req.cookies.token) {
     candidateTokens.push(req.cookies.token);
   }
+  if (req.query && req.query.token) {
+    candidateTokens.push(req.query.token);
+  }
 
   if (candidateTokens.length === 0) {
     return res.status(401).json({ message: 'Not authorized, no token' });
