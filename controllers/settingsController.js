@@ -260,9 +260,40 @@ exports.updateSettings = async (req, res) => {
       }
     }
 
+    // Safely normalize bankDetails whether parsed as object or flat bracket keys
+    let safeBankDetails = bankDetails;
+    if (!safeBankDetails && req.body) {
+      if (req.body['bankDetails[accountName]'] !== undefined || req.body['bankDetails[bankName]'] !== undefined || req.body['bankDetails[accountNumber]'] !== undefined) {
+        safeBankDetails = {
+          accountName: req.body['bankDetails[accountName]'] || '',
+          bankName: req.body['bankDetails[bankName]'] || '',
+          accountNumber: req.body['bankDetails[accountNumber]'] || '',
+          branch: req.body['bankDetails[branch]'] || '',
+          ifscCode: (req.body['bankDetails[ifscCode]'] || '').toUpperCase(),
+        };
+      }
+    }
+
+    // Safely normalize address whether parsed as object or flat bracket keys
+    let safeAddress = address;
+    if (!safeAddress && req.body) {
+      if (req.body['address[line1]'] !== undefined || req.body['address[city]'] !== undefined || req.body['address[state]'] !== undefined) {
+        safeAddress = {
+          line1: req.body['address[line1]'] || '',
+          line2: req.body['address[line2]'] || '',
+          city: req.body['address[city]'] || '',
+          state: req.body['address[state]'] || '',
+          zip: req.body['address[zip]'] || '',
+          country: req.body['address[country]'] || '',
+        };
+      }
+    }
+
     const settingsUpdate = {
       companyName, contactName, industry, website, email, phone, gstin, pan,
-      address, defaultTerms, defaultNotes, bankDetails,
+      address: safeAddress !== undefined ? safeAddress : address,
+      defaultTerms, defaultNotes,
+      bankDetails: safeBankDetails !== undefined ? safeBankDetails : bankDetails,
       invoicePrefix, proformaPrefix, quotePrefix, receiptPrefix, expensePrefix, purchaseOrderPrefix,
       defaultCurrency, timezone, dateFormat,
       signatureEnabled: signatureEnabled !== undefined ? (signatureEnabled === true || signatureEnabled === 'true') : undefined,
@@ -431,6 +462,16 @@ exports.updateSettings = async (req, res) => {
           message: 'Integration cannot be enabled without a webhookSecret. Please configure a webhook secret before enabling the integration.',
         });
       }
+    }
+
+    // Ensure bankDetails and address nested fields are marked as modified
+    if (safeBankDetails !== undefined) {
+      settings.bankDetails = safeBankDetails;
+      settings.markModified('bankDetails');
+    }
+    if (safeAddress !== undefined) {
+      settings.address = safeAddress;
+      settings.markModified('address');
     }
 
     await settings.save();
