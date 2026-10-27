@@ -64,7 +64,7 @@ const buildAdjustmentsPayload = (employee, payload, month, year) => {
   };
 };
 
-async function processBatchJob({ jobId, userId, month, year, employeePayloads = [], saveAsDraft = false }) {
+async function processBatchJob({ jobId, userId, profileId = null, month, year, employeePayloads = [], saveAsDraft = false }) {
   try {
     if (mongoose.connection.readyState === 1) {
       await PayrollBatchRun.updateOne(
@@ -73,14 +73,19 @@ async function processBatchJob({ jobId, userId, month, year, employeePayloads = 
       );
     }
 
-    const config = await getOrCreateConfig(userId, new Date(year, month - 1, 1));
-    const settings = await Settings.findOne({ user: userId });
+    const config = await getOrCreateConfig(userId, new Date(year, month - 1, 1), profileId);
+    const settings = profileId
+      ? (await Settings.findOne({ profile: profileId })) || (await Settings.findOne({ user: userId }))
+      : await Settings.findOne({ user: userId });
 
     let hrmsAttendanceRecords = null;
     let hrmsSyncError = null;
     if (settings?.integration?.enabled) {
       try {
-        hrmsAttendanceRecords = await hrmsSyncService.syncAttendanceFromExternal(userId, month, year);
+        hrmsAttendanceRecords = await hrmsSyncService.syncAttendanceFromExternal(userId, month, year, {
+          profileId,
+          tenantFilter: profileId ? { profile: profileId } : null,
+        });
       } catch (err) {
         hrmsSyncError = err.message;
       }
@@ -105,7 +110,9 @@ async function processBatchJob({ jobId, userId, month, year, employeePayloads = 
           return;
         }
 
-        const employee = await Employee.findOne({ _id: employeeId, user: userId });
+        const employee = (profileId
+          ? await Employee.findOne({ _id: employeeId, user: userId, profile: profileId })
+          : null) || await Employee.findOne({ _id: employeeId, user: userId });
         if (!employee) {
           errors.push({ employeeId, error: 'Employee not found' });
           return;
@@ -253,7 +260,7 @@ async function processBatchJob({ jobId, userId, month, year, employeePayloads = 
         await runTransaction(async (session) => {
           const sessionOpt = session ? { session } : {};
 
-          const effectiveProfile = employee.profile || payload.profile || null;
+          const effectiveProfile = employee.profile || payload.profile || profileId || null;
           const existing = await Payroll.findOne({
             user: userId,
             employee: employeeId,
@@ -276,7 +283,7 @@ async function processBatchJob({ jobId, userId, month, year, employeePayloads = 
 
           const createdPayrolls = await Payroll.create([{
             user: userId,
-            ...(employee.profile || payload.profile ? { profile: employee.profile || payload.profile } : {}),
+            ...(effectiveProfile ? { profile: effectiveProfile } : {}),
             employee: employee._id,
             month,
             year,

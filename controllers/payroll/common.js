@@ -19,17 +19,25 @@ const buildEmployeeName = (employee, snapshot) => {
 const isValidMonth = (month) => Number.isInteger(month) && month >= 1 && month <= 12;
 const isValidYear = (year) => Number.isInteger(year) && year >= 1970 && year <= 3000;
 
-const getOrCreateConfig = async (userId, targetDate = new Date()) => {
+const getOrCreateConfig = async (userId, targetDate = new Date(), profileId = null) => {
   const dateObj = new Date(targetDate);
+  const baseQuery = profileId ? { user: userId, profile: profileId } : { user: userId };
   let config = await PayrollConfig.findOne({
-    user: userId,
+    ...baseQuery,
     effectiveFrom: { $lte: dateObj }
   }).sort({ effectiveFrom: -1, createdAt: -1 });
 
   if (!config) {
-    config = await PayrollConfig.findOne({ user: userId }).sort({ effectiveFrom: 1 });
+    config = await PayrollConfig.findOne(baseQuery).sort({ effectiveFrom: 1 });
+    if (!config && profileId) {
+      config = await PayrollConfig.findOne({ user: userId }).sort({ effectiveFrom: 1 });
+    }
     if (!config) {
-      config = await PayrollConfig.create({ user: userId, effectiveFrom: new Date('2020-01-01') });
+      config = await PayrollConfig.create({
+        user: userId,
+        ...(profileId ? { profile: profileId } : {}),
+        effectiveFrom: new Date('2020-01-01')
+      });
     }
   }
   return config;

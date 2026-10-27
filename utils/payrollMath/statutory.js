@@ -203,18 +203,26 @@ const calculateGratuityEntitlement = (joiningDate, separationDate, basicPlusDa) 
   };
 };
 
-const getConfigForDate = async (userId, targetDate = new Date()) => {
+const getConfigForDate = async (userId, targetDate = new Date(), profileId = null) => {
   const PayrollConfig = require('../../models/PayrollConfig');
   const dateObj = new Date(targetDate);
+  const baseQuery = profileId ? { user: userId, profile: profileId } : { user: userId };
   let config = await PayrollConfig.findOne({
-    user: userId,
+    ...baseQuery,
     effectiveFrom: { $lte: dateObj }
   }).sort({ effectiveFrom: -1, createdAt: -1 });
 
   if (!config) {
-    config = await PayrollConfig.findOne({ user: userId }).sort({ effectiveFrom: 1 });
+    config = await PayrollConfig.findOne(baseQuery).sort({ effectiveFrom: 1 });
+    if (!config && profileId) {
+      config = await PayrollConfig.findOne({ user: userId }).sort({ effectiveFrom: 1 });
+    }
     if (!config) {
-      config = await PayrollConfig.create({ user: userId, effectiveFrom: new Date('2020-01-01') });
+      config = await PayrollConfig.create({
+        user: userId,
+        ...(profileId ? { profile: profileId } : {}),
+        effectiveFrom: new Date('2020-01-01')
+      });
     }
   }
   return config;

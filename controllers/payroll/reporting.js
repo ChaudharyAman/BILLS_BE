@@ -10,6 +10,7 @@ const { roundAmount, buildPayslipEarningsLineItems, buildMasterSalaryStructure }
 const { getStrategyStatutoryDefaults } = require('../../utils/payrollStrategies/index');
 const { XLSX, setHeaderStyle, applyNumberFormat, sendWorkbook } = require('../../utils/excel');
 const { buildEmployeeName, isValidMonth, isValidYear, sumNamedAmounts, getOrCreateConfig } = require('./common');
+const { getTenantFilter } = require('../../utils/tenantHelper');
 
 const buildPayrollWorkbook = (payrolls, config) => {
   const headerGroups = [
@@ -519,7 +520,7 @@ const exportPayrollInputsExcel = async (req, res) => {
       return res.status(400).json({ message: 'Valid month and year are required' });
     }
 
-    const query = { user: req.user._id, month, year };
+    const query = { user: req.user._id, month, year, ...getTenantFilter(req) };
     if (req.query.statusFilter && req.query.statusFilter !== 'all') {
       query.status = req.query.statusFilter;
     }
@@ -536,13 +537,13 @@ const exportPayrollInputsExcel = async (req, res) => {
     let employees = [];
     if (!payrolls.length) {
       const Employee = require('../../models/Employee');
-      employees = await Employee.find({ user: req.user._id, isDeleted: false })
+      employees = await Employee.find({ user: req.user._id, isDeleted: false, ...getTenantFilter(req) })
         .populate('department', 'name code')
         .sort({ firstName: 1 })
         .lean();
     }
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(req.user._id, new Date(year, month - 1, 1), req.activeProfileId || null);
     const workbook = buildPayrollInputsWorkbook(payrolls, employees, config, month, year);
     sendWorkbook(res, workbook, `payroll-inputs-${year}-${String(month).padStart(2, '0')}.xlsx`);
   } catch (error) {
@@ -564,7 +565,7 @@ const exportPayrollExcel = async (req, res) => {
       return res.status(400).json({ message: 'Valid month and year are required' });
     }
 
-    const payrolls = await Payroll.find({ user: req.user._id, month, year })
+    const payrolls = await Payroll.find({ user: req.user._id, month, year, ...getTenantFilter(req) })
       .populate({
         path: 'employee',
         select: 'firstName lastName employeeId email gender joiningDate dateOfLeaving location designation monthlyCTC bankDetails.ifscCode payType hourlyRate compensationType payFrequency attendanceMode useSalaryComponents',
@@ -572,7 +573,7 @@ const exportPayrollExcel = async (req, res) => {
       .sort({ createdAt: 1 })
       .lean();
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(req.user._id, new Date(year, month - 1, 1), req.activeProfileId || null);
     const workbook = buildPayrollWorkbook(payrolls, config);
     sendWorkbook(res, workbook, `payroll-sheet-${year}-${String(month).padStart(2, '0')}.xlsx`);
   } catch (error) {
@@ -626,7 +627,7 @@ const getPayrollTrend = async (req, res) => {
 
 const getPayrollAuditLog = async (req, res) => {
   try {
-    const payroll = await Payroll.findOne({ _id: req.params.id, user: req.user._id }).select('auditLog').lean();
+    const payroll = await Payroll.findOne({ _id: req.params.id, ...getTenantFilter(req) }).select('auditLog').lean();
     if (!payroll) return res.status(404).json({ message: 'Not found' });
     res.json({ auditLog: payroll.auditLog || [] });
   } catch (err) {

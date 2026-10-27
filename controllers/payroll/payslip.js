@@ -63,7 +63,7 @@ const generatePayslip = async (req, res) => {
           _id: empObj._id || emp
         };
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(req.user._id, new Date(payroll.year, payroll.month - 1, 1), req.activeProfileId || payroll.profile || null);
     const adjustments = {
       pfEnabled: employeeData.pfEnabled,
       esiEnabled: employeeData.esiEnabled,
