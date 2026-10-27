@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const LeaveTypeSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   name: { type: String, required: true, trim: true },
   code: { type: String, required: true, trim: true, uppercase: true },
   annualEntitlement: { type: Number, default: 12, min: 0 },

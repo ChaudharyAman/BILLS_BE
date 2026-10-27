@@ -6,6 +6,7 @@ const {
   initialNextProcessDate,
   processDueRecurringTransactions,
 } = require('../services/recurringTransactionScheduler');
+const { getTenantFilter, attachTenant, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 const validateCategory = async (userId, type, categoryId) => {
   if (!mongoose.Types.ObjectId.isValid(categoryId)) {
@@ -72,15 +73,16 @@ const buildPayload = async (body, userId) => {
 
 exports.createRecurringTransaction = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'recurringTransactions', req.body);
     const companyId = req.companyId || req.user._id;
     const payload = await buildPayload(req.body, companyId);
-    const rt = new RecurringTransaction({ ...payload, user: companyId });
+    const rt = new RecurringTransaction(attachTenant(req, payload));
     rt.nextProcessDate = initialNextProcessDate(rt);
     await rt.save();
     res.status(201).json(rt);
   } catch (error) {
     console.error('Error creating recurring transaction:', error);
-    res.status(error.statusCode || 500).json({ message: error.message || 'Server error creating recurring transaction' });
+    res.status(error.statusCode || error.status || 500).json({ message: error.message || 'Server error creating recurring transaction' });
   }
 };
 
@@ -92,7 +94,7 @@ exports.getRecurringTransactions = async (req, res) => {
     const page = Number.isInteger(parsedPage) ? Math.max(1, parsedPage) : 1;
     const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(parsedLimit, 100)) : 20;
     const skip = (page - 1) * limit;
-    const query = { user: companyId };
+    const query = { ...getTenantFilter(req, 'recurringTransactions') };
     if (req.query.type) query.type = req.query.type;
     if (req.query.businessUnit) query.businessUnit = req.query.businessUnit;
     if (req.query.isActive !== undefined) query.isActive = req.query.isActive === 'true';
@@ -116,19 +118,21 @@ exports.getRecurringTransactions = async (req, res) => {
 
 exports.updateRecurringTransaction = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'recurringTransactions', req.body);
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Recurring transaction not found' });
-    const existing = await RecurringTransaction.findOne({ _id: req.params.id, user: companyId });
+    const existing = await RecurringTransaction.findOne({ _id: req.params.id, ...getTenantFilter(req, 'recurringTransactions') });
     if (!existing) return res.status(404).json({ message: 'Recurring transaction not found' });
 
     const payload = await buildPayload({ ...existing.toObject(), ...req.body }, companyId);
+    payload.updatedBy = req.user?._id;
     Object.assign(existing, payload);
     existing.nextProcessDate = initialNextProcessDate(existing);
     await existing.save();
     res.json(existing);
   } catch (error) {
     console.error('Error updating recurring transaction:', error);
-    res.status(error.statusCode || 500).json({ message: error.message || 'Server error updating recurring transaction' });
+    res.status(error.statusCode || error.status || 500).json({ message: error.message || 'Server error updating recurring transaction' });
   }
 };
 
@@ -136,7 +140,7 @@ exports.deleteRecurringTransaction = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Recurring transaction not found' });
-    const rt = await RecurringTransaction.findOneAndUpdate({ _id: req.params.id, user: companyId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+    const rt = await RecurringTransaction.findOneAndUpdate({ _id: req.params.id, ...getTenantFilter(req, 'recurringTransactions') }, { $set: { isDeleted: true, deletedAt: new Date() } });
     if (!rt) return res.status(404).json({ message: 'Recurring transaction not found' });
     res.json({ message: 'Recurring transaction deleted successfully' });
   } catch (error) {
@@ -149,7 +153,7 @@ exports.pauseRecurringTransaction = async (req, res) => {
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Recurring transaction not found' });
     const rt = await RecurringTransaction.findOneAndUpdate(
-      { _id: req.params.id, user: companyId },
+      { _id: req.params.id, ...getTenantFilter(req, 'recurringTransactions') },
       { $set: { isActive: false } },
       { returnDocument: 'after' }
     );
@@ -164,7 +168,7 @@ exports.resumeRecurringTransaction = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Recurring transaction not found' });
-    const rt = await RecurringTransaction.findOne({ _id: req.params.id, user: companyId });
+    const rt = await RecurringTransaction.findOne({ _id: req.params.id, ...getTenantFilter(req, 'recurringTransactions') });
     if (!rt) return res.status(404).json({ message: 'Recurring transaction not found' });
     rt.isActive = true;
     rt.nextProcessDate = initialNextProcessDate(rt);

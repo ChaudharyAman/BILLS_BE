@@ -4,6 +4,8 @@ const softDeletePlugin = require('../middleware/softDeletePlugin');
 const AssetSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   name: { type: String, required: true, trim: true },
   category: { type: String, enum: ['current', 'fixed', 'intangible'], required: true, index: true },
   purchaseDate: Date,

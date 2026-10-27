@@ -187,10 +187,11 @@ const resolveActiveProfile = async (req, res, next) => {
                 edit: Boolean(modPerm.edit),
                 delete: Boolean(modPerm.delete),
                 approve: Boolean(modPerm.approve),
+                dataScope: modPerm.dataScope || 'all',
                 enabled: true,
               });
             } else {
-              roleMap.set(mod, { view: false, create: false, edit: false, delete: false, approve: false, enabled: false });
+              roleMap.set(mod, { view: false, create: false, edit: false, delete: false, approve: false, dataScope: 'all', enabled: false });
             }
           }
           req.permissions = roleMap;

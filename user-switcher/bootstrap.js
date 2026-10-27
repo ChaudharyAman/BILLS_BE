@@ -41,9 +41,16 @@ const bootstrapMasterUser = async () => {
       ],
     });
 
+    const { isStrongMasterPassword } = config;
+    const isPasswordValid = isStrongMasterPassword(password);
+
     if (!master) {
       if (!password) {
         console.error('[USER-SWITCHER] ⚠️ Cannot auto-create Master User: MASTER_USER_PASSWORD environment variable is not defined.');
+        return null;
+      }
+      if (!isPasswordValid) {
+        console.error('[USER-SWITCHER] ⚠️ Cannot auto-create Master User: MASTER_USER_PASSWORD does not meet complexity requirements (min 12 chars, uppercase, lowercase, numbers, special char).');
         return null;
       }
       master = new MasterUser({
@@ -62,9 +69,18 @@ const bootstrapMasterUser = async () => {
       await master.save();
       console.log(`[USER-SWITCHER] ✨ Created isolated Master User: ${master.username} (${master.email}) in MasterUser collection`);
     } else {
+      // If password in environment is missing or weak, refuse to enable or keep Master User active
+      if (!password || !isPasswordValid) {
+        console.error('[USER-SWITCHER] ⚠️ MASTER_USER_PASSWORD is missing or weak. Deactivating Master User account.');
+        if (master.isActive) {
+          master.isActive = false;
+          await master.save();
+        }
+        return master;
+      }
+
       let modified = false;
 
-      // Note: We do NOT overwrite master.isActive if it was explicitly deactivated by an admin
       if (master.role !== 'superadmin') {
         master.role = 'superadmin';
         modified = true;

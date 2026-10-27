@@ -4,7 +4,7 @@ const Client = require('../models/Client');
 const Employee = require('../models/Employee');
 const Income = require('../models/Income');
 const Expense = require('../models/Expense');
-const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
+const { getTenantFilter, attachTenant, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 const validateProjectRefs = async (body, companyId, req) => {
   const tenantFilter = req ? getTenantFilter(req) : { user: companyId };
@@ -43,25 +43,32 @@ exports.getProjects = async (req, res) => {
   }
 };
 
+const { sanitizePayload, validateTenantReferences } = require('../utils/sanitizePayload');
+
 exports.createProject = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'projects', req.body);
     const companyId = req.companyId || req.user._id;
-    const payload = attachTenant(req, { ...req.body, user: companyId });
+    const payload = attachTenant(req, req.body);
     await validateProjectRefs(payload, companyId, req);
+    await validateTenantReferences(payload, req);
     const project = await Project.create(payload);
     res.status(201).json(project);
   } catch (error) {
     if (error.code === 11000) return res.status(400).json({ message: 'Project code already exists' });
-    res.status(error.statusCode || 500).json({ message: error.message || 'Server error creating project' });
+    res.status(error.statusCode || error.status || 500).json({ message: error.message || 'Server error creating project' });
   }
 };
 
 exports.updateProject = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'projects', req.body);
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Project not found' });
-    const payload = { ...req.body };
+    const payload = sanitizePayload(req.body);
+    payload.updatedBy = req.user._id;
     await validateProjectRefs(payload, companyId, req);
+    await validateTenantReferences(payload, req);
     const project = await Project.findOneAndUpdate(
       { _id: req.params.id, ...getTenantFilter(req) },
       { $set: payload },
@@ -71,7 +78,7 @@ exports.updateProject = async (req, res) => {
     res.json(project);
   } catch (error) {
     if (error.code === 11000) return res.status(400).json({ message: 'Project code already exists' });
-    res.status(error.statusCode || 500).json({ message: error.message || 'Server error updating project' });
+    res.status(error.statusCode || error.status || 500).json({ message: error.message || 'Server error updating project' });
   }
 };
 

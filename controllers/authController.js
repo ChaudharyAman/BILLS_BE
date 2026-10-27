@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const { syncExpiredSubscription } = require('../utils/subscriptionLifecycle');
 const escapeRegex = require('../utils/escapeRegex');
 
-// Generate JWT Token
+// Generate JWT Token (Lifetime reduced to 24h/7d with tokenVersion validation)
 const generateToken = (user) => {
   if (!process.env.JWT_SECRET) {
       console.error('ERROR: JWT_SECRET is not defined in environment variables!');
@@ -15,8 +15,9 @@ const generateToken = (user) => {
     id: user._id,
     role: user.role,
     subscription: user.subscription,
+    tokenVersion: user.tokenVersion || 0,
   }, process.env.JWT_SECRET, {
-    expiresIn: '30d'
+    expiresIn: process.env.JWT_EXPIRES_IN || '24h',
   });
 };
 
@@ -55,23 +56,30 @@ const buildAuthResponse = (req) => {
   };
 };
 
-// Cookie options — HTTPS-only by design.
-// Tokens are HttpOnly + Secure: never readable from JS, only sent over TLS.
-// Local dev override: set COOKIE_ALLOW_HTTP=true in your .env file.
+// Cookie options — controlled by explicit COOKIE_SECURE flag or HTTPS/production
 const getCookieOptions = (req) => {
-  const isProd = process.env.NODE_ENV === 'production';
   const isHttps = req?.secure || req?.headers?.['x-forwarded-proto'] === 'https';
-  const allowHttp = !isProd && process.env.COOKIE_ALLOW_HTTP === 'true';
-  const secure = isProd ? true : (isHttps || !allowHttp);
+  
+  // Explicit flag takes highest precedence: COOKIE_SECURE='true' | 'false'
+  let secure;
+  if (process.env.COOKIE_SECURE !== undefined) {
+    secure = process.env.COOKIE_SECURE === 'true';
+  } else if (process.env.NODE_ENV === 'production') {
+    secure = true;
+  } else {
+    const allowHttp = process.env.COOKIE_ALLOW_HTTP === 'true';
+    secure = isHttps || !allowHttp;
+  }
+
   const envSameSite = process.env.COOKIE_SAME_SITE?.toLowerCase();
-  const sameSite = envSameSite || (secure ? (isProd ? 'none' : 'lax') : 'lax');
+  const sameSite = envSameSite || (secure ? (process.env.NODE_ENV === 'production' ? 'none' : 'lax') : 'lax');
 
   return {
     httpOnly: true, // Never accessible via JavaScript (XSS mitigation)
-    secure,         // HTTPS only (encrypted TLS transit)
+    secure,         // Controlled by COOKIE_SECURE or HTTPS/env
     sameSite,
     path: '/',
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    maxAge: 7 * 24 * 60 * 60 * 1000, // Reduced from 30 days to 7 days
   };
 };
 
@@ -316,11 +324,14 @@ exports.updateProfile = async (req, res) => {
     const { username, email, phone, avatar, currentPassword, newPassword } = req.body;
 
     // If changing password, verify current password first
+    let passwordChanged = false;
     if (newPassword) {
       if (!currentPassword) return res.status(400).json({ message: 'Current password is required to set a new password' });
       const match = await user.matchPassword(currentPassword);
       if (!match) return res.status(400).json({ message: 'Current password is incorrect' });
       user.password = newPassword;
+      user.tokenVersion = (user.tokenVersion || 0) + 1;
+      passwordChanged = true;
     }
 
     // Check uniqueness for username/email if being changed
@@ -338,6 +349,13 @@ exports.updateProfile = async (req, res) => {
     if (avatar !== undefined) user.avatar = avatar;
 
     const updated = await user.save();
+
+    let token;
+    if (passwordChanged) {
+      token = generateToken(updated);
+      res.cookie('token', token, getCookieOptions(req));
+    }
+
     res.json({
       user: {
         _id: updated._id,
@@ -347,7 +365,8 @@ exports.updateProfile = async (req, res) => {
         avatar: updated.avatar || '',
         role: updated.role,
         subscription: updated.subscription
-      }
+      },
+      ...(token ? { token } : {})
     });
   } catch (error) {
     console.error('updateProfile error:', error);

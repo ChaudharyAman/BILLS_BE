@@ -6,6 +6,11 @@ const PermissionSchema = new mongoose.Schema({
   edit: { type: Boolean, default: false },
   delete: { type: Boolean, default: false },
   approve: { type: Boolean, default: false },
+  dataScope: {
+    type: String,
+    enum: ['all', 'own', 'businessUnit', 'client'],
+    default: 'all',
+  },
 }, { _id: false });
 
 const AccessRoleSchema = new mongoose.Schema({
@@ -19,6 +24,18 @@ const AccessRoleSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'ClientProfile',
     required: false,
+    index: true,
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+    index: true,
+  },
+  updatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
     index: true,
   },
   name: {
@@ -80,18 +97,80 @@ AccessRoleSchema.statics.SYSTEM_MODULES = [
   'publicSubmissions',
 ];
 
+/**
+ * Per-module scope capability map.
+ * Declares which RBAC dataScopes ('all' | 'own' | 'businessUnit' | 'client') are supported by each module.
+ * - 'all' and 'own' are universally supported across all modules recording createdBy.
+ * - 'businessUnit' is supported if model has businessUnit field, or matches _id (for businessUnits module).
+ * - 'client' is supported if model has client/clientRef reference, or matches _id (for clients module).
+ * - PurchaseOrder: POs are issued to vendors (vendor.vendorRef), not clients. Client scope is therefore unsupported.
+ * - Payroll: Payroll and PayrollVariableTransaction use plain String client descriptions, so client scope is unsupported.
+ */
+AccessRoleSchema.statics.MODULE_SCOPE_SUPPORT = {
+  clientProfiles:        ['all'],
+  expenses:              ['all', 'own', 'businessUnit', 'client'],
+  income:                ['all', 'own', 'businessUnit', 'client'],
+  invoices:              ['all', 'own', 'businessUnit', 'client'],
+  quotes:                ['all', 'own', 'businessUnit', 'client'],
+  proformas:             ['all', 'own', 'businessUnit', 'client'],
+  purchaseOrders:        ['all', 'own', 'businessUnit'], // Vendors only, no client ref
+  clients:               ['all', 'own', 'client'],       // Matches _id against assignedClients
+  vendors:               ['all', 'own'],
+  items:                 ['all', 'own'],
+  projects:              ['all', 'own', 'client'],       // Project.client reference
+  employees:             ['all', 'own'],
+  payroll:               ['all', 'own'],                 // Client is plain text string; client scope unsupported
+  leaves:                ['all', 'own'],
+  reimbursements:        ['all', 'own'],
+  loans:                 ['all', 'own'],
+  liabilities:           ['all', 'own'],
+  assets:                ['all', 'own'],
+  budgets:               ['all', 'own', 'businessUnit'], // Budget.businessUnit
+  businessUnits:         ['all', 'own', 'businessUnit'], // Matches _id against assignedBusinessUnits
+  departments:           ['all', 'own'],
+  categories:            ['all', 'own'],
+  bankStatements:        ['all', 'own'],
+  recurringTransactions: ['all', 'own', 'businessUnit', 'client'],
+  reports:               ['all', 'own'],
+  settings:              ['all'],                        // Organization-wide settings
+  teamMembers:           ['all', 'own'],
+  subscription:          ['all'],
+  jobRoles:              ['all', 'own'],
+  publicSubmissions:     ['all', 'own'],
+};
+
+AccessRoleSchema.statics.APPROVABLE_MODULES = [
+  'leaves',
+  'loans',
+  'payroll',
+  'proformas',
+  'purchaseOrders',
+  'quotes',
+  'reimbursements',
+  'publicSubmissions',
+];
+
 AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId, profileId = null) {
   const modules = this.SYSTEM_MODULES;
+  const approvableModules = this.APPROVABLE_MODULES;
 
-  const buildPermissionMap = (view, create, edit, del, approve) => {
+  const buildPermissionMap = (view, create, edit, del, approve, dataScope = 'all') => {
     const map = new Map();
     for (const mod of modules) {
-      map.set(mod, { view, create, edit, delete: del, approve });
+      const isApprovable = approvableModules.includes(mod);
+      map.set(mod, {
+        view,
+        create,
+        edit,
+        delete: del,
+        approve: isApprovable ? approve : false,
+        dataScope,
+      });
     }
     return map;
   };
 
-  const adminMap = buildPermissionMap(true, true, true, true, true);
+  const adminMap = buildPermissionMap(true, true, true, true, true, 'all');
   // Admin cannot alter root subscription or root ownership deletion
   adminMap.set('subscription', { view: true, create: false, edit: false, delete: false, approve: false });
 
@@ -103,7 +182,7 @@ AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId, profileId 
   const accountantMap = buildPermissionMap(false, false, false, false, false);
   const finModules = ['expenses', 'income', 'invoices', 'quotes', 'proformas', 'purchaseOrders', 'clients', 'vendors', 'items', 'budgets', 'bankStatements', 'recurringTransactions', 'reports', 'categories', 'publicSubmissions'];
   for (const mod of finModules) {
-    accountantMap.set(mod, { view: true, create: true, edit: true, delete: true, approve: true });
+    accountantMap.set(mod, { view: true, create: true, edit: true, delete: true, approve: approvableModules.includes(mod) });
   }
 
   const viewerMap = buildPermissionMap(true, false, false, false, false);
@@ -144,4 +223,9 @@ AccessRoleSchema.statics.getDefaultSystemRoles = function (companyId, profileId 
   ];
 };
 
-module.exports = mongoose.model('AccessRole', AccessRoleSchema);
+const AccessRole = mongoose.model('AccessRole', AccessRoleSchema);
+AccessRole.APPROVABLE_MODULES = AccessRoleSchema.statics.APPROVABLE_MODULES;
+AccessRole.SYSTEM_MODULES = AccessRoleSchema.statics.SYSTEM_MODULES;
+AccessRole.MODULE_SCOPE_SUPPORT = AccessRoleSchema.statics.MODULE_SCOPE_SUPPORT;
+
+module.exports = AccessRole;

@@ -45,7 +45,7 @@ const logAdminAction = async (actor, action, targetType, targetId, targetLabel, 
 // @access  Private/Admin
 const getAllUsers = async (req, res) => {
   try {
-    const users = await User.find({}).select('-password').sort({ createdAt: -1 });
+    const users = await User.find({}).select('-password -inviteToken -inviteTokenExpires').sort({ createdAt: -1 });
     res.json(users);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -86,7 +86,7 @@ const getCompanies = async (req, res) => {
 
     const total = await User.countDocuments(filter);
     const owners = await User.find(filter)
-      .select('-password')
+      .select('-password -inviteToken -inviteTokenExpires')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -129,13 +129,13 @@ const getCompanyTeam = async (req, res) => {
       return res.status(400).json({ message: 'Invalid company owner ID' });
     }
 
-    const owner = await User.findById(ownerId).select('-password').lean();
+    const owner = await User.findById(ownerId).select('-password -inviteToken -inviteTokenExpires').lean();
     if (!owner) {
       return res.status(404).json({ message: 'Company owner not found' });
     }
 
     const team = await User.find({ companyId: ownerId, _id: { $ne: ownerId } })
-      .select('-password')
+      .select('-password -inviteToken -inviteTokenExpires')
       .populate('accessRole', 'name permissions isSystemRole')
       .sort({ createdAt: -1 })
       .lean();
@@ -204,6 +204,10 @@ const updateTeamMember = async (req, res) => {
       changes.status = status;
     }
 
+    if (accessRole !== undefined || status !== undefined) {
+      member.tokenVersion = (member.tokenVersion || 0) + 1;
+    }
+
     await member.save();
 
     await logAdminAction(
@@ -215,7 +219,12 @@ const updateTeamMember = async (req, res) => {
       changes
     );
 
-    res.json(member);
+    const memberObj = member.toObject();
+    delete memberObj.password;
+    delete memberObj.inviteToken;
+    delete memberObj.inviteTokenExpires;
+
+    res.json(memberObj);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -407,6 +416,10 @@ const updateUserPlan = async (req, res) => {
       user.markModified('modulePermissions');
     }
 
+    if (isActive !== undefined || role !== undefined || status !== undefined) {
+      user.tokenVersion = (user.tokenVersion || 0) + 1;
+    }
+
     const updatedUser = await user.save();
 
     let action = 'UPDATE_USER_PLAN';
@@ -433,7 +446,12 @@ const updateUserPlan = async (req, res) => {
       }
     );
 
-    res.json(updatedUser);
+    const userObj = updatedUser.toObject();
+    delete userObj.password;
+    delete userObj.inviteToken;
+    delete userObj.inviteTokenExpires;
+
+    res.json(userObj);
   } catch (error) {
     console.error('User Update Error:', error);
     res.status(500).json({ message: 'Failed to update user: ' + error.message });
@@ -551,6 +569,7 @@ const resetUserPassword = async (req, res) => {
     }
 
     user.password = newPassword.trim();
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
     await user.save();
 
     await logAdminAction(

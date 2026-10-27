@@ -27,6 +27,44 @@ const MODELS_MAP = {
   Invoice, Quote, Proforma, PurchaseOrder, Expense, Income, Client, Item, Employee, Project, Asset, Liability, Budget, Category, Department, Role, ReimbursementClaim, RecurringTransaction, Payroll, PayrollVariableTransaction, LeaveRequest, BankStatement, Loan
 };
 
+const TYPE_TO_MODULE = {
+  Invoice: 'invoices',
+  Quote: 'quotes',
+  Proforma: 'proformas',
+  PurchaseOrder: 'purchaseOrders',
+  Expense: 'expenses',
+  Income: 'income',
+  Client: 'clients',
+  Item: 'items',
+  Employee: 'employees',
+  Project: 'projects',
+  Asset: 'assets',
+  Liability: 'liabilities',
+  Budget: 'budgets',
+  Category: 'categories',
+  Department: 'departments',
+  Role: 'jobRoles',
+  ReimbursementClaim: 'reimbursements',
+  RecurringTransaction: 'recurringTransactions',
+  Payroll: 'payroll',
+  PayrollVariableTransaction: 'payroll',
+  LeaveRequest: 'leaves',
+  BankStatement: 'bankStatements',
+  Loan: 'loans',
+};
+
+function hasModulePermission(req, moduleName, action) {
+  if (!req?.user) return false;
+  // Account Owner and Superadmin always have unrestricted access
+  if (req.user.isOwner || req.user.role === 'superadmin' || !req.user.companyId || (req.companyId && String(req.user._id) === String(req.companyId))) {
+    return true;
+  }
+  const perms = req.permissions || req.user?.accessRole?.permissions;
+  if (!perms) return false;
+  const modPerms = perms.get ? perms.get(moduleName) : perms[moduleName];
+  return Boolean(modPerms && modPerms[action] === true);
+}
+
 function getDisplayName(doc, type) {
   switch (type) {
     case 'Invoice':
@@ -107,9 +145,18 @@ function getDisplayAmount(doc, type) {
 
 const getRecycleBinItems = async (req, res) => {
   try {
-    const tenantFilter = getTenantFilter(req);
     const promises = Object.entries(MODELS_MAP).map(async ([type, Model]) => {
-      const items = await Model.find({ ...tenantFilter, isDeleted: true })
+      const modName = TYPE_TO_MODULE[type];
+      if (!modName) return [];
+
+      // 1. Check underlying module's view permission
+      if (!hasModulePermission(req, modName, 'view')) {
+        return [];
+      }
+
+      // 2. Enforce underlying module's RBAC data scope ('all', 'own', 'businessUnit', 'client')
+      const moduleFilter = getTenantFilter(req, modName);
+      const items = await Model.find({ ...moduleFilter, isDeleted: true })
         .setOptions({ withDeleted: true })
         .lean();
       
@@ -134,19 +181,27 @@ const getRecycleBinItems = async (req, res) => {
 
 const restoreItem = async (req, res) => {
   try {
-    const tenantFilter = getTenantFilter(req);
-    const { id, type, forceRestore } = req.body;
+    const id = req.body?.id || req.query?.id || req.params?.id;
+    const type = req.body?.type || req.query?.type || req.params?.type;
+    const forceRestore = req.body?.forceRestore || req.query?.forceRestore || req.params?.forceRestore;
     if (!id || !type) {
       return res.status(400).json({ message: 'ID and Type are required' });
     }
 
     const Model = MODELS_MAP[type];
-    if (!Model) {
+    const modName = TYPE_TO_MODULE[type];
+    if (!Model || !modName) {
       return res.status(400).json({ message: `Invalid type: ${type}` });
     }
 
+    // Check underlying module's edit permission
+    if (!hasModulePermission(req, modName, 'edit')) {
+      return res.status(403).json({ message: `Forbidden: You do not have 'edit' permission for '${modName}' to restore this record` });
+    }
+
+    const moduleFilter = getTenantFilter(req, modName);
     const item = await Model.findOneAndUpdate(
-      { _id: id, ...tenantFilter },
+      { _id: id, ...moduleFilter },
       { $set: { isDeleted: false }, $unset: { deletedAt: 1 } },
       { returnDocument: 'after' }
     ).setOptions({ withDeleted: true, forceRestore: !!forceRestore });
@@ -175,18 +230,25 @@ const restoreItem = async (req, res) => {
 
 const permanentlyDeleteItem = async (req, res) => {
   try {
-    const tenantFilter = getTenantFilter(req);
-    const { id, type } = req.query;
+    const id = req.query?.id || req.body?.id || req.params?.id;
+    const type = req.query?.type || req.body?.type || req.params?.type;
     if (!id || !type) {
       return res.status(400).json({ message: 'ID and Type are required' });
     }
 
     const Model = MODELS_MAP[type];
-    if (!Model) {
+    const modName = TYPE_TO_MODULE[type];
+    if (!Model || !modName) {
       return res.status(400).json({ message: `Invalid type: ${type}` });
     }
 
-    const result = await Model.deleteOne({ _id: id, ...tenantFilter }).setOptions({ hardDelete: true });
+    // Check underlying module's delete permission
+    if (!hasModulePermission(req, modName, 'delete')) {
+      return res.status(403).json({ message: `Forbidden: You do not have 'delete' permission for '${modName}' to permanently delete this record` });
+    }
+
+    const moduleFilter = getTenantFilter(req, modName);
+    const result = await Model.deleteOne({ _id: id, ...moduleFilter }).setOptions({ hardDelete: true });
 
     if (result.deletedCount === 0) {
       return res.status(404).json({ message: 'Item not found' });
@@ -201,7 +263,6 @@ const permanentlyDeleteItem = async (req, res) => {
 
 const bulkRestoreItems = async (req, res) => {
   try {
-    const tenantFilter = getTenantFilter(req);
     const { items, forceRestore } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Items array is required' });
@@ -212,11 +273,18 @@ const bulkRestoreItems = async (req, res) => {
 
     for (const { id, type } of items) {
       const Model = MODELS_MAP[type];
-      if (!Model) continue;
+      const modName = TYPE_TO_MODULE[type];
+      if (!Model || !modName) continue;
 
+      if (!hasModulePermission(req, modName, 'edit')) {
+        errors.push({ id, type, error: `Forbidden: No edit permission for ${modName}` });
+        continue;
+      }
+
+      const moduleFilter = getTenantFilter(req, modName);
       try {
         const item = await Model.findOneAndUpdate(
-          { _id: id, ...tenantFilter },
+          { _id: id, ...moduleFilter },
           { $set: { isDeleted: false }, $unset: { deletedAt: 1 } },
           { returnDocument: 'after' }
         ).setOptions({ withDeleted: true, forceRestore: !!forceRestore });
@@ -236,7 +304,6 @@ const bulkRestoreItems = async (req, res) => {
 
 const bulkPermanentlyDeleteItems = async (req, res) => {
   try {
-    const tenantFilter = getTenantFilter(req);
     const { items } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Items array is required' });
@@ -244,7 +311,7 @@ const bulkPermanentlyDeleteItems = async (req, res) => {
 
     const grouped = {};
     items.forEach(({ id, type }) => {
-      if (id && type && MODELS_MAP[type]) {
+      if (id && type && MODELS_MAP[type] && TYPE_TO_MODULE[type]) {
         if (!grouped[type]) grouped[type] = [];
         grouped[type].push(id);
       }
@@ -252,8 +319,13 @@ const bulkPermanentlyDeleteItems = async (req, res) => {
 
     let totalDeleted = 0;
     for (const [type, ids] of Object.entries(grouped)) {
+      const modName = TYPE_TO_MODULE[type];
+      if (!hasModulePermission(req, modName, 'delete')) {
+        continue;
+      }
       const Model = MODELS_MAP[type];
-      const result = await Model.deleteMany({ _id: { $in: ids }, ...tenantFilter }).setOptions({ hardDelete: true });
+      const moduleFilter = getTenantFilter(req, modName);
+      const result = await Model.deleteMany({ _id: { $in: ids }, ...moduleFilter }).setOptions({ hardDelete: true });
       totalDeleted += result.deletedCount || 0;
     }
 
@@ -266,10 +338,14 @@ const bulkPermanentlyDeleteItems = async (req, res) => {
 
 const emptyRecycleBin = async (req, res) => {
   try {
-    const tenantFilter = getTenantFilter(req);
     let totalPurged = 0;
-    const promises = Object.values(MODELS_MAP).map(async (Model) => {
-      const result = await Model.deleteMany({ ...tenantFilter, isDeleted: true }).setOptions({ hardDelete: true });
+    const promises = Object.entries(MODELS_MAP).map(async ([type, Model]) => {
+      const modName = TYPE_TO_MODULE[type];
+      if (!modName || !hasModulePermission(req, modName, 'delete')) {
+        return;
+      }
+      const moduleFilter = getTenantFilter(req, modName);
+      const result = await Model.deleteMany({ ...moduleFilter, isDeleted: true }).setOptions({ hardDelete: true });
       totalPurged += result.deletedCount || 0;
     });
 
@@ -287,5 +363,7 @@ module.exports = {
   permanentlyDeleteItem,
   bulkRestoreItems,
   bulkPermanentlyDeleteItems,
-  emptyRecycleBin
+  emptyRecycleBin,
+  hasModulePermission,
+  TYPE_TO_MODULE,
 };

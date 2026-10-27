@@ -1,6 +1,6 @@
 const Client = require('../models/Client');
 const escapeRegex = require('../utils/escapeRegex');
-const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
+const { getTenantFilter, attachTenant, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 const mergeClientFields = (existing, incoming) => {
   if (!existing || !incoming) return;
@@ -114,10 +114,14 @@ exports.getClients = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const tenantFilter = getTenantFilter(req);
-    let query = { 
-      ...tenantFilter, 
-      $or: [{ isClient: true }, { isClient: { $exists: false } }] 
-    };
+    const clientTypeOr = [{ isClient: true }, { isClient: { $exists: false } }];
+    let query = { ...tenantFilter };
+    if (query.$or) {
+      query.$and = (query.$and || []).concat([{ $or: query.$or }, { $or: clientTypeOr }]);
+      delete query.$or;
+    } else {
+      query.$or = clientTypeOr;
+    }
 
     if (search) { 
       const safeSearch = escapeRegex(search);
@@ -179,6 +183,7 @@ exports.getVendors = async (req, res) => {
 // Create a new client
 exports.createClient = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'clients', req.body);
     const companyId = req.companyId || req.user._id;
     const { 
       name, email, phone, billingAddress, shippingAddress, 
@@ -214,7 +219,7 @@ exports.createClient = async (req, res) => {
     const newClient = await client.save();
     res.status(201).json(newClient);
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    res.status(error.statusCode || error.status || 400).json({ message: error.message });
   }
 };
 
@@ -295,6 +300,7 @@ exports.getClientById = async (req, res) => {
 // Update client
 exports.updateClient = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'clients', req.body);
     const { 
       name, email, phone, billingAddress, shippingAddress, 
       gstin, pan, terms, isClient, isVendor, notes, placeOfSupply,
@@ -310,7 +316,8 @@ exports.updateClient = async (req, res) => {
       contacts, clientType, gstTreatment, tan, tin, vat, website, currency,
       useForDispatch, vendorCode, clientWiseItemPrice, vendorRelation,
       facebook, lst, cst, dlNo, openingBalance,
-      tds_applicable, default_tds_section, default_tds_rate
+      tds_applicable, default_tds_section, default_tds_rate,
+      updatedBy: req.user?._id,
     };
 
     // Remove undefined fields so they don't overwrite existing data with nulls if not provided in the request
@@ -326,7 +333,7 @@ exports.updateClient = async (req, res) => {
     }
     res.json(client);
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    res.status(error.statusCode || error.status || 400).json({ message: error.message });
   }
 };
 

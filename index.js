@@ -12,6 +12,13 @@ const { startScheduler } = require('./services/recurringTransactionScheduler');
 
 dotenv.config();
 
+// Critical startup security validation — fail fast if JWT_SECRET is missing or weak (< 32 characters)
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim().length < 32) {
+  console.error('\x1b[31m%s\x1b[0m', 'FATAL STARTUP ERROR: JWT_SECRET environment variable is missing or shorter than 32 characters.');
+  console.error('Ensure a cryptographically secure JWT_SECRET of at least 32 characters is configured.');
+  process.exit(1);
+}
+
 const app = express();
 
 app.set('trust proxy', 1);

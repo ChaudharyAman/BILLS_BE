@@ -11,11 +11,11 @@ const {
 router.use(protect);
 
 router.route('/')
-  .get(getAccruals)
-  .post(createAccrual);
+  .get(authorize('reports', 'view'), getAccruals)
+  .post(authorize('reports', 'create'), createAccrual);
 
 router.route('/:id')
-  .put(updateAccrual)
-  .delete(deleteAccrual);
+  .put(authorize('reports', 'edit'), updateAccrual)
+  .delete(authorize('reports', 'delete'), deleteAccrual);
 
 module.exports = router;

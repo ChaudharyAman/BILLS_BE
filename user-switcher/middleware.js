@@ -188,19 +188,28 @@ const buildFullPermissionsMap = () => {
  * Local development override: set COOKIE_ALLOW_HTTP=true in .env
  */
 const getCookieOptions = (req) => {
-  const isProd = process.env.NODE_ENV === 'production';
   const isHttps = req?.secure || req?.headers?.['x-forwarded-proto'] === 'https';
-  const allowHttp = !isProd && process.env.COOKIE_ALLOW_HTTP === 'true';
-  const secure = isProd ? true : (isHttps || !allowHttp);
+  
+  // Explicit flag takes highest precedence: COOKIE_SECURE='true' | 'false'
+  let secure;
+  if (process.env.COOKIE_SECURE !== undefined) {
+    secure = process.env.COOKIE_SECURE === 'true';
+  } else if (process.env.NODE_ENV === 'production') {
+    secure = true;
+  } else {
+    const allowHttp = process.env.COOKIE_ALLOW_HTTP === 'true';
+    secure = isHttps || !allowHttp;
+  }
+
   const envSameSite = process.env.COOKIE_SAME_SITE?.toLowerCase();
-  const sameSite = envSameSite || (secure ? (isProd ? 'none' : 'lax') : 'lax');
+  const sameSite = envSameSite || (secure ? (process.env.NODE_ENV === 'production' ? 'none' : 'lax') : 'lax');
 
   return {
     httpOnly: true, // Never accessible via client-side JavaScript
-    secure,         // HTTPS only
+    secure,         // Controlled by COOKIE_SECURE or HTTPS/env
     sameSite,
     path: '/',
-    maxAge: 30 * 24 * 60 * 60 * 1000,
+    maxAge: 7 * 24 * 60 * 60 * 1000,
   };
 };
 

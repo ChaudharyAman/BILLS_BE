@@ -101,10 +101,13 @@ exports.getRoleById = async (req, res) => {
   }
 };
 
+const { sanitizePayload, validateTenantReferences } = require('../utils/sanitizePayload');
+
 exports.createRole = async (req, res) => {
   try {
-    const companyId = req.companyId || req.user._id;
-    const role = await Role.create(attachTenant(req, { ...req.body, user: companyId }));
+    const payload = attachTenant(req, req.body);
+    await validateTenantReferences(payload, req);
+    const role = await Role.create(payload);
     res.status(201).json(role);
   } catch (error) {
     if (error.code === 11000) {
@@ -119,9 +122,12 @@ exports.updateRole = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Role not found' });
     }
+    const payload = sanitizePayload(req.body);
+    payload.updatedBy = req.user._id;
+    await validateTenantReferences(payload, req);
     const role = await Role.findOneAndUpdate(
       { _id: req.params.id, ...getTenantFilter(req) },
-      { $set: req.body },
+      { $set: payload },
       { returnDocument: 'after', runValidators: true }
     );
     if (!role) return res.status(404).json({ message: 'Role not found' });
