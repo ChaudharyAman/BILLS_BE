@@ -7,7 +7,7 @@ const { recordCashMovement, roundTwo } = require('../utils/cashLedgerHelper');
 const escapeRegex = require('../utils/escapeRegex');
 const { updateBudgetSpent, checkBudgetWarning } = require('./budgetController');
 const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
-const { getTenantFilter, getTenantMatch, attachTenant } = require('../utils/tenantHelper');
+const { getTenantFilter, getTenantMatch, attachTenant, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 async function syncExpenseCashMovement(expense, paymentDate = new Date(), session = null) {
   if (!expense || !expense.user || !expense._id) return;
@@ -422,6 +422,7 @@ async function resolveParty({
 
 exports.createExpense = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'expenses', req.body);
     const companyId = req.companyId || req.user._id;
 
     const {
@@ -498,6 +499,7 @@ exports.createExpense = async (req, res) => {
 
     const expense = await Expense.create(attachTenant(req, {
       ...categoryData,
+      businessUnit: req.body.businessUnit || null,
       project: project || null,
       department: department || null,
       expenseNumber,
@@ -551,7 +553,7 @@ exports.createExpense = async (req, res) => {
     if (error.message === 'Amount paid cannot exceed payable amount') {
       return res.status(422).json({ message: error.message });
     }
-    res.status(error.statusCode || 500).json({ message: error.message || 'Server Error creating expense' });
+    res.status(error.statusCode || error.status || 500).json({ message: error.message || 'Server Error creating expense' });
   }
 };
 
@@ -583,6 +585,7 @@ exports.getExpenseById = async (req, res) => {
 // @access  Private
 exports.updateExpense = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'expenses', req.body);
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Expense not found' });
 
@@ -697,6 +700,8 @@ exports.updateExpense = async (req, res) => {
       : {};
 
     const updateData = {
+      businessUnit: req.body.businessUnit !== undefined ? (req.body.businessUnit || null) : expense.businessUnit,
+      updatedBy: req.user?._id,
       project: project !== undefined ? (project || null) : expense.project,
       department: department !== undefined ? (department || null) : expense.department,
       expenseNumber: expenseNumber !== undefined ? expenseNumber : expense.expenseNumber,
@@ -808,7 +813,7 @@ exports.updateExpense = async (req, res) => {
     if (error.message === 'Amount paid cannot exceed payable amount') {
       return res.status(422).json({ message: error.message });
     }
-    res.status(error.statusCode || 500).json({ message: error.message || 'Server Error updating expense' });
+    res.status(error.statusCode || error.status || 500).json({ message: error.message || 'Server Error updating expense' });
   }
 };
 

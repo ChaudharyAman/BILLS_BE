@@ -10,7 +10,7 @@ const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalcul
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseImportedDate } = require('../utils/dateRange');
 const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
-const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
+const { getTenantFilter, attachTenant, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
@@ -237,6 +237,7 @@ exports.getPurchaseOrderById = async (req, res) => {
 // ─── CREATE purchaseOrder ─────────────────────────────────────────────────────────────
 exports.createPurchaseOrder = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'purchaseOrders', req.body);
     const companyId = req.companyId || req.user._id;
     const { vendorRef, invoiceType, items, date, validUntil, shippingAddress, transport,
       refNumber,
@@ -327,6 +328,7 @@ exports.createPurchaseOrder = async (req, res) => {
 
     const purchaseOrder = new PurchaseOrder(attachTenant(req, {
       poNumber, invoiceType: invoiceType || 'Tax Invoice',
+      businessUnit: req.body.businessUnit || undefined,
       date, validUntil, paymentMode, paymentTerms,
       vendor: vendorSnapshot, items: processedItems,
       subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
@@ -372,13 +374,14 @@ exports.createPurchaseOrder = async (req, res) => {
     if (e.code === 11000) {
       return res.status(400).json({ message: 'Purchase order number already exists in this profile.' });
     }
-    res.status(400).json({ message: e.message });
+    res.status(e.statusCode || e.status || 400).json({ message: e.message });
   }
 };
 
 // ─── UPDATE purchaseOrder ─────────────────────────────────────────────────────────────
 exports.updatePurchaseOrder = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'purchaseOrders', req.body);
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Purchase Order not found' });
@@ -491,6 +494,8 @@ exports.updatePurchaseOrder = async (req, res) => {
 
     Object.assign(purchaseOrder, {
       invoiceType: effectiveType,
+      businessUnit: req.body.businessUnit !== undefined ? (req.body.businessUnit || null) : purchaseOrder.businessUnit,
+      updatedBy: req.user?._id,
       vendor: vendorSnapshot, items: processedItems, date, validUntil,
       paymentMode, paymentTerms, subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
@@ -537,7 +542,7 @@ exports.updatePurchaseOrder = async (req, res) => {
     if (e.code === 11000) {
       return res.status(400).json({ message: 'Purchase order number already exists in this profile.' });
     }
-    res.status(400).json({ message: e.message });
+    res.status(e.statusCode || e.status || 400).json({ message: e.message });
   }
 };
 

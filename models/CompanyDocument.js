@@ -14,6 +14,18 @@ const CompanyDocumentSchema = new mongoose.Schema({
     required: false,
     index: true,
   },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+    index: true,
+  },
+  updatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+    index: true,
+  },
   title: {
     type: String,
     required: true,

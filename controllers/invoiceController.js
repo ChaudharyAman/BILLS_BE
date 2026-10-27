@@ -15,7 +15,7 @@ const { calculateTds } = require('../utils/tdsCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseOptionalDateRange, parseImportedDate } = require('../utils/dateRange');
 const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
-const { getTenantFilter, getTenantMatch, attachTenant } = require('../utils/tenantHelper');
+const { getTenantFilter, getTenantMatch, attachTenant, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 const User = require('../models/User');
 const CompanyDocument = require('../models/CompanyDocument');
@@ -616,6 +616,7 @@ exports.getInvoiceById = async (req, res) => {
 // ─── CREATE invoice ───────────────────────────────────────────────────────────
 exports.createInvoice = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'invoices', req.body);
     const companyId = req.companyId || req.user._id;
     const {
       clientRef,
@@ -799,6 +800,7 @@ exports.createInvoice = async (req, res) => {
     for (let attempt = 0; attempt < 25; attempt += 1) {
       const invoice = new Invoice(attachTenant(req, {
         invoiceNo,
+        businessUnit: req.body.businessUnit || undefined,
         invoiceType: documentInvoiceType,
         gstInvoiceType: storedGstInvoiceType,
         overrideInvoiceType: !!req.body.overrideInvoiceType,
@@ -907,13 +909,14 @@ exports.createInvoice = async (req, res) => {
   } catch (error) {
     console.error('createInvoice error:', error);
     if (res.headersSent) return;
-    res.status(400).json({ message: error.message });
+    res.status(error.statusCode || error.status || 400).json({ message: error.message });
   }
 };
 
 // ─── UPDATE invoice ───────────────────────────────────────────────────────────
 exports.updateInvoice = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'invoices', req.body);
     const companyId = req.companyId || req.user._id;
     const {
       clientRef,
@@ -1102,6 +1105,10 @@ exports.updateInvoice = async (req, res) => {
       invoice.invoiceNo = req.body.invoiceNo;
     }
     invoice.client = clientSnapshot;
+    if (req.body.businessUnit !== undefined) {
+      invoice.businessUnit = req.body.businessUnit || null;
+    }
+    invoice.updatedBy = req.user?._id;
     invoice.items = processedItems;
     invoice.date = date;
     invoice.dueDate = dueDate;
@@ -1290,7 +1297,7 @@ exports.updateInvoice = async (req, res) => {
     if (isInvoiceNumberDuplicateError(error)) {
       return res.status(400).json({ message: `Invoice number already exists.` });
     }
-    res.status(400).json({ message: error.message });
+    res.status(error.statusCode || error.status || 400).json({ message: error.message });
   }
 };
 

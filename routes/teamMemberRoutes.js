@@ -11,10 +11,14 @@ const {
   createAccessRole,
   updateAccessRole,
   deleteAccessRole,
+  getSystemModules,
 } = require('../controllers/teamMemberController');
 
 // Public route for accepting invite
 router.post('/accept-invite', acceptInvite);
+
+// Shared modules capability endpoint
+router.get('/modules', protect, authorize('teamMembers', 'view'), getSystemModules);
 
 // AccessRole routes
 router.get('/roles', protect, authorize('teamMembers', 'view'), getAccessRoles);

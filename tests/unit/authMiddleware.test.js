@@ -85,4 +85,84 @@ describe('Auth Middleware Security Tests (Bug 6 Guard)', () => {
     expect(next).toHaveBeenCalled();
     expect(req.user).toEqual(mockUser);
   });
+
+  test('rejects request when tokenVersion in JWT does not match user.tokenVersion', async () => {
+    const userId = '507f1f77bcf86cd799439011';
+    // Old token with tokenVersion 0
+    const oldToken = jwt.sign({ id: userId, tokenVersion: 0 }, secret);
+
+    // User's tokenVersion was bumped to 1 after password change or suspension
+    const mockUser = {
+      _id: userId,
+      isActive: true,
+      tokenVersion: 1,
+      subscription: { plan: 'free' },
+    };
+
+    User.findById.mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        populate: jest.fn().mockResolvedValue(mockUser),
+      }),
+    });
+
+    const req = {
+      headers: {
+        authorization: `Bearer ${oldToken}`,
+      },
+      query: {},
+      cookies: {},
+    };
+
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    const next = jest.fn();
+
+    await protect(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith({ message: 'Session expired or invalidated. Please log in again.' });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  test('accepts request when tokenVersion in JWT matches updated user.tokenVersion', async () => {
+    const userId = '507f1f77bcf86cd799439011';
+    // Fresh token with tokenVersion 2
+    const freshToken = jwt.sign({ id: userId, tokenVersion: 2 }, secret);
+
+    const mockUser = {
+      _id: userId,
+      isActive: true,
+      tokenVersion: 2,
+      subscription: { plan: 'free' },
+    };
+
+    User.findById.mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        populate: jest.fn().mockResolvedValue(mockUser),
+      }),
+    });
+
+    const req = {
+      headers: {
+        authorization: `Bearer ${freshToken}`,
+      },
+      query: {},
+      cookies: {},
+    };
+
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    const next = jest.fn();
+
+    await protect(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(req.user).toEqual(mockUser);
+  });
 });

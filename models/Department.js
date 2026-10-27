@@ -4,6 +4,8 @@ const softDeletePlugin = require('../middleware/softDeletePlugin');
 const DepartmentSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   name: { type: String, required: true, trim: true },
   code: { type: String, required: true, trim: true, uppercase: true },
   head: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', default: null },

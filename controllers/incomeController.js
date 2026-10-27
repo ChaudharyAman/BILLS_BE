@@ -4,7 +4,7 @@ const User = require('../models/User');
 const Category = require('../models/Category');
 const escapeRegex = require('../utils/escapeRegex');
 const { processIncomingAttachments, sanitizeAttachments, streamAttachment } = require('../utils/attachmentHelper');
-const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
+const { getTenantFilter, attachTenant, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 const validateIncomeCategory = async (userOrReq, categoryId, subCategoryId) => {
   const result = { category: categoryId || null, subCategory: subCategoryId || null };
@@ -311,6 +311,7 @@ async function resolveParty({
 // @access  Private
 exports.createIncome = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'income', req.body);
     const companyId = req.companyId || req.user._id;
 
     const {
@@ -439,7 +440,7 @@ exports.createIncome = async (req, res) => {
       }
       return res.status(400).json({ message: `Income number "${req.body.incomeNumber}" already exists in this profile.` });
     }
-    res.status(error.statusCode || 500).json({ message: error.message || 'Server Error creating income' });
+    res.status(error.statusCode || error.status || 500).json({ message: error.message || 'Server Error creating income' });
   }
 };
 
@@ -472,6 +473,7 @@ exports.getIncomeById = async (req, res) => {
 // @access  Private
 exports.updateIncome = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'income', req.body);
     const companyId = req.companyId || req.user._id;
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Income not found' });
 
@@ -606,6 +608,7 @@ exports.updateIncome = async (req, res) => {
     }
 
     const updateData = {
+      updatedBy: req.user?._id,
       project: project !== undefined ? (project || null) : income.project,
       department: department !== undefined ? (department || null) : income.department,
       businessUnit: businessUnit !== undefined ? (businessUnit && mongoose.Types.ObjectId.isValid(businessUnit) ? businessUnit : null) : income.businessUnit,
@@ -700,7 +703,7 @@ exports.updateIncome = async (req, res) => {
     if (error.code === 11000) {
       return res.status(400).json({ message: 'Income number already exists in this profile.' });
     }
-    res.status(error.statusCode || 500).json({ message: error.message || 'Server Error updating income' });
+    res.status(error.statusCode || error.status || 500).json({ message: error.message || 'Server Error updating income' });
   }
 };
 

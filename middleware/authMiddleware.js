@@ -14,9 +14,6 @@ const protect = async (req, res, next) => {
   if (req.cookies && req.cookies.token) {
     candidateTokens.push(req.cookies.token);
   }
-  if (req.query && req.query.token) {
-    candidateTokens.push(req.query.token);
-  }
 
   if (candidateTokens.length === 0) {
     return res.status(401).json({ message: 'Not authorized, no token' });
@@ -85,7 +82,7 @@ const protect = async (req, res, next) => {
     }
 
     req.user = await User.findById(decoded.id)
-      .select('-password')
+      .select('-password -inviteToken -inviteTokenExpires')
       .populate('accessRole');
 
     if (!req.user) {
@@ -96,6 +93,13 @@ const protect = async (req, res, next) => {
       return res.status(401).json({ message: 'Not authorized, account is deactivated or suspended' });
     }
 
+    // Validate tokenVersion to invalidate tokens on password change, suspension, or role change
+    const userTokenVersion = req.user.tokenVersion || 0;
+    const tokenVersionInJwt = decoded.tokenVersion !== undefined ? decoded.tokenVersion : 0;
+    if (tokenVersionInJwt !== userTokenVersion) {
+      return res.status(401).json({ message: 'Session expired or invalidated. Please log in again.' });
+    }
+
     // Determine companyId for tenancy scoping
     if (req.user.isOwner || !req.user.companyId) {
       req.companyId = req.user._id;
@@ -103,7 +107,7 @@ const protect = async (req, res, next) => {
     } else {
       req.companyId = req.user.companyId;
       // Fetch company owner to check master plan and status
-      req.ownerUser = await User.findById(req.user.companyId).select('-password');
+      req.ownerUser = await User.findById(req.user.companyId).select('-password -inviteToken -inviteTokenExpires');
       if (!req.ownerUser || req.ownerUser.isActive === false) {
         return res.status(401).json({ message: 'Not authorized, company owner account is inactive' });
       }
@@ -114,7 +118,7 @@ const protect = async (req, res, next) => {
       // Superadmin has implicit full access to all modules
       const fullMap = new Map();
       for (const mod of AccessRole.SYSTEM_MODULES) {
-        fullMap.set(mod, { view: true, create: true, edit: true, delete: true, approve: true, enabled: true });
+        fullMap.set(mod, { view: true, create: true, edit: true, delete: true, approve: true, dataScope: 'all', enabled: true });
       }
       req.permissions = fullMap;
     } else {
@@ -137,13 +141,14 @@ const protect = async (req, res, next) => {
                 edit: customObj.edit !== false,
                 delete: customObj.delete !== false,
                 approve: customObj.approve !== false,
+                dataScope: 'all',
                 enabled: true,
               });
             } else {
-              fullMap.set(mod, { view: true, create: true, edit: true, delete: true, approve: true, enabled: true });
+              fullMap.set(mod, { view: true, create: true, edit: true, delete: true, approve: true, dataScope: 'all', enabled: true });
             }
           } else {
-            fullMap.set(mod, { view: false, create: false, edit: false, delete: false, approve: false, enabled: false });
+            fullMap.set(mod, { view: false, create: false, edit: false, delete: false, approve: false, dataScope: 'all', enabled: false });
           }
         }
         req.permissions = fullMap;
@@ -160,10 +165,11 @@ const protect = async (req, res, next) => {
               edit: Boolean(permObj.edit),
               delete: Boolean(permObj.delete),
               approve: Boolean(permObj.approve),
+              dataScope: permObj.dataScope || 'all',
               enabled: true,
             });
           } else {
-            roleMap.set(mod, { view: false, create: false, edit: false, delete: false, approve: false, enabled: false });
+            roleMap.set(mod, { view: false, create: false, edit: false, delete: false, approve: false, dataScope: 'all', enabled: false });
           }
         }
         req.permissions = roleMap;

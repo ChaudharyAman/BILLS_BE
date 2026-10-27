@@ -21,6 +21,8 @@ const QuoteItemSchema = new mongoose.Schema({
 const QuoteSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
   profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   quoteNo: { type: String, required: true },
   invoiceType: {
     type: String,

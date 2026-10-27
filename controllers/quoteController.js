@@ -9,7 +9,7 @@ const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseImportedDate } = require('../utils/dateRange');
-const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
+const { getTenantFilter, attachTenant, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 const User = require('../models/User');
 const mongoose = require('mongoose');
@@ -215,6 +215,7 @@ exports.getQuoteById = async (req, res) => {
 // ─── CREATE quote ─────────────────────────────────────────────────────────────
 exports.createQuote = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'quotes', req.body);
     const companyId = req.companyId || req.user._id;
     const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
       poNumber, poDate,
@@ -312,6 +313,7 @@ exports.createQuote = async (req, res) => {
     for (let attempt = 0; attempt < 25; attempt += 1) {
       const quote = new Quote(attachTenant(req, {
         quoteNo, invoiceType: 'Invoice',
+        businessUnit: req.body.businessUnit || undefined,
         date, validUntil, paymentMode, paymentTerms,
         client: clientSnapshot, items: processedItems,
         subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
@@ -353,13 +355,14 @@ exports.createQuote = async (req, res) => {
     if (isQuoteNumberDuplicateError(e)) {
       return res.status(400).json({ message: 'Quote number already exists. Please try again.' });
     }
-    res.status(400).json({ message: e.message });
+    res.status(e.statusCode || e.status || 400).json({ message: e.message });
   }
 };
 
 // ─── UPDATE quote ─────────────────────────────────────────────────────────────
 exports.updateQuote = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'quotes', req.body);
     const companyId = req.companyId || req.user._id;
     const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
       poNumber, poDate,
@@ -449,6 +452,8 @@ exports.updateQuote = async (req, res) => {
 
     Object.assign(quote, {
       invoiceType: effectiveType,
+      businessUnit: req.body.businessUnit !== undefined ? (req.body.businessUnit || null) : quote.businessUnit,
+      updatedBy: req.user?._id,
       client: clientSnapshot, items: processedItems, date, validUntil,
       paymentMode, paymentTerms, subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
@@ -491,7 +496,7 @@ exports.updateQuote = async (req, res) => {
     if (isQuoteNumberDuplicateError(e)) {
       return res.status(400).json({ message: 'Quote number already exists in this profile. Please use another quote number.' });
     }
-    res.status(400).json({ message: e.message });
+    res.status(e.statusCode || e.status || 400).json({ message: e.message });
   }
 };
 

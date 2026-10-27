@@ -29,6 +29,8 @@ const PurchaseOrderItemSchema = new mongoose.Schema({
 const PurchaseOrderSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User', index: true },
   profile: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProfile', required: false, index: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   poNumber: { type: String, required: true },
   refNumber: String,
   date: { type: Date, default: Date.now, required: true },

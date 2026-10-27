@@ -6,7 +6,7 @@ const Expense = require('../models/Expense');
 const Income = require('../models/Income');
 const Quote = require('../models/Quote');
 const PurchaseOrder = require('../models/PurchaseOrder');
-const { getTenantFilter, attachTenant, getTenantMatch } = require('../utils/tenantHelper');
+const { getTenantFilter, attachTenant, getTenantMatch, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 const pickBusinessUnitFields = (body) => {
   const allowedFields = ['name', 'code', 'description', 'head', 'status', 'color', 'isDefault'];
@@ -64,6 +64,7 @@ exports.createBusinessUnit = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
     const payload = pickBusinessUnitFields(req.body);
+    assertWriteWithinScope(req, 'businessUnits', payload);
     if (!payload.name || !payload.code) {
       return res.status(400).json({ message: 'Name and Code are required' });
     }
@@ -82,8 +83,8 @@ exports.createBusinessUnit = async (req, res) => {
     res.status(201).json(businessUnit);
   } catch (error) {
     console.error('Error creating business unit:', error);
-    if (error.statusCode) {
-      return res.status(error.statusCode).json({ message: error.message });
+    if (error.statusCode || error.status) {
+      return res.status(error.statusCode || error.status).json({ message: error.message });
     }
     if (error.code === 11000) {
       return res.status(400).json({ message: 'Business unit name or code already exists' });
@@ -100,6 +101,8 @@ exports.updateBusinessUnit = async (req, res) => {
     }
 
     const payload = pickBusinessUnitFields(req.body);
+    payload.updatedBy = req.user?._id;
+    assertWriteWithinScope(req, 'businessUnits', payload);
     if (Object.prototype.hasOwnProperty.call(payload, 'head')) {
       payload.head = await validateHead(payload.head, companyId, req);
     }
@@ -123,8 +126,8 @@ exports.updateBusinessUnit = async (req, res) => {
     res.json(businessUnit);
   } catch (error) {
     console.error('Error updating business unit:', error);
-    if (error.statusCode) {
-      return res.status(error.statusCode).json({ message: error.message });
+    if (error.statusCode || error.status) {
+      return res.status(error.statusCode || error.status).json({ message: error.message });
     }
     if (error.code === 11000) {
       return res.status(400).json({ message: 'Business unit name or code already exists' });

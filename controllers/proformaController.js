@@ -11,7 +11,7 @@ const { syncIncomeFromInvoice } = require('../services/invoiceIncomeSync');
 const { isInterStateSupply, processDocumentItems } = require('../utils/gstCalculator');
 const { buildUserCounterId } = require('../utils/counterKey');
 const { parseImportedDate } = require('../utils/dateRange');
-const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
+const { getTenantFilter, attachTenant, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 function processItems(items, invoiceType, isIntraState) {
   return processDocumentItems(items, { invoiceType, isIntraState, includeExcise: true });
@@ -127,6 +127,7 @@ exports.getProformaById = async (req, res) => {
 
 exports.createProforma = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'proformas', req.body);
     const companyId = req.companyId || req.user._id;
     const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
       poNumber, poDate,
@@ -215,6 +216,7 @@ exports.createProforma = async (req, res) => {
 
     const proforma = new Proforma(attachTenant(req, {
       proformaNo, invoiceType: invoiceType || 'Tax Invoice',
+      businessUnit: req.body.businessUnit || undefined,
       date, validUntil, paymentMode, paymentTerms,
       client: clientSnapshot, items: processedItems,
       subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
@@ -230,12 +232,13 @@ exports.createProforma = async (req, res) => {
     res.status(201).json(saved);
   } catch (e) {
     console.error('createProforma error:', e);
-    res.status(400).json({ message: e.message });
+    res.status(e.statusCode || e.status || 400).json({ message: e.message });
   }
 };
 
 exports.updateProforma = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'proformas', req.body);
     const companyId = req.companyId || req.user._id;
     const { clientRef, invoiceType, items, date, validUntil, shippingAddress, transport,
       poNumber, poDate,
@@ -339,6 +342,8 @@ exports.updateProforma = async (req, res) => {
 
     Object.assign(proforma, {
       invoiceType: effectiveType,
+      businessUnit: req.body.businessUnit !== undefined ? (req.body.businessUnit || null) : proforma.businessUnit,
+      updatedBy: req.user?._id,
       client: clientSnapshot, items: processedItems, date, validUntil,
       paymentMode, paymentTerms, subTotal, taxTotal, totalCGST, totalSGST, totalIGST,
       shippingCharges: finalShipping, packagingCharges: finalPackaging,
@@ -381,7 +386,7 @@ exports.updateProforma = async (req, res) => {
     if (e.code === 11000) {
       return res.status(400).json({ message: 'Proforma number already exists in this profile.' });
     }
-    res.status(400).json({ message: e.message });
+    res.status(e.statusCode || e.status || 400).json({ message: e.message });
   }
 };
 

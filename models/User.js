@@ -99,6 +99,16 @@ const userSchema = new mongoose.Schema({
       required: true
     }
   }],
+  assignedBusinessUnits: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'BusinessUnit',
+    default: [],
+  }],
+  assignedClients: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Client',
+    default: [],
+  }],
   invitedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -111,11 +121,26 @@ const userSchema = new mongoose.Schema({
   },
   inviteToken: {
     type: String,
-    default: null
+    default: null,
+    select: false,
   },
   inviteTokenExpires: {
     type: Date,
-    default: null
+    default: null,
+    select: false,
+  },
+  tokenVersion: {
+    type: Number,
+    default: 0,
+  },
+  isDeleted: {
+    type: Boolean,
+    default: false,
+    index: true,
+  },
+  deletedAt: {
+    type: Date,
+    default: null,
   },
   // ── Company-level Enabled Modules & Permissions ──────────────────────────
   enabledModules: {

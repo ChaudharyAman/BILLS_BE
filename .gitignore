@@ -9,6 +9,7 @@ scratch/
 # dotenv environment files
 .env
 .env.*
+!.env.example
 
 # Logs
 logs
@@ -78,10 +79,10 @@ SYSTEM_TEST_REPORT.md
 .sass-cache/
 /.history
 
+# Tests
+tests/unit/
+
 # Scripts & Local Tools
 scripts/
 scripts
-
-# Tests
-tests/
 

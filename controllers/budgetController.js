@@ -4,7 +4,7 @@ const Category = require('../models/Category');
 const Department = require('../models/Department');
 const BusinessUnit = require('../models/BusinessUnit');
 const Expense = require('../models/Expense');
-const { getTenantFilter, getTenantMatch, attachTenant } = require('../utils/tenantHelper');
+const { getTenantFilter, getTenantMatch, attachTenant, assertWriteWithinScope } = require('../utils/tenantHelper');
 
 const resolveScopeFilter = (userOrReq) => {
   if (userOrReq && userOrReq.activeProfileId) return getTenantFilter(userOrReq);
@@ -158,6 +158,7 @@ exports.getBudgets = async (req, res) => {
 
 exports.createBudget = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'budgets', req.body);
     const scopeFilter = getTenantFilter(req);
     const payload = await normalizeBudgetPayload(req.body, scopeFilter);
     const budget = await Budget.create(attachTenant(req, payload));
@@ -166,12 +167,13 @@ exports.createBudget = async (req, res) => {
   } catch (error) {
     console.error('Error creating budget:', error);
     if (error.code === 11000) return res.status(400).json({ message: 'Budget already exists' });
-    res.status(error.statusCode || 500).json({ message: error.message || 'Server error creating budget' });
+    res.status(error.statusCode || error.status || 500).json({ message: error.message || 'Server error creating budget' });
   }
 };
 
 exports.updateBudget = async (req, res) => {
   try {
+    assertWriteWithinScope(req, 'budgets', req.body);
     const tenantFilter = getTenantFilter(req);
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(404).json({ message: 'Budget not found' });
@@ -181,6 +183,7 @@ exports.updateBudget = async (req, res) => {
     if (!existing) return res.status(404).json({ message: 'Budget not found' });
 
     const payload = await normalizeBudgetPayload({ ...existing.toObject(), ...req.body }, tenantFilter);
+    payload.updatedBy = req.user?._id;
     Object.assign(existing, payload);
     await refreshOneBudget(existing);
     const budget = await Budget.findOne({ _id: existing._id, ...tenantFilter })
@@ -189,7 +192,7 @@ exports.updateBudget = async (req, res) => {
     res.json(budget);
   } catch (error) {
     console.error('Error updating budget:', error);
-    res.status(error.statusCode || 500).json({ message: error.message || 'Server error updating budget' });
+    res.status(error.statusCode || error.status || 500).json({ message: error.message || 'Server error updating budget' });
   }
 };
 

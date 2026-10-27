@@ -1,5 +1,28 @@
 const mongoose = require('mongoose');
 
+// Global plugin to ensure createdBy and updatedBy fields are supported across all models
+mongoose.plugin((schema) => {
+  if (!schema.path('createdBy')) {
+    schema.add({
+      createdBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+        index: true,
+      },
+    });
+  }
+  if (!schema.path('updatedBy')) {
+    schema.add({
+      updatedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+      },
+    });
+  }
+});
+
 const reconcileModelIndexes = async (Model) => {
   try {
     const existingIndexes = await Model.collection.indexes();

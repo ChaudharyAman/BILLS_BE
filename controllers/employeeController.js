@@ -14,6 +14,7 @@ const { appendSalaryRevisionIfChanged } = require('../utils/salaryRevisionHelper
 const { PT_STATE_LIST } = require('../utils/professionalTaxSlabs');
 const { decryptEmployeePII } = require('../utils/cryptoHelper');
 const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
+const { sanitizePayload, validateTenantReferences } = require('../utils/sanitizePayload');
 
 const toCamelCase = (str) => {
   return str
@@ -825,10 +826,8 @@ exports.getActiveEmployees = async (req, res) => {
 exports.createEmployee = async (req, res) => {
   try {
     const companyId = req.companyId || req.user._id;
-    const employeeData = attachTenant(req, { ...req.body, user: companyId });
-    delete employeeData._id;
-    delete employeeData.isDeleted;
-    delete employeeData.deletedAt;
+    const employeeData = attachTenant(req, req.body);
+    await validateTenantReferences(employeeData, req);
     employeeData.department = await validateDepartment(employeeData.department, companyId, req);
 
     const employee = await Employee.create(employeeData);
@@ -871,21 +870,10 @@ exports.updateEmployee = async (req, res) => {
     const existingEmployee = await Employee.findOne({ _id: req.params.id, ...tenantFilter });
     if (!existingEmployee) return res.status(404).json({ message: 'Employee not found' });
 
-    const updateData = { ...req.body };
-
-    // Mass-assignment protection: strip security-sensitive and internal fields
-    const FORBIDDEN_UPDATE_FIELDS = [
-      'user',
-      'profile',
-      '_id',
-      'isDeleted',
-      'deletedAt',
-      'salaryRevisions',
-      'createdAt',
-      'updatedAt',
-      '__v',
-    ];
-    FORBIDDEN_UPDATE_FIELDS.forEach((field) => delete updateData[field]);
+    // Mass-assignment protection: strip security-sensitive, internal, and immutable fields
+    const updateData = sanitizePayload(req.body, ['salaryRevisions']);
+    updateData.updatedBy = req.user._id;
+    await validateTenantReferences(updateData, req);
 
     if (Object.prototype.hasOwnProperty.call(updateData, 'department')) {
       updateData.department = await validateDepartment(updateData.department, companyId, req);
@@ -1495,14 +1483,16 @@ exports.importEmployees = async (req, res) => {
         let created;
         const existing = await Employee.findOne({ ...getTenantFilter(req), employeeId });
         if (existing) {
+          const cleanUpdate = sanitizePayload(payload, ['salaryRevisions']);
+          cleanUpdate.updatedBy = req.user._id;
           await appendSalaryRevisionIfChanged({
             employee: existing,
-            updateData: payload,
+            updateData: cleanUpdate,
             effectiveDate: new Date(),
             reason: 'Bulk employee import',
             revisedBy: req.user._id ? String(req.user._id) : 'System (Bulk Import)',
           });
-          Object.assign(existing, payload);
+          Object.assign(existing, cleanUpdate);
           created = await existing.save();
         } else {
           created = await Employee.create(attachTenant(req, payload));
