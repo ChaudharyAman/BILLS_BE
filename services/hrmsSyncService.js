@@ -524,8 +524,11 @@ exports.syncEmployeesFromExternal = async (userId, options = {}) => {
   const tenantFilter = options?.tenantFilter || (profileId ? { profile: profileId } : { user: userId });
 
   let settings = await Settings.findOne(tenantFilter);
-  if (!settings && profileId) {
-    settings = await Settings.findOne({ user: userId, 'integration.enabled': true }) || await Settings.findOne({ user: userId });
+  if ((!settings || !settings.integration?.enabled) && profileId) {
+    const fallbackSettings = await Settings.findOne({ user: userId, 'integration.enabled': true }) || await Settings.findOne({ user: userId });
+    if (fallbackSettings?.integration?.enabled) {
+      settings = fallbackSettings;
+    }
   }
   if (!settings || !settings.integration?.enabled) {
     throw new Error('HRMS integration is disabled or not configured for this organization.');
@@ -641,8 +644,11 @@ exports.syncAttendanceFromExternal = async (userId, month, year, options = {}) =
   const tenantFilter = options?.tenantFilter || (profileId ? { profile: profileId } : { user: userId });
 
   let settings = await Settings.findOne(tenantFilter);
-  if (!settings && profileId) {
-    settings = await Settings.findOne({ user: userId, 'integration.enabled': true }) || await Settings.findOne({ user: userId });
+  if ((!settings || !settings.integration?.enabled) && profileId) {
+    const fallbackSettings = await Settings.findOne({ user: userId, 'integration.enabled': true }) || await Settings.findOne({ user: userId });
+    if (fallbackSettings?.integration?.enabled) {
+      settings = fallbackSettings;
+    }
   }
   if (!settings || !settings.integration?.enabled) {
     throw new Error('HRMS/Attendance integration is disabled.');
