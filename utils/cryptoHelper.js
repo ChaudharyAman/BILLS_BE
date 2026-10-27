@@ -143,6 +143,7 @@ exports.verifyMultiTenantWebhook = async (req, res, next) => {
 
     // Set tenant context details for downstream use
     req.tenantUserId = settings.user;
+    req.tenantProfileId = settings.profile || null;
     req.integrationSettings = settings.integration;
 
     next();

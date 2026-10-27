@@ -10,7 +10,7 @@ const { getOrCreateConfig } = require('./common');
 
 const getPayrollConfig = async (req, res) => {
   try {
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(req.user._id, new Date(), req.activeProfileId || null);
     res.json(config);
   } catch (error) {
     console.error('Error fetching payroll config:', error);
@@ -62,7 +62,7 @@ const updatePayrollConfig = async (req, res) => {
     });
 
     const effectiveFromDate = req.body.effectiveFrom ? new Date(req.body.effectiveFrom) : new Date();
-    const existingConfig = await getOrCreateConfig(req.user._id, effectiveFromDate);
+    const existingConfig = await getOrCreateConfig(req.user._id, effectiveFromDate, req.activeProfileId || null);
 
     const isSameDate = existingConfig && existingConfig.effectiveFrom && 
       new Date(existingConfig.effectiveFrom).toISOString().slice(0, 10) === effectiveFromDate.toISOString().slice(0, 10);
@@ -82,6 +82,7 @@ const updatePayrollConfig = async (req, res) => {
         createdAt: undefined,
         updatedAt: undefined,
         user: req.user._id,
+        ...(req.activeProfileId ? { profile: req.activeProfileId } : {}),
         effectiveFrom: effectiveFromDate,
       };
       config = await PayrollConfig.create(mergedData);
@@ -95,7 +96,7 @@ const updatePayrollConfig = async (req, res) => {
 
 const calculateSalary = async (req, res) => {
   try {
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(req.user._id, new Date(), req.activeProfileId || null);
     let monthlyCTC = Number(req.body.monthlyCTC) || (Number(req.body.annualCTC) ? Number(req.body.annualCTC) / 12 : 0);
     const payType = req.body.payType || 'salaried';
     const hourlyRate = Number(req.body.hourlyRate) || 0;

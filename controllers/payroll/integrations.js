@@ -12,6 +12,7 @@ const PayrollConfig = require('../../models/PayrollConfig');
 const { decryptPayload } = require('../../utils/cryptoHelper');
 const hrmsSyncService = require('../../services/hrmsSyncService');
 const { appendSalaryRevisionIfChanged } = require('../../utils/salaryRevisionHelper');
+const { getTenantFilter } = require('../../utils/tenantHelper');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pull sync handlers (protected by JWT middleware)
@@ -19,7 +20,11 @@ const { appendSalaryRevisionIfChanged } = require('../../utils/salaryRevisionHel
 
 const syncEmployees = async (req, res) => {
   try {
-    const result = await hrmsSyncService.syncEmployeesFromExternal(req.user._id);
+    const tenantFilter = getTenantFilter(req);
+    const result = await hrmsSyncService.syncEmployeesFromExternal(req.user._id, {
+      profileId: req.activeProfileId,
+      tenantFilter,
+    });
     res.json({ message: 'Employee directory sync completed successfully.', ...result });
   } catch (error) {
     console.error('Sync Employees error:', error.message);
@@ -31,7 +36,10 @@ const syncAttendance = async (req, res) => {
   try {
     const month = Number(req.query.month) || (new Date().getMonth() + 1);
     const year  = Number(req.query.year)  || new Date().getFullYear();
-    const result = await hrmsSyncService.syncAttendanceFromExternal(req.user._id, month, year);
+    const result = await hrmsSyncService.syncAttendanceFromExternal(req.user._id, month, year, {
+      profileId: req.activeProfileId,
+      tenantFilter: getTenantFilter(req),
+    });
     res.json({ attendance: result });
   } catch (error) {
     console.error('Sync Attendance error:', error.message);
@@ -46,6 +54,7 @@ const syncAttendance = async (req, res) => {
 const receiveHrmsWebhook = async (req, res) => {
   try {
     const userId = req.tenantUserId;
+    const profileId = req.tenantProfileId || null;
     const { encryptionSecret, apiUrl, apiKey, externalTenantId } = req.integrationSettings;
 
     // Decrypt payload if TalentCIO has payload encryption enabled
@@ -60,14 +69,17 @@ const receiveHrmsWebhook = async (req, res) => {
     }
 
     // Load local PayrollConfig so salary-structure computation uses current rates
-    const config = await PayrollConfig.findOne({ user: userId });
+    const config = await PayrollConfig.findOne(profileId ? { user: userId, profile: profileId } : { user: userId });
 
     // Map raw HRMS record → MyBill Employee updateData (shared logic, fixes #1 + #2)
     const { empId, updateData } = await hrmsSyncService.mapHrmsEmployeeToUpdateData(
-      employeeData, userId, config
+      employeeData, userId, config, { profileId }
     );
 
     const query = { user: userId, employeeId: empId };
+    if (profileId) {
+      query.profile = profileId;
+    }
     const existingEmp = await Employee.findOne(query);
     if (existingEmp) {
       await appendSalaryRevisionIfChanged({
@@ -80,14 +92,14 @@ const receiveHrmsWebhook = async (req, res) => {
       Object.assign(existingEmp, updateData);
       await existingEmp.save();
     } else {
-      await Employee.create({ ...updateData, user: userId });
+      await Employee.create({ ...updateData, user: userId, ...(profileId ? { profile: profileId } : {}) });
     }
 
     // Sync payroll config from HRMS in background so rate changes take effect
     // without requiring a manual sync (#4). Non-fatal if HRMS is temporarily unavailable.
     if (apiUrl && apiKey && externalTenantId) {
       hrmsSyncService.syncPayrollConfigFromExternal(
-        userId, apiUrl, apiKey, externalTenantId, encryptionSecret
+        userId, apiUrl, apiKey, externalTenantId, encryptionSecret, { profileId }
       ).catch(err =>
         console.warn('[receiveHrmsWebhook] Background config sync failed (non-fatal):', err.message)
       );
@@ -111,17 +123,24 @@ const publishPayslips = async (req, res) => {
     const Payroll = require('../../models/Payroll');
 
     const tenantUserId = req.companyId || req.user._id;
-    const settings = await Settings.findOne({ user: tenantUserId });
+    const tenantFilter = getTenantFilter(req);
+    let settings = await Settings.findOne(tenantFilter);
+    if (!settings && req.activeProfileId) {
+      settings = await Settings.findOne({ user: tenantUserId, 'integration.enabled': true })
+        || await Settings.findOne({ user: tenantUserId });
+    }
     if (!settings?.integration?.enabled) {
       return res.status(400).json({ message: 'TalentCIO integration is not enabled in Settings.' });
     }
 
-    const payrolls = await Payroll.find({
-      user: tenantUserId,
+    const payrollQuery = {
+      ...tenantFilter,
       month: Number(month),
       year: Number(year),
       isDeleted: { $ne: true }
-    }).populate({ path: 'employee', populate: { path: 'department', select: 'name code' } });
+    };
+    const payrolls = await Payroll.find(payrollQuery)
+      .populate({ path: 'employee', populate: { path: 'department', select: 'name code' } });
 
     if (payrolls.length === 0) {
       return res.status(404).json({ message: `No payroll records found for ${month}/${year}.` });

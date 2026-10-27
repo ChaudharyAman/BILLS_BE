@@ -97,6 +97,11 @@ app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/public', require('./routes/publicSubmissionRoutes'));
 app.use('/api/shared', publicShareRouter);
 
+// ── HRMS Inbound Webhook (Authenticated via HMAC signature check, no JWT) ──
+const { verifyMultiTenantWebhook } = require('./utils/cryptoHelper');
+const { receiveHrmsWebhook } = require('./controllers/payrollController');
+app.post('/api/payroll/integration/webhook', verifyMultiTenantWebhook, receiveHrmsWebhook);
+
 // ── Profile Management Routes (protect only) ─────────────────────────────────
 app.use('/api/profiles', require('./routes/clientProfileRoutes'));
 app.use('/api/profiles/:profileId/shares', profileShareRouter);

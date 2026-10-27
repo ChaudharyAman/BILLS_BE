@@ -86,14 +86,19 @@ const DEFAULT_SALARY_COMPONENTS = [
  * HRMS payType value ('salaried' | 'hourly' | 'flat'). Returns the Role _id
  * and the resolved field overrides to apply to the Employee document.
  */
-const resolvePayrollRoleTemplate = async (userId, hrmsPayType) => {
+const resolvePayrollRoleTemplate = async (userId, hrmsPayType, profileId = null) => {
   const key = String(hrmsPayType || 'salaried').toLowerCase();
   const template = PAY_TYPE_ROLE_MAP[key] || PAY_TYPE_ROLE_MAP.salaried;
 
+  const roleQuery = { user: userId, name: template.name };
+  if (profileId) {
+    roleQuery.profile = profileId;
+  }
+
   const role = await Role.findOneAndUpdate(
-    { user: userId, name: template.name },
+    roleQuery,
     {
-      $setOnInsert: { user: userId },
+      $setOnInsert: { user: userId, ...(profileId ? { profile: profileId } : {}) },
       $set: {
         description: template.description,
         payType: template.payType,
@@ -145,7 +150,7 @@ exports.resolvePayrollRoleTemplate = resolvePayrollRoleTemplate;
  * @param {string} externalTenantId
  * @param {string} encryptionSecret
  */
-exports.syncPayrollConfigFromExternal = async (userId, apiUrl, apiKey, externalTenantId, encryptionSecret) => {
+exports.syncPayrollConfigFromExternal = async (userId, apiUrl, apiKey, externalTenantId, encryptionSecret, options = {}) => {
   try {
     const configResponse = await axios.get(`${apiUrl.replace(/\/$/, '')}/api/v1/payroll-config`, {
       params: { tenantId: externalTenantId },
@@ -159,7 +164,9 @@ exports.syncPayrollConfigFromExternal = async (userId, apiUrl, apiKey, externalT
     }
     if (!hrmsConfig) return;
 
-    let config = await PayrollConfig.findOne({ user: userId });
+    const profileId = options?.profileId || null;
+    const configFilter = profileId ? { user: userId, profile: profileId } : { user: userId };
+    let config = await PayrollConfig.findOne(configFilter);
     const updatedFields = {};
 
     if (typeof hrmsConfig.basicPercent === 'number') updatedFields.basicPercent = hrmsConfig.basicPercent;
@@ -215,7 +222,7 @@ exports.syncPayrollConfigFromExternal = async (userId, apiUrl, apiKey, externalT
       Object.assign(config, updatedFields);
       await config.save();
     } else {
-      await PayrollConfig.create({ ...updatedFields, user: userId });
+      await PayrollConfig.create({ ...updatedFields, user: userId, ...(profileId ? { profile: profileId } : {}) });
     }
   } catch (err) {
     console.warn('[hrmsSyncService] syncPayrollConfigFromExternal failed:', err.message);
@@ -240,7 +247,8 @@ exports.syncPayrollConfigFromExternal = async (userId, apiUrl, apiKey, externalT
  * @returns {{ empId: string, email: string, updateData: Object, hrmsPayType: string }}
  * @throws {Error} When empId or email is missing from the source record
  */
-exports.mapHrmsEmployeeToUpdateData = async (extEmp, userId, config) => {
+exports.mapHrmsEmployeeToUpdateData = async (extEmp, userId, config, options = {}) => {
+  const profileId = options?.profileId || null;
   const empId = String(
     extEmp.employeeId || extEmp.employeeCode || extEmp.emp_id || extEmp.emp_code ||
     extEmp.employee_code || extEmp.userId || extEmp._id || ''
@@ -328,20 +336,23 @@ exports.mapHrmsEmployeeToUpdateData = async (extEmp, userId, config) => {
   let departmentId = null;
   if (departmentName) {
     const Department = require('../models/Department');
-    let dept = await Department.findOne({
+    const deptQuery = {
       user: userId,
+      ...(profileId ? { profile: profileId } : {}),
       name: { $regex: new RegExp(`^${escapeRegex(departmentName)}$`, 'i') },
-    });
+    };
+    let dept = await Department.findOne(deptQuery);
     if (!dept) {
       let baseCode = departmentName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 5).toUpperCase() || 'DEPT';
       let code = baseCode;
       let counter = 1;
-      while (await Department.exists({ user: userId, code })) {
+      while (await Department.exists({ user: userId, ...(profileId ? { profile: profileId } : {}), code })) {
         code = `${baseCode}${counter}`;
         counter += 1;
       }
       dept = await Department.create({
         user: userId,
+        ...(profileId ? { profile: profileId } : {}),
         name: departmentName,
         code,
         description: 'Auto-created during sync',
@@ -420,7 +431,7 @@ exports.mapHrmsEmployeeToUpdateData = async (extEmp, userId, config) => {
 
   // ── Role template & statutory flag resolution ─────────────────────────────
   const hrmsPayType = String(extBreakup.payType || extBreakup.paytype || 'salaried').toLowerCase();
-  const roleTemplate = await resolvePayrollRoleTemplate(userId, hrmsPayType);
+  const roleTemplate = await resolvePayrollRoleTemplate(userId, hrmsPayType, profileId);
 
   // For salaried employees honour the per-employee flags from HRMS; for hourly/flat
   // the template governs (those types always have specific statutory rules).
@@ -437,6 +448,7 @@ exports.mapHrmsEmployeeToUpdateData = async (extEmp, userId, config) => {
 
   // ── Build and compute final update payload ────────────────────────────────
   const updateData = {
+    ...(profileId ? { profile: profileId } : {}),
     employeeId: empId,
     firstName:  extEmp.firstName || extEmp.personal?.firstName || 'Unknown',
     lastName:   extEmp.lastName  || extEmp.personal?.lastName  || 'Employee',
@@ -507,8 +519,14 @@ exports.mapHrmsEmployeeToUpdateData = async (extEmp, userId, config) => {
 /**
  * Fetch and upsert employee profiles from external multi-tenant HRMS.
  */
-exports.syncEmployeesFromExternal = async (userId) => {
-  const settings = await Settings.findOne({ user: userId });
+exports.syncEmployeesFromExternal = async (userId, options = {}) => {
+  const profileId = options?.profileId || options?.activeProfileId || null;
+  const tenantFilter = options?.tenantFilter || (profileId ? { profile: profileId } : { user: userId });
+
+  let settings = await Settings.findOne(tenantFilter);
+  if (!settings && profileId) {
+    settings = await Settings.findOne({ user: userId, 'integration.enabled': true }) || await Settings.findOne({ user: userId });
+  }
   if (!settings || !settings.integration?.enabled) {
     throw new Error('HRMS integration is disabled or not configured for this organization.');
   }
@@ -518,11 +536,12 @@ exports.syncEmployeesFromExternal = async (userId) => {
 
   try {
     // 1. Sync payroll config first so salary-structure computation uses fresh rates
-    await exports.syncPayrollConfigFromExternal(userId, apiUrl, apiKey, externalTenantId, encryptionSecret);
+    await exports.syncPayrollConfigFromExternal(userId, apiUrl, apiKey, externalTenantId, encryptionSecret, { profileId });
 
-    let config = await PayrollConfig.findOne({ user: userId });
+    const configFilter = profileId ? { user: userId, profile: profileId } : { user: userId };
+    let config = await PayrollConfig.findOne(configFilter);
     if (!config) {
-      config = await PayrollConfig.create({ user: userId, salaryComponents: DEFAULT_SALARY_COMPONENTS });
+      config = await PayrollConfig.create({ user: userId, ...(profileId ? { profile: profileId } : {}), salaryComponents: DEFAULT_SALARY_COMPONENTS });
     }
 
     // 2. Fetch employee list
@@ -549,9 +568,12 @@ exports.syncEmployeesFromExternal = async (userId) => {
 
     for (const extEmp of employeesList) {
       try {
-        const { empId, email, updateData, hrmsPayType } = await exports.mapHrmsEmployeeToUpdateData(extEmp, userId, config);
+        const { empId, email, updateData, hrmsPayType } = await exports.mapHrmsEmployeeToUpdateData(extEmp, userId, config, { profileId });
 
         const query = { user: userId, employeeId: empId };
+        if (profileId) {
+          query.profile = profileId;
+        }
         const existingEmp = await Employee.findOne(query);
         if (existingEmp) {
           await appendSalaryRevisionIfChanged({
@@ -565,7 +587,7 @@ exports.syncEmployeesFromExternal = async (userId) => {
           await existingEmp.save();
           updatedCount += 1;
         } else {
-          await Employee.create({ ...updateData, user: userId });
+          await Employee.create({ ...updateData, user: userId, ...(profileId ? { profile: profileId } : {}) });
           createdCount += 1;
         }
 
@@ -614,8 +636,14 @@ exports.syncEmployeesFromExternal = async (userId) => {
  * Results are both returned (for immediate payroll use) and persisted to
  * AttendanceSyncCache so they can be re-read without re-fetching from HRMS.
  */
-exports.syncAttendanceFromExternal = async (userId, month, year) => {
-  const settings = await Settings.findOne({ user: userId });
+exports.syncAttendanceFromExternal = async (userId, month, year, options = {}) => {
+  const profileId = options?.profileId || options?.activeProfileId || null;
+  const tenantFilter = options?.tenantFilter || (profileId ? { profile: profileId } : { user: userId });
+
+  let settings = await Settings.findOne(tenantFilter);
+  if (!settings && profileId) {
+    settings = await Settings.findOne({ user: userId, 'integration.enabled': true }) || await Settings.findOne({ user: userId });
+  }
   if (!settings || !settings.integration?.enabled) {
     throw new Error('HRMS/Attendance integration is disabled.');
   }
@@ -637,7 +665,11 @@ exports.syncAttendanceFromExternal = async (userId, month, year) => {
 
     const attendanceRecords = Array.isArray(rawData) ? rawData : (rawData?.attendance || []);
     const calendarDays = new Date(year, month, 0).getDate();
-    const localEmployees = await Employee.find({ user: userId }).select('_id employeeId joiningDate dateOfLeaving');
+    const empFilter = { user: userId };
+    if (profileId) {
+      empFilter.profile = profileId;
+    }
+    const localEmployees = await Employee.find(empFilter).select('_id employeeId joiningDate dateOfLeaving');
 
     const mapped = [];
     localEmployees.forEach(emp => {

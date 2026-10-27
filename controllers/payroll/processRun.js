@@ -57,6 +57,7 @@ const processPayroll = async (req, res) => {
       const batchResult = await processBatchJob({
         jobId,
         userId: tenantUserId,
+        profileId: req.activeProfileId || null,
         month,
         year,
         employeePayloads,
@@ -68,6 +69,7 @@ const processPayroll = async (req, res) => {
 
     const queueResult = await enqueueBatchJob({
       userId: tenantUserId,
+      profileId: req.activeProfileId || null,
       month,
       year,
       employeePayloads,
@@ -131,7 +133,7 @@ const previewPayroll = async (req, res) => {
       .lean();
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(req.user._id, new Date(year, month - 1, 1), req.activeProfileId || null);
 
     if (adjustments.ptState === undefined) {
       adjustments.ptState = employee.ptState || '';

@@ -98,7 +98,7 @@ const getPayrollById = async (req, res) => {
 
     if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(req.user._id, new Date(), req.activeProfileId || null);
     const adjustments = {
       pfEnabled: payroll.employeeSnapshot?.pfEnabled,
       esiEnabled: payroll.employeeSnapshot?.esiEnabled,
@@ -221,7 +221,7 @@ const markPayrollAsPaid = async (req, res) => {
     if (!payroll) return res.status(404).json({ message: 'Payroll not found' });
     if (payroll.status === 'paid') return res.status(400).json({ message: 'Payroll is already paid' });
 
-    const config = await getOrCreateConfig(req.user._id, new Date(payroll.year, payroll.month - 1, 1));
+    const config = await getOrCreateConfig(req.user._id, new Date(payroll.year, payroll.month - 1, 1), req.activeProfileId || payroll.profile || null);
     const reqApprovers = payroll.requiredApprovers && payroll.requiredApprovers.length > 0
       ? payroll.requiredApprovers
       : (config.requireDualApproval && Array.isArray(config.approverRoles) ? config.approverRoles.map(r => ({ role: r, approved: false })) : []);
@@ -607,7 +607,7 @@ const processFullAndFinalSettlement = async (req, res) => {
     const month = exitDate.getUTCMonth() + 1;
     const year = exitDate.getUTCFullYear();
 
-    const config = await getOrCreateConfig(req.user._id);
+    const config = await getOrCreateConfig(req.user._id, new Date(), req.activeProfileId || null);
 
     const joiningDate = employee.joiningDate ? new Date(employee.joiningDate) : exitDate;
     const basicSalary = Number(employee.salaryStructure?.basic) || (Number(employee.monthlyCTC) * 0.5) || 0;

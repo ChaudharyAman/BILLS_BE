@@ -9,13 +9,14 @@ const mongoose = require('mongoose');
 const PayrollBatchRun = require('../models/PayrollBatchRun');
 const { processBatchJob } = require('../workers/payrollWorker');
 
-async function enqueueBatchJob({ userId, month, year, employeePayloads = [], saveAsDraft = false }) {
+async function enqueueBatchJob({ userId, profileId = null, month, year, employeePayloads = [], saveAsDraft = false }) {
   const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
   if (mongoose.connection.readyState === 1) {
     await PayrollBatchRun.create({
       jobId,
       user: userId,
+      ...(profileId ? { profile: profileId } : {}),
       month: Number(month),
       year: Number(year),
       saveAsDraft: Boolean(saveAsDraft),
@@ -34,6 +35,7 @@ async function enqueueBatchJob({ userId, month, year, employeePayloads = [], sav
     processBatchJob({
       jobId,
       userId,
+      profileId,
       month: Number(month),
       year: Number(year),
       employeePayloads,
