@@ -6,18 +6,20 @@ const { syncExpiredSubscription } = require('../utils/subscriptionLifecycle');
 const escapeRegex = require('../utils/escapeRegex');
 
 // Generate JWT Token (Lifetime reduced to 24h/7d with tokenVersion validation)
-const generateToken = (user) => {
+const generateToken = (user, rememberMe = false) => {
   if (!process.env.JWT_SECRET) {
       console.error('ERROR: JWT_SECRET is not defined in environment variables!');
       throw new Error('JWT_SECRET is missing');
   }
+  const expiresIn = rememberMe ? '30d' : (process.env.JWT_EXPIRES_IN || '24h');
   return jwt.sign({
     id: user._id,
     role: user.role,
     subscription: user.subscription,
     tokenVersion: user.tokenVersion || 0,
+    rememberMe: Boolean(rememberMe),
   }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '24h',
+    expiresIn,
   });
 };
 
@@ -57,7 +59,7 @@ const buildAuthResponse = (req) => {
 };
 
 // Cookie options — controlled by explicit COOKIE_SECURE flag or HTTPS/production
-const getCookieOptions = (req) => {
+const getCookieOptions = (req, rememberMe = false) => {
   const isHttps = req?.secure || req?.headers?.['x-forwarded-proto'] === 'https';
   
   // Explicit flag takes highest precedence: COOKIE_SECURE='true' | 'false'
@@ -74,12 +76,17 @@ const getCookieOptions = (req) => {
   const envSameSite = process.env.COOKIE_SAME_SITE?.toLowerCase();
   const sameSite = envSameSite || (secure ? (process.env.NODE_ENV === 'production' ? 'none' : 'lax') : 'lax');
 
+  // If rememberMe is true, cookie lives 30 days; otherwise standard 24 hours
+  const maxAge = rememberMe
+    ? 30 * 24 * 60 * 60 * 1000
+    : (process.env.COOKIE_MAX_AGE_MS ? Number(process.env.COOKIE_MAX_AGE_MS) : 24 * 60 * 60 * 1000);
+
   return {
     httpOnly: true, // Never accessible via JavaScript (XSS mitigation)
     secure,         // Controlled by COOKIE_SECURE or HTTPS/env
     sameSite,
     path: '/',
-    maxAge: 7 * 24 * 60 * 60 * 1000, // Reduced from 30 days to 7 days
+    maxAge,
   };
 };
 
@@ -97,8 +104,9 @@ exports.register = async (req, res) => {
 // @access  Public
 exports.login = async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, rememberMe } = req.body;
     const cleanUsername = String(username || '').trim();
+    const isRememberMe = Boolean(rememberMe);
 
     if (!cleanUsername || !password) {
       return res.status(401).json({ message: 'Invalid credentials' });
@@ -106,7 +114,7 @@ exports.login = async (req, res) => {
 
     const user = await User.findOne({ 
         $or: [
-            { username: { $regex: new RegExp(`^${escapeRegex(cleanUsername)}$`, 'i') } }, 
+            { username: cleanUsername }, 
             { email: cleanUsername.toLowerCase() }
         ] 
     });
@@ -120,8 +128,8 @@ exports.login = async (req, res) => {
       await syncExpiredSubscription(user);
 
       req.user = user;
-      const token = generateToken(user);
-      res.cookie('token', token, getCookieOptions(req));
+      const token = generateToken(user, isRememberMe);
+      res.cookie('token', token, getCookieOptions(req, isRememberMe));
 
       res.json({
         ...buildAuthResponse(req),
@@ -305,8 +313,9 @@ exports.me = async (req, res) => {
   }
 
   // Normal session: generate a refreshed token
-  const token = generateToken(req.user);
-  res.cookie('token', token, getCookieOptions(req));
+  const rememberMe = Boolean(req.tokenPayload?.rememberMe);
+  const token = generateToken(req.user, rememberMe);
+  res.cookie('token', token, getCookieOptions(req, rememberMe));
   res.json({
     ...buildAuthResponse(req),
     token
