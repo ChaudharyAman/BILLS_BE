@@ -6,6 +6,7 @@ const AccessRole = require('../models/AccessRole');
 const MasterUser = require('./MasterUser');
 const config = require('./config');
 const { logSwitchAuditEvent } = require('./audit');
+const escapeRegex = require('../utils/escapeRegex');
 const {
   isMasterEmail,
   canUserSwitch,
