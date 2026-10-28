@@ -81,6 +81,7 @@ SYSTEM_TEST_REPORT.md
 
 # Tests
 tests/unit/
+tests/unit
 
 # Scripts & Local Tools
 scripts/

@@ -106,8 +106,14 @@ const ClientSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-ClientSchema.index({ user: 1, profile: 1, name: 1 }, { unique: true, sparse: true });
-ClientSchema.index({ user: 1, name: 1 }, { unique: true, partialFilterExpression: { profile: null } });
+ClientSchema.index(
+  { user: 1, profile: 1, name: 1 },
+  { unique: true, partialFilterExpression: { profile: { $type: 'objectId' }, isDeleted: false } }
+);
+ClientSchema.index(
+  { user: 1, name: 1 },
+  { unique: true, partialFilterExpression: { profile: null, isDeleted: false } }
+);
 
 function hasValidGstin(gstin) {
   return /^[0-9A-Z]{15}$/.test(String(gstin || '').trim().toUpperCase());
