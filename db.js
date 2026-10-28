@@ -1,7 +1,11 @@
 const mongoose = require('mongoose');
 
-// Global plugin to ensure createdBy and updatedBy fields are supported across all models
+// Global plugin to ensure createdBy and updatedBy fields are supported across all root models
 mongoose.plugin((schema) => {
+  // Do not add createdBy/updatedBy to subdocuments (e.g. schemas with _id: false)
+  if (schema.options && schema.options._id === false) {
+    return;
+  }
   if (!schema.path('createdBy')) {
     schema.add({
       createdBy: {

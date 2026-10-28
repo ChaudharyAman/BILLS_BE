@@ -90,11 +90,11 @@ ItemSchema.index({ profile: 1, name: 1 });
 ItemSchema.index({ user: 1, name: 1 });
 ItemSchema.index(
   { user: 1, profile: 1, sku: 1 },
-  { unique: true, partialFilterExpression: { sku: { $gt: '' } } }
+  { unique: true, partialFilterExpression: { profile: { $type: 'objectId' }, sku: { $gt: '' }, isDeleted: false } }
 );
 ItemSchema.index(
   { user: 1, sku: 1 },
-  { unique: true, partialFilterExpression: { profile: null, sku: { $gt: '' } } }
+  { unique: true, partialFilterExpression: { profile: null, sku: { $gt: '' }, isDeleted: false } }
 );
 
 ItemSchema.plugin(softDeletePlugin);
