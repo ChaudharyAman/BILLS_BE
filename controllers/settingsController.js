@@ -1,12 +1,21 @@
 const cloudinary = require('../config/cloudinary');
 const fs = require('fs');
 const Settings = require('../models/Settings');
+const User = require('../models/User');
 const { getTenantFilter, attachTenant } = require('../utils/tenantHelper');
 const { encryptPIIField, decryptPIIField } = require('../utils/cryptoHelper');
 const { verifySmtp, sendMail } = require('../utils/mailService');
 
 // Placeholder shown to the frontend in place of real secret values
 const SECRET_MASK = '••••••••';
+
+// Test if a string is a masked placeholder (8 or more bullets, dots, asterisks)
+const isMaskedSecret = (val) => {
+  if (!val || typeof val !== 'string') return true;
+  const trimmed = val.trim();
+  if (!trimmed || trimmed === SECRET_MASK) return true;
+  return /^[\u2022\u25cf\*\.\s]+$/.test(trimmed);
+};
 
 // Mask secret integration and SMTP fields so they are never sent to the client
 const maskIntegrationSecrets = (settingsDoc) => {
@@ -176,10 +185,18 @@ exports.updateSettings = async (req, res) => {
     let safeIntegration = integration;
     if (integration && typeof integration === 'object') {
       safeIntegration = { ...integration };
+      if (typeof safeIntegration.apiUrl === 'string') {
+        safeIntegration.apiUrl = safeIntegration.apiUrl.trim().replace(/\/+$/, '');
+      }
+      if (typeof safeIntegration.externalTenantId === 'string') {
+        safeIntegration.externalTenantId = safeIntegration.externalTenantId.trim();
+      }
       const secretFields = ['apiKey', 'encryptionSecret', 'webhookSecret'];
       for (const field of secretFields) {
-        if (safeIntegration[field] === SECRET_MASK || safeIntegration[field] === '') {
+        if (isMaskedSecret(safeIntegration[field])) {
           delete safeIntegration[field]; // leave DB value unchanged
+        } else {
+          safeIntegration[field] = String(safeIntegration[field]).trim();
         }
       }
     }
@@ -453,13 +470,14 @@ exports.updateSettings = async (req, res) => {
       }
     }
 
-    // Enforce: integration.enabled requires a tenant-specific webhookSecret.
-    // Without it, incoming webhooks cannot be verified and tenant isolation breaks.
+    // Enforce: integration.enabled requires credentials (API Key or Webhook Secret).
+    // Without credentials, the integration cannot connect to the external HRMS.
     if (settings.integration?.enabled) {
-      const hasSecret = settings.integration.webhookSecret && settings.integration.webhookSecret !== SECRET_MASK;
-      if (!hasSecret) {
+      const hasWebhookSecret = settings.integration.webhookSecret && !isMaskedSecret(settings.integration.webhookSecret);
+      const hasApiKey = settings.integration.apiKey && !isMaskedSecret(settings.integration.apiKey);
+      if (!hasWebhookSecret && !hasApiKey) {
         return res.status(400).json({
-          message: 'Integration cannot be enabled without a webhookSecret. Please configure a webhook secret before enabling the integration.',
+          message: 'Integration cannot be enabled without credentials. Please enter your external API Key / Secret Token or Webhook Secret before enabling.',
         });
       }
     }
