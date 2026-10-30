@@ -63,6 +63,17 @@ function buildTaxWorksheet({ payroll = {}, employee = {}, fyPayrolls = [], tdsMo
     if (Array.isArray(payroll.earnings?.otherEarnings)) {
       other += payroll.earnings.otherEarnings.reduce((s, o) => s + (Number(o.amount) || 0), 0);
     }
+    if (payroll.earnings?.earningsMap && typeof payroll.earnings.earningsMap === 'object') {
+      const standardKeys = [
+        'basic', 'hra', 'special', 'specialAllowance', 'flexi', 'flexiAmount',
+        'broadband', 'petrol', 'lta', 'conveyance', 'medical', 'medicalAllowance', 'meal', 'mealAllowance'
+      ];
+      Object.entries(payroll.earnings.earningsMap).forEach(([k, v]) => {
+        if (!standardKeys.includes(k) && Number(v) > 0) {
+          other += Number(v);
+        }
+      });
+    }
 
     let bonus = 0;
     if (payroll.variablePay) {
