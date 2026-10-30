@@ -150,7 +150,7 @@ const EmployeeSchema = new mongoose.Schema({
   includePfInCTC: { type: Boolean, default: false },
   includeGratuityInCTC: { type: Boolean, default: true },
 
-  salaryStructure: {
+  salaryStructure: new mongoose.Schema({
     basic: { type: Number, required: true, default: 0, min: 0 },
     hra: { type: Number, default: 0, min: 0 },
     conveyance: { type: Number, default: 0, min: 0 },
@@ -159,15 +159,15 @@ const EmployeeSchema = new mongoose.Schema({
     otherAllowances: [AllowanceSchema],
     grossSalary: { type: Number, default: 0, min: 0 },
     ctc: { type: Number, default: 0, min: 0 },
-  },
+  }, { _id: false, strict: false }),
 
-  deductions: {
+  deductions: new mongoose.Schema({
     pf: { type: Number, default: 0, min: 0 },
     esi: { type: Number, default: 0, min: 0 },
     professionalTax: { type: Number, default: 0, min: 0 },
     tds: { type: Number, default: 0, min: 0 },
     otherDeductions: [AllowanceSchema],
-  },
+  }, { _id: false, strict: false }),
 
   bankDetails: {
     accountName: String,
@@ -387,12 +387,13 @@ EmployeeSchema.pre('save', async function() {
   if (this.user) {
     config = await PayrollConfig.findOne({ user: this.user }).lean() || {};
   }
-  const master = buildMasterSalaryStructure(this, config);
+  const sourceObj = (this && typeof this.toObject === 'function') ? this.toObject() : (this && this._doc ? { ...this._doc } : this);
+  const master = buildMasterSalaryStructure(sourceObj, config);
 
-  this.flexiAmount = master.flexi;
-  this.broadband = master.broadband;
-  this.petrol = master.petrol;
-  this.lta = master.lta;
+  this.flexiAmount = master.flexi !== undefined ? master.flexi : (this.flexiAmount || 0);
+  this.broadband = master.broadband !== undefined ? master.broadband : (this.broadband || 0);
+  this.petrol = master.petrol !== undefined ? master.petrol : (this.petrol || 0);
+  this.lta = master.lta !== undefined ? master.lta : (this.lta || 0);
 
   const salary = this.salaryStructure || {};
   salary.basic = master.basicMaster;
@@ -593,6 +594,12 @@ const applySalaryStructureUpdate = async function() {
     compensationType: getField('compensationType', null),
     attendanceMode: getField('attendanceMode', 'attendance'),
     useSalaryComponents: getField('useSalaryComponents', true),
+    flexiAmount: getField('flexiAmount', 0),
+    broadband: getField('broadband', 0),
+    petrol: getField('petrol', 0),
+    lta: getField('lta', 0),
+    insuranceAmount: getField('insuranceAmount', 0),
+    employerNPS: getField('employerNPS', 0),
     salaryStructure: {
       ...(currentDoc.salaryStructure || {}),
       ...mergedSalary

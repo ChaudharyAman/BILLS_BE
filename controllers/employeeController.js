@@ -758,19 +758,57 @@ exports.getEmployees = async (req, res) => {
       ];
     }
 
-    const total = await Employee.countDocuments(query);
-    const employees = await Employee.find(query)
-      .populate('department', 'name code')
-      .select('+panNumber +aadharNumber')
-      .select('-documents')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
+    const tenantBaseQuery = { ...getTenantFilter(req), isDeleted: { $ne: true } };
+
+    const [total, stats, employees] = await Promise.all([
+      Employee.countDocuments(query),
+      Employee.aggregate([
+        { $match: tenantBaseQuery },
+        {
+          $group: {
+            _id: null,
+            totalHeadcount: { $sum: 1 },
+            activeCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] }
+            },
+            totalMonthlyCTC: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$status', 'active'] },
+                  { $ifNull: ['$monthlyCTC', 0] },
+                  0
+                ]
+              }
+            }
+          }
+        }
+      ]),
+      Employee.find(query)
+        .populate('department', 'name code')
+        .select('+panNumber +aadharNumber')
+        .select('-documents')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
 
     employees.forEach(decryptEmployeePII);
 
-    res.json({ data: employees, total, page, limit, totalPages: Math.ceil(total / limit) });
+    const summary = stats[0] || { totalHeadcount: total, activeCount: 0, totalMonthlyCTC: 0 };
+
+    res.json({
+      data: employees,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      summary: {
+        totalHeadcount: summary.totalHeadcount || total,
+        activeCount: summary.activeCount || 0,
+        totalMonthlyCTC: Math.round((summary.totalMonthlyCTC || 0) * 100) / 100,
+      },
+    });
   } catch (error) {
     console.error('Error fetching employees:', error);
     res.status(500).json({ message: 'Server error fetching employees' });
@@ -852,7 +890,21 @@ exports.getEmployeeById = async (req, res) => {
       .select('+panNumber +uanNumber +aadharNumber +bankDetails.accountNumber');
 
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
-    res.json(employee);
+
+    const empObj = employee.toObject ? employee.toObject() : employee;
+    if ((!empObj.broadband || empObj.broadband === 0) && (empObj.salaryStructure?.broadband || empObj.deductions?.broadband)) {
+      empObj.broadband = empObj.salaryStructure?.broadband || empObj.deductions?.broadband;
+    }
+    if ((!empObj.petrol || empObj.petrol === 0) && (empObj.salaryStructure?.petrol || empObj.deductions?.petrol)) {
+      empObj.petrol = empObj.salaryStructure?.petrol || empObj.deductions?.petrol;
+    }
+    if ((!empObj.lta || empObj.lta === 0) && (empObj.salaryStructure?.lta || empObj.deductions?.lta)) {
+      empObj.lta = empObj.salaryStructure?.lta || empObj.deductions?.lta;
+    }
+    if ((!empObj.flexiAmount || empObj.flexiAmount === 0) && (empObj.salaryStructure?.flexi || empObj.salaryStructure?.flexiAmount || empObj.deductions?.flexi || empObj.deductions?.flexiAmount)) {
+      empObj.flexiAmount = empObj.salaryStructure?.flexi || empObj.salaryStructure?.flexiAmount || empObj.deductions?.flexi || empObj.deductions?.flexiAmount;
+    }
+    res.json(empObj);
   } catch (error) {
     console.error('Error fetching employee:', error);
     res.status(500).json({ message: 'Server error fetching employee' });
@@ -945,6 +997,37 @@ exports.updateEmployee = async (req, res) => {
       }
     }
 
+    if (updateData.broadband !== undefined) {
+      existingEmployee.broadband = Number(updateData.broadband) || 0;
+      if (!existingEmployee.salaryStructure) existingEmployee.salaryStructure = {};
+      existingEmployee.salaryStructure.broadband = existingEmployee.broadband;
+      if (!existingEmployee.deductions) existingEmployee.deductions = {};
+      existingEmployee.deductions.broadband = existingEmployee.broadband;
+    }
+    if (updateData.petrol !== undefined) {
+      existingEmployee.petrol = Number(updateData.petrol) || 0;
+      if (!existingEmployee.salaryStructure) existingEmployee.salaryStructure = {};
+      existingEmployee.salaryStructure.petrol = existingEmployee.petrol;
+      if (!existingEmployee.deductions) existingEmployee.deductions = {};
+      existingEmployee.deductions.petrol = existingEmployee.petrol;
+    }
+    if (updateData.lta !== undefined) {
+      existingEmployee.lta = Number(updateData.lta) || 0;
+      if (!existingEmployee.salaryStructure) existingEmployee.salaryStructure = {};
+      existingEmployee.salaryStructure.lta = existingEmployee.lta;
+      if (!existingEmployee.deductions) existingEmployee.deductions = {};
+      existingEmployee.deductions.lta = existingEmployee.lta;
+    }
+    if (updateData.flexiAmount !== undefined) {
+      existingEmployee.flexiAmount = Number(updateData.flexiAmount) || 0;
+      if (!existingEmployee.salaryStructure) existingEmployee.salaryStructure = {};
+      existingEmployee.salaryStructure.flexiAmount = existingEmployee.flexiAmount;
+      existingEmployee.salaryStructure.flexi = existingEmployee.flexiAmount;
+      if (!existingEmployee.deductions) existingEmployee.deductions = {};
+      existingEmployee.deductions.flexiAmount = existingEmployee.flexiAmount;
+      existingEmployee.deductions.flexi = existingEmployee.flexiAmount;
+    }
+
     Object.assign(existingEmployee, updateData);
     await existingEmployee.save();
 
@@ -953,7 +1036,21 @@ exports.updateEmployee = async (req, res) => {
       .select('+panNumber +uanNumber +aadharNumber +bankDetails.accountNumber');
 
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
-    res.json(employee);
+
+    const empObj = employee.toObject ? employee.toObject() : employee;
+    if ((!empObj.broadband || empObj.broadband === 0) && (empObj.salaryStructure?.broadband || empObj.deductions?.broadband)) {
+      empObj.broadband = empObj.salaryStructure?.broadband || empObj.deductions?.broadband;
+    }
+    if ((!empObj.petrol || empObj.petrol === 0) && (empObj.salaryStructure?.petrol || empObj.deductions?.petrol)) {
+      empObj.petrol = empObj.salaryStructure?.petrol || empObj.deductions?.petrol;
+    }
+    if ((!empObj.lta || empObj.lta === 0) && (empObj.salaryStructure?.lta || empObj.deductions?.lta)) {
+      empObj.lta = empObj.salaryStructure?.lta || empObj.deductions?.lta;
+    }
+    if ((!empObj.flexiAmount || empObj.flexiAmount === 0) && (empObj.salaryStructure?.flexi || empObj.salaryStructure?.flexiAmount || empObj.deductions?.flexi || empObj.deductions?.flexiAmount)) {
+      empObj.flexiAmount = empObj.salaryStructure?.flexi || empObj.salaryStructure?.flexiAmount || empObj.deductions?.flexi || empObj.deductions?.flexiAmount;
+    }
+    res.json(empObj);
   } catch (error) {
     console.error('Error updating employee:', error);
     if (error.code === 11000) {

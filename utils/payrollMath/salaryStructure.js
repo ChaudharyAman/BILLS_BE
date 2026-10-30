@@ -109,16 +109,20 @@ const getMonthlyCTCValue = (source = {}) => {
 const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
   const config = normalizeConfig(configInput);
   
-  const src = { ...source };
-  if (source.salaryBreakup) {
-    const breakupObj = source.salaryBreakup instanceof Map 
-      ? Object.fromEntries(source.salaryBreakup) 
-      : source.salaryBreakup;
+  // Guard against Mongoose Document instances where { ...source } strips schema getters/fields
+  const rawSource = (source && typeof source.toObject === 'function')
+    ? source.toObject()
+    : (source && source._doc ? { ...source._doc } : (source || {}));
+  const src = { ...rawSource };
+  if (rawSource.salaryBreakup) {
+    const breakupObj = rawSource.salaryBreakup instanceof Map 
+      ? Object.fromEntries(rawSource.salaryBreakup) 
+      : rawSource.salaryBreakup;
     Object.assign(src, breakupObj);
-  } else if (source.compensation?.salaryBreakup) {
-    const breakupObj = source.compensation.salaryBreakup instanceof Map
-      ? Object.fromEntries(source.compensation.salaryBreakup)
-      : source.compensation.salaryBreakup;
+  } else if (rawSource.compensation?.salaryBreakup) {
+    const breakupObj = rawSource.compensation.salaryBreakup instanceof Map
+      ? Object.fromEntries(rawSource.compensation.salaryBreakup)
+      : rawSource.compensation.salaryBreakup;
     Object.assign(src, breakupObj);
   }
 
@@ -350,11 +354,20 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
             amount = roundAmount(basicMaster * pct);
           } else if (c.linkedTo === 'fixed') {
             let val = src[c.id] !== undefined ? src[c.id] : (src.salaryStructure?.[c.id] !== undefined ? src.salaryStructure[c.id] : 0);
-            if (c.id === 'medical' && val === 0) {
+            if (c.id === 'medical' && (val === 0 || val === undefined)) {
               val = src.medicalAllowance !== undefined ? src.medicalAllowance : (src.salaryStructure?.medicalAllowance !== undefined ? src.salaryStructure.medicalAllowance : 0);
             }
-            if (c.id === 'flexi' && val === 0) {
-              val = src.flexiAmount !== undefined ? src.flexiAmount : (src.salaryStructure?.flexiAmount !== undefined ? src.salaryStructure.flexiAmount : 0);
+            if (c.id === 'flexi' && (val === 0 || val === undefined)) {
+              val = src.flexiAmount !== undefined ? src.flexiAmount : (src.salaryStructure?.flexiAmount !== undefined ? src.salaryStructure.flexiAmount : (src.salaryStructure?.flexi !== undefined ? src.salaryStructure.flexi : 0));
+            }
+            if (c.id === 'broadband' && (val === 0 || val === undefined)) {
+              val = src.broadband !== undefined ? src.broadband : (src.salaryStructure?.broadband !== undefined ? src.salaryStructure.broadband : 0);
+            }
+            if (c.id === 'petrol' && (val === 0 || val === undefined)) {
+              val = src.petrol !== undefined ? src.petrol : (src.salaryStructure?.petrol !== undefined ? src.salaryStructure.petrol : 0);
+            }
+            if (c.id === 'lta' && (val === 0 || val === undefined)) {
+              val = src.lta !== undefined ? src.lta : (src.salaryStructure?.lta !== undefined ? src.salaryStructure.lta : 0);
             }
             amount = roundAmount(val);
           }
@@ -490,7 +503,22 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
           }
           amount = roundAmount(basicMaster * pct);
         } else if (c.linkedTo === 'fixed') {
-          let val = src[c.id] !== undefined ? src[c.id] : (src.deductions?.[c.id] !== undefined ? src.deductions[c.id] : 0);
+          let val = src[c.id] !== undefined ? src[c.id] : (src.deductions?.[c.id] !== undefined ? src.deductions[c.id] : (src.salaryStructure?.[c.id] !== undefined ? src.salaryStructure[c.id] : 0));
+          if (c.id === 'medical' && (val === 0 || val === undefined)) {
+            val = src.medicalAllowance !== undefined ? src.medicalAllowance : (src.deductions?.medicalAllowance !== undefined ? src.deductions.medicalAllowance : (src.salaryStructure?.medicalAllowance !== undefined ? src.salaryStructure.medicalAllowance : 0));
+          }
+          if (c.id === 'flexi' && (val === 0 || val === undefined)) {
+            val = src.flexiAmount !== undefined ? src.flexiAmount : (src.deductions?.flexiAmount !== undefined ? src.deductions.flexiAmount : (src.deductions?.flexi !== undefined ? src.deductions.flexi : (src.salaryStructure?.flexiAmount !== undefined ? src.salaryStructure.flexiAmount : (src.salaryStructure?.flexi !== undefined ? src.salaryStructure.flexi : 0))));
+          }
+          if (c.id === 'broadband' && (val === 0 || val === undefined)) {
+            val = src.broadband !== undefined ? src.broadband : (src.deductions?.broadband !== undefined ? src.deductions.broadband : (src.salaryStructure?.broadband !== undefined ? src.salaryStructure.broadband : 0));
+          }
+          if (c.id === 'petrol' && (val === 0 || val === undefined)) {
+            val = src.petrol !== undefined ? src.petrol : (src.deductions?.petrol !== undefined ? src.deductions.petrol : (src.salaryStructure?.petrol !== undefined ? src.salaryStructure.petrol : 0));
+          }
+          if (c.id === 'lta' && (val === 0 || val === undefined)) {
+            val = src.lta !== undefined ? src.lta : (src.deductions?.lta !== undefined ? src.deductions.lta : (src.salaryStructure?.lta !== undefined ? src.salaryStructure.lta : 0));
+          }
           amount = roundAmount(val);
         }
         deductionsMap[c.id] = amount;
@@ -498,6 +526,52 @@ const buildMasterSalaryStructure = (source = {}, configInput = {}) => {
     });
   }
   const dynamicDeductionsSum = roundAmount(Object.values(deductionsMap).reduce((sum, v) => sum + v, 0));
+
+  if (hasDynamicComponents) {
+    if (earningsMap['flexi'] !== undefined) {
+      flexi = earningsMap['flexi'];
+    } else if (deductionsMap['flexi'] !== undefined) {
+      flexi = deductionsMap['flexi'];
+    } else if (src.flexiAmount !== undefined) {
+      flexi = roundAmount(src.flexiAmount);
+    }
+
+    if (earningsMap['broadband'] !== undefined) {
+      broadband = earningsMap['broadband'];
+    } else if (deductionsMap['broadband'] !== undefined) {
+      broadband = deductionsMap['broadband'];
+    } else if (src.broadband !== undefined) {
+      broadband = roundAmount(src.broadband);
+    }
+
+    if (earningsMap['petrol'] !== undefined) {
+      petrol = earningsMap['petrol'];
+    } else if (deductionsMap['petrol'] !== undefined) {
+      petrol = deductionsMap['petrol'];
+    } else if (src.petrol !== undefined) {
+      petrol = roundAmount(src.petrol);
+    }
+
+    if (earningsMap['lta'] !== undefined) {
+      lta = earningsMap['lta'];
+    } else if (deductionsMap['lta'] !== undefined) {
+      lta = deductionsMap['lta'];
+    } else if (src.lta !== undefined) {
+      lta = roundAmount(src.lta);
+    }
+
+    if (earningsMap['conveyance'] !== undefined) {
+      conveyance = earningsMap['conveyance'];
+    } else if (deductionsMap['conveyance'] !== undefined) {
+      conveyance = deductionsMap['conveyance'];
+    }
+
+    if (earningsMap['medical'] !== undefined) {
+      medicalAllowance = earningsMap['medical'];
+    } else if (deductionsMap['medical'] !== undefined) {
+      medicalAllowance = deductionsMap['medical'];
+    }
+  }
 
   const totalDeductions = roundAmount(
     stat.pfEmployee +
