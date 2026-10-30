@@ -149,7 +149,7 @@ const generatePayslip = async (req, res) => {
     const { fyPayrolls, tdsMonths } = await getFyPayrollsAndTds(req.user._id, targetEmpId, payroll.month, payroll.year);
     const leaveBalance = await getEmployeeLeaveBalance(req.user._id, targetEmpId, payroll.year);
 
-    const taxWorksheet = computeTaxWorksheet(payroll, employeeData, { fyPayrolls, tdsMonths });
+    const taxWorksheet = computeTaxWorksheet(payroll, employeeData, { fyPayrolls, tdsMonths, salaryComponents });
 
     res.json({
       payslip: {
@@ -279,7 +279,7 @@ const getPayslipPdf = async (req, res) => {
       options: {
         leaveBalance,
         salaryComponents,
-        taxWorksheetOptions: { fyPayrolls, tdsMonths }
+        taxWorksheetOptions: { fyPayrolls, tdsMonths, salaryComponents }
       }
     });
 
@@ -427,7 +427,7 @@ const emailPayslip = async (req, res) => {
       options: {
         leaveBalance,
         salaryComponents,
-        taxWorksheetOptions: { fyPayrolls, tdsMonths }
+        taxWorksheetOptions: { fyPayrolls, tdsMonths, salaryComponents }
       }
     });
     const attachmentFilename = `Payslip_${payroll.employeeSnapshot?.employeeId || 'EMP'}_${monthLabel}_${payroll.year}.pdf`;

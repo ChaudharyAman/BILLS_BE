@@ -45,8 +45,9 @@ function computeTaxWorksheet(payroll, employee, options = {}) {
 
   const fyPayrolls = Array.isArray(options) ? options : options?.fyPayrolls;
   const tdsMonthsInput = options?.tdsMonths || null;
+  const salaryComponents = options?.salaryComponents || options?.taxWorksheetOptions?.salaryComponents || payroll.salaryComponents || [];
 
-  return buildTaxWorksheet({ payroll, employee, fyPayrolls, tdsMonthsInput });
+  return buildTaxWorksheet({ payroll, employee, fyPayrolls, tdsMonthsInput, salaryComponents, options });
 }
 
 /**
@@ -522,9 +523,6 @@ function buildPayslipHtml(payroll, employee, settings, options = {}) {
                 <td style="width: 25%; text-align: right; border-right: none;">Taxable</td>
               </tr>
               ${compBreakdownHtml}
-              <tr style="font-size: 8px;"><td style="text-align: left;">Other</td><td style="text-align: center;">-</td><td style="text-align: center;">-</td><td style="text-align: center; border-right: none;">-</td></tr>
-              <tr style="font-size: 8px;"><td style="text-align: left;">Bonus</td><td style="text-align: center;">-</td><td style="text-align: center;">-</td><td style="text-align: center; border-right: none;">-</td></tr>
-              <tr style="font-size: 8px;"><td style="text-align: left;">Arrear</td><td style="text-align: center;">-</td><td style="text-align: center;">-</td><td style="text-align: center; border-right: none;">-</td></tr>
               <tr class="bg-gray font-bold" style="font-size: 8px; border-top: 1px solid #000;">
                 <td style="text-align: left;">Gross Salary</td>
                 <td style="text-align: right;">${formatCurrency(annualGross)}</td>
@@ -635,11 +633,11 @@ function buildPayslipHtml(payroll, employee, settings, options = {}) {
           <td>${formatCurrency(hraCalc.actualHRA || ((worksheetEarnings.find(e => e.name.toLowerCase().includes('hra'))?.gross) || 0))}</td>
           <td>${formatCurrency(hraCalc.basicPercent || (((worksheetEarnings.find(e => e.name.toLowerCase().includes('basic'))?.gross) || 0) * 0.4))}</td>
           <td>${formatCurrency(hraCalc.rentMinusBasic10)}</td>
-          <td class="bg-gray font-bold" style="border-right: none;">${formatCurrency(hraCalc.exemptHRA || ((worksheetEarnings.find(e => e.name.toLowerCase().includes('hra'))?.gross) || 0))}</td>
+          <td class="bg-gray font-bold" style="border-right: none;">${formatCurrency(hraCalc.exemptHRA !== undefined && hraCalc.exemptHRA !== null ? hraCalc.exemptHRA : 0)}</td>
         </tr>
         <tr class="bg-gray font-bold text-center">
           <td colspan="2">Total</td>
-          <td colspan="5" style="border-right: none;">-</td>
+          <td colspan="5" style="border-right: none;">${formatCurrency(hraCalc.exemptHRA !== undefined && hraCalc.exemptHRA !== null ? hraCalc.exemptHRA : 0)}</td>
         </tr>
       </table>
 

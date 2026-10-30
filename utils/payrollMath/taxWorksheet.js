@@ -11,8 +11,9 @@
 
 const { calculateHRAExemption, calculateTaxForRegime } = require('./tax');
 const { NON_COMPONENT_TYPES, resolveNonComponentRowSpec } = require('./compensationRowSpec');
+const { buildPayslipEarningsLineItems } = require('./payslipLineItems');
 
-function buildTaxWorksheet({ payroll = {}, employee = {}, fyPayrolls = [], tdsMonthsInput = null } = {}) {
+function buildTaxWorksheet({ payroll = {}, employee = {}, fyPayrolls = [], tdsMonthsInput = null, salaryComponents = null, options = {} } = {}) {
   if (payroll.taxWorksheet) return payroll.taxWorksheet;
 
   const empSnap = payroll.employeeSnapshot || {};
@@ -29,6 +30,8 @@ function buildTaxWorksheet({ payroll = {}, employee = {}, fyPayrolls = [], tdsMo
   const rentPaidMonthly = Number(declarations.rentPaidMonthly) || 0;
   const rentPaidTotal = rentPaidMonthly * 12;
   const isMetro = declarations.isMetroCity || false;
+
+  const comps = salaryComponents || options.salaryComponents || options.config?.salaryComponents || payroll.salaryComponents || payroll.payrollConfig?.salaryComponents || [];
 
   let componentBreakdown;
   let grossSalary;
@@ -51,87 +54,36 @@ function buildTaxWorksheet({ payroll = {}, employee = {}, fyPayrolls = [], tdsMo
     // --- Component-based types: monthly_salary, attendance_based, salary_plus_commission ---
     const basic  = Number(payroll.earnings?.basic || 0);
     const hra    = Number(payroll.earnings?.hra || 0);
-    const flexi  = Number(payroll.earnings?.flexiAmount || payroll.earnings?.flexi || 0);
-    const special = Number(payroll.earnings?.specialAllowance || payroll.earnings?.special || 0);
-    const meal   = Number(payroll.earnings?.mealAllowance || payroll.earnings?.meal || 0);
-    const broadband = Number(payroll.earnings?.broadband || 0);
-
-    let other = Number(payroll.earnings?.petrol || 0) +
-                Number(payroll.earnings?.lta || 0) +
-                Number(payroll.earnings?.conveyance || 0) +
-                Number(payroll.earnings?.medicalAllowance || 0);
-    if (Array.isArray(payroll.earnings?.otherEarnings)) {
-      other += payroll.earnings.otherEarnings.reduce((s, o) => s + (Number(o.amount) || 0), 0);
-    }
-    if (payroll.earnings?.earningsMap && typeof payroll.earnings.earningsMap === 'object') {
-      const standardKeys = [
-        'basic', 'hra', 'special', 'specialAllowance', 'flexi', 'flexiAmount',
-        'broadband', 'petrol', 'lta', 'conveyance', 'medical', 'medicalAllowance', 'meal', 'mealAllowance'
-      ];
-      Object.entries(payroll.earnings.earningsMap).forEach(([k, v]) => {
-        if (!standardKeys.includes(k) && Number(v) > 0) {
-          other += Number(v);
-        }
-      });
-    }
-
-    let bonus = 0;
-    if (payroll.variablePay) {
-      bonus += Number(payroll.variablePay.joiningBonus || 0) +
-               Number(payroll.variablePay.loyaltyBonus || 0) +
-               Number(payroll.variablePay.incentive || 0) +
-               Number(payroll.variablePay.specialBonus || 0) +
-               Number(payroll.variablePay.otherAllowanceArrear || 0);
-    }
-
-    // Commission for salary_plus_commission
-    let commission = 0;
-    if (compType === 'salary_plus_commission') {
-      if (Array.isArray(payroll.earnings?.variableCompensation)) {
-        commission = payroll.earnings.variableCompensation
-          .reduce((s, v) => s + (Number(v.amount) || 0), 0);
-      }
-    }
-
-    basicAnnual    = basic * 12;
-    hraAnnual      = hra * 12;
-    const flexiAnnual   = flexi * 12;
-    const specialAnnual = special * 12;
-    const mealAnnual    = meal * 12;
-    const broadbandAnnual = broadband * 12;
-    const otherAnnual   = other * 12;
-    const bonusAnnual   = bonus * 12;
-    const commissionAnnual = commission * 12;
-    const arrearAnnual  = 0;
+    basicAnnual  = basic * 12;
+    hraAnnual    = hra * 12;
 
     exemptHra = isOld
       ? Math.round(calculateHRAExemption(basic, hra, rentPaidMonthly, isMetro))
       : 0;
 
-    componentBreakdown = [
-      { name: 'Basic', gross: basicAnnual, exempt: 0, taxable: basicAnnual },
-      { name: 'HRA', gross: hraAnnual, exempt: exemptHra, taxable: Math.max(0, hraAnnual - exemptHra) },
-      { name: 'Flexi Allowance', gross: flexiAnnual, exempt: 0, taxable: flexiAnnual },
-      { name: 'Special Allowance', gross: specialAnnual, exempt: 0, taxable: specialAnnual },
-      { name: 'Meal', gross: mealAnnual, exempt: 0, taxable: mealAnnual },
-      { name: 'Broadband', gross: broadbandAnnual, exempt: 0, taxable: broadbandAnnual },
-      { name: 'Other', gross: otherAnnual, exempt: 0, taxable: otherAnnual },
-      { name: 'Bonus', gross: bonusAnnual, exempt: 0, taxable: bonusAnnual },
-      { name: 'Arrear', gross: arrearAnnual, exempt: 0, taxable: arrearAnnual },
-    ];
+    const earningsItems = buildPayslipEarningsLineItems(payroll, { salaryComponents: comps, ...options });
 
-    // Add Commission row for salary_plus_commission when present
-    if (compType === 'salary_plus_commission' && commissionAnnual > 0) {
-      componentBreakdown.push({
-        name: 'Commission',
-        gross: commissionAnnual,
-        exempt: 0,
-        taxable: commissionAnnual
+    if (earningsItems.length > 0) {
+      componentBreakdown = earningsItems.map(item => {
+        const annualGross = (Number(item.amount) || 0) * 12;
+        const isHra = item.id === 'hra' || String(item.name || '').toLowerCase().includes('hra');
+        const exempt = isHra ? exemptHra : 0;
+        return {
+          id: item.id,
+          name: item.name,
+          gross: annualGross,
+          exempt,
+          taxable: Math.max(0, annualGross - exempt)
+        };
       });
+      grossSalary = componentBreakdown.reduce((sum, item) => sum + item.gross, 0);
+    } else {
+      grossSalary = basicAnnual + hraAnnual;
+      componentBreakdown = [
+        { name: 'Basic', gross: basicAnnual, exempt: 0, taxable: basicAnnual },
+        { name: 'HRA', gross: hraAnnual, exempt: exemptHra, taxable: Math.max(0, hraAnnual - exemptHra) }
+      ];
     }
-
-    grossSalary = basicAnnual + hraAnnual + flexiAnnual + specialAnnual + mealAnnual +
-                  broadbandAnnual + otherAnnual + bonusAnnual + arrearAnnual + commissionAnnual;
   }
 
   // Chapter VI-A deductions — old regime only (same caps as tax.js calculateTaxDetails)
