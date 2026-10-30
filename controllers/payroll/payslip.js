@@ -7,10 +7,11 @@
 const mongoose = require('mongoose');
 const nodemailer = require('nodemailer');
 const axios = require('axios');
+const fs = require('fs');
 const Payroll = require('../../models/Payroll');
 const Settings = require('../../models/Settings');
 const LeaveBalance = require('../../models/LeaveBalance');
-const { getSalarySplits, buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems, calculateTaxForRegime } = require('../../utils/payrollMath');
+const { getSalarySplits, buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems, buildPayslipEmployerContributionsLineItems, calculateTaxForRegime } = require('../../utils/payrollMath');
 const { monthName, getOrCreateConfig } = require('./common');
 
 const {
@@ -19,8 +20,65 @@ const {
   getStoredPayslipPath,
   buildPayslipHtml,
   computeTaxWorksheet,
+  launchSharedBrowser,
 } = require('../../services/pdfGeneratorService');
-const fs = require('fs');
+
+/**
+ * Helper to fetch accrued leave balance for an employee.
+ */
+async function getEmployeeLeaveBalance(userId, employeeId, year) {
+  try {
+    if (!employeeId) return 0;
+    const targetId = employeeId._id || employeeId;
+    const balances = await LeaveBalance.find({
+      user: userId,
+      employee: targetId,
+      year: year || new Date().getFullYear(),
+    });
+    if (balances && balances.length > 0) {
+      return balances.reduce((sum, b) => sum + (Number(b.closing) || 0), 0);
+    }
+  } catch (e) {
+    console.warn('[Payslip] Could not fetch leave balance:', e.message);
+  }
+  return 0;
+}
+
+/**
+ * Helper to retrieve financial-year payroll records and monthly TDS schedule (April-March).
+ */
+async function getFyPayrollsAndTds(userId, employeeId, currentMonth, currentYear) {
+  let startYear, endYear;
+  if (currentMonth >= 4) {
+    startYear = currentYear;
+    endYear = currentYear + 1;
+  } else {
+    startYear = currentYear - 1;
+    endYear = currentYear;
+  }
+
+  const targetId = employeeId._id || employeeId;
+  const fyPayrolls = await Payroll.find({
+    user: userId,
+    employee: targetId,
+    $or: [
+      { year: startYear, month: { $gte: 4 } },
+      { year: endYear, month: { $lte: 3 } }
+    ]
+  }).sort({ year: 1, month: 1 }).lean();
+
+  const tdsMonths = {
+    4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 1: 0, 2: 0, 3: 0
+  };
+
+  for (const pr of fyPayrolls) {
+    if (pr.deductions?.tds && pr.month in tdsMonths) {
+      tdsMonths[pr.month] = Number(pr.deductions.tds) || 0;
+    }
+  }
+
+  return { fyPayrolls, tdsMonths };
+}
 
 const generatePayslip = async (req, res) => {
   try {
@@ -64,6 +122,7 @@ const generatePayslip = async (req, res) => {
         };
 
     const config = await getOrCreateConfig(req.user._id, new Date(payroll.year, payroll.month - 1, 1), req.activeProfileId || payroll.profile || null);
+    const salaryComponents = config?.salaryComponents || [];
     const adjustments = {
       pfEnabled: employeeData.pfEnabled,
       esiEnabled: employeeData.esiEnabled,
@@ -86,90 +145,11 @@ const generatePayslip = async (req, res) => {
       adjustments
     );
 
-    const currentMonth = payroll.month;
-    const currentYear = payroll.year;
-    let startYear, endYear;
-    if (currentMonth >= 4) {
-      startYear = currentYear;
-      endYear = currentYear + 1;
-    } else {
-      startYear = currentYear - 1;
-      endYear = currentYear;
-    }
+    const targetEmpId = payroll.employee?._id || payroll.employee || employeeData._id;
+    const { fyPayrolls, tdsMonths } = await getFyPayrollsAndTds(req.user._id, targetEmpId, payroll.month, payroll.year);
+    const leaveBalance = await getEmployeeLeaveBalance(req.user._id, targetEmpId, payroll.year);
 
-    const fyPayrolls = await Payroll.find({
-      user: req.user._id,
-      employee: employeeData._id,
-      $or: [
-        { year: startYear, month: { $gte: 4 } },
-        { year: endYear, month: { $lte: 3 } }
-      ]
-    }).sort({ year: 1, month: 1 });
-
-    let basicGross = 0;
-    let hraGross = 0;
-    let flexiGross = 0;
-    let specialGross = 0;
-    let mealGross = 0;
-    let broadbandGross = 0;
-    let otherGross = 0;
-    let bonusGross = 0;
-    let arrearGross = 0;
-
-    const tdsMonths = {
-      4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 1: 0, 2: 0, 3: 0
-    };
-
-    for (const pr of fyPayrolls) {
-      basicGross += Number(pr.earnings?.basic || 0);
-      hraGross += Number(pr.earnings?.hra || 0);
-      flexiGross += Number(pr.earnings?.flexiAmount || pr.earnings?.flexi || 0);
-      specialGross += Number(pr.earnings?.specialAllowance || pr.earnings?.special || 0);
-      mealGross += Number(pr.earnings?.mealAllowance || pr.earnings?.meal || 0);
-      broadbandGross += Number(pr.earnings?.broadband || 0);
-      
-      let otherVal = Number(pr.earnings?.petrol || 0) + 
-                     Number(pr.earnings?.lta || 0) + 
-                     Number(pr.earnings?.conveyance || 0) + 
-                     Number(pr.earnings?.medicalAllowance || 0);
-      if (Array.isArray(pr.earnings?.otherEarnings)) {
-        otherVal += pr.earnings.otherEarnings.reduce((s, o) => s + (Number(o.amount) || 0), 0);
-      }
-      otherGross += otherVal;
-
-      let bonusVal = 0;
-      if (pr.variablePay) {
-        bonusVal += Number(pr.variablePay.joiningBonus || 0) +
-                    Number(pr.variablePay.loyaltyBonus || 0) +
-                    Number(pr.variablePay.incentive || 0) +
-                    Number(pr.variablePay.specialBonus || 0) +
-                    Number(pr.variablePay.otherAllowanceArrear || 0);
-      }
-      bonusGross += bonusVal;
-
-      if (pr.deductions?.tds && pr.month in tdsMonths) {
-        tdsMonths[pr.month] = Number(pr.deductions.tds) || 0;
-      }
-    }
-
-    let leaveBalance = 0;
-    try {
-      const targetEmpId = payroll.employee || (payroll.employeeSnapshot && payroll.employeeSnapshot._id);
-      if (targetEmpId) {
-        const balances = await LeaveBalance.find({
-          user: req.user._id,
-          employee: targetEmpId,
-          year: payroll.year || new Date().getFullYear(),
-        });
-        if (balances && balances.length > 0) {
-          leaveBalance = balances.reduce((sum, b) => sum + (Number(b.closing) || 0), 0);
-        }
-      }
-    } catch (e) {
-      console.warn('[Payslip] Could not fetch leave balance:', e.message);
-    }
-
-    const taxWorksheet = computeTaxWorksheet(payroll, employeeData, { fyPayrolls, tdsMonths });
+    const taxWorksheet = computeTaxWorksheet(payroll, employeeData, { fyPayrolls, tdsMonths, salaryComponents });
 
     res.json({
       payslip: {
@@ -180,9 +160,11 @@ const generatePayslip = async (req, res) => {
           monthName: monthName(payroll.month),
         },
         leaveBalance: Number(leaveBalance) || 0,
+        salaryComponents,
         salarySplits: (payroll.salarySplits && payroll.salarySplits.length > 0) ? payroll.salarySplits : splits,
-        earningsLineItems: buildPayslipEarningsLineItems(payroll),
-        deductionsLineItems: buildPayslipDeductionsLineItems(payroll),
+        earningsLineItems: buildPayslipEarningsLineItems(payroll, { salaryComponents }),
+        deductionsLineItems: buildPayslipDeductionsLineItems(payroll, { salaryComponents }),
+        employerContributionsLineItems: buildPayslipEmployerContributionsLineItems(payroll, { salaryComponents }),
         periodInput: payroll.periodInput || {},
         isFullAndFinal: Boolean(payroll.isFullAndFinal || payroll.settlementType === 'full_and_final'),
         settlementType: payroll.settlementType || (payroll.isFullAndFinal ? 'full_and_final' : 'monthly'),
@@ -271,12 +253,18 @@ const getPayslipPdf = async (req, res) => {
       const namePart = cleanName.slice(0, 4).padEnd(4, 'X');
 
       const dateRef = emp.dateOfBirth ? new Date(emp.dateOfBirth) : (emp.joiningDate ? new Date(emp.joiningDate) : new Date());
-      const day = String(dateRef.getDate()).padStart(2, '0');
-      const month = String(dateRef.getMonth() + 1).padStart(2, '0');
+      const day = String(dateRef.getUTCDate ? dateRef.getUTCDate() : dateRef.getDate()).padStart(2, '0');
+      const month = String((dateRef.getUTCMonth ? dateRef.getUTCMonth() : dateRef.getMonth()) + 1).padStart(2, '0');
       userPassword = `${namePart}${day}${month}`;
     }
 
-    // Serve persisted file for non-encrypted paid payrolls if available
+    const targetEmpId = payroll.employee?._id || payroll.employee || (payroll.employeeSnapshot && payroll.employeeSnapshot._id);
+    const leaveBalance = await getEmployeeLeaveBalance(req.user._id, targetEmpId, payroll.year);
+    const { fyPayrolls, tdsMonths } = await getFyPayrollsAndTds(req.user._id, targetEmpId, payroll.month, payroll.year);
+    const config = await getOrCreateConfig(req.user._id, new Date(payroll.year, payroll.month - 1, 1), req.activeProfileId || payroll.profile || null);
+    const salaryComponents = config?.salaryComponents || [];
+
+    // Serve persisted file for non-encrypted paid payrolls if available and up-to-date
     const storedPath = getStoredPayslipPath(payroll._id);
     if (!isEncryptedReq && payroll.status === 'paid' && fs.existsSync(storedPath)) {
       res.setHeader('Content-Type', 'application/pdf');
@@ -284,7 +272,16 @@ const getPayslipPdf = async (req, res) => {
       return fs.createReadStream(storedPath).pipe(res);
     }
 
-    const pdfBuffer = await generateSinglePayslipPdf({ payroll, settings, userPassword });
+    const pdfBuffer = await generateSinglePayslipPdf({
+      payroll,
+      settings,
+      userPassword,
+      options: {
+        leaveBalance,
+        salaryComponents,
+        taxWorksheetOptions: { fyPayrolls, tdsMonths, salaryComponents }
+      }
+    });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="Payslip_${payroll.employeeSnapshot?.employeeId || 'EMP'}_${monthName(payroll.month)}_${payroll.year}.pdf"`);
@@ -296,6 +293,7 @@ const getPayslipPdf = async (req, res) => {
 };
 
 const bulkPayslipPdf = async (req, res) => {
+  let browser = null;
   try {
     const { ids, month, year, department } = req.body || {};
     const query = { user: req.user._id };
@@ -325,11 +323,25 @@ const bulkPayslipPdf = async (req, res) => {
     const settings = await Settings.findOne({ user: req.user._id }).lean();
     const payslipFiles = [];
 
+    // Launch single browser instance for the entire batch to conserve memory and avoid timeouts
+    browser = await launchSharedBrowser();
+
+    const config = await getOrCreateConfig(req.user._id, new Date(year || new Date().getFullYear(), (month || 1) - 1, 1), req.activeProfileId || null);
+    const salaryComponents = config?.salaryComponents || [];
+
     for (const payroll of payrolls) {
       const empId = payroll.employeeSnapshot?.employeeId || payroll.employee?.employeeId || 'EMP';
       const mName = monthName(payroll.month);
       const filename = `Payslip_${empId}_${mName}_${payroll.year}.pdf`;
-      const buffer = await generateSinglePayslipPdf({ payroll, settings });
+      const targetEmpId = payroll.employee?._id || payroll.employee || (payroll.employeeSnapshot && payroll.employeeSnapshot._id);
+      const leaveBalance = await getEmployeeLeaveBalance(req.user._id, targetEmpId, payroll.year);
+      
+      const buffer = await generateSinglePayslipPdf({
+        payroll,
+        settings,
+        browser,
+        options: { leaveBalance, salaryComponents }
+      });
       payslipFiles.push({ filename, buffer });
     }
 
@@ -342,6 +354,14 @@ const bulkPayslipPdf = async (req, res) => {
   } catch (error) {
     console.error('Error generating bulk payslip ZIP:', error);
     res.status(500).json({ message: 'Server error generating bulk payslip ZIP', error: error.message });
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (e) {
+        console.warn('Error closing shared browser in bulkPayslipPdf:', e.message);
+      }
+    }
   }
 };
 
@@ -383,20 +403,37 @@ const emailPayslip = async (req, res) => {
       };
     }
 
-    const transporter = nodemailer.createTransport(transportOptions);
+    const targetEmpId = payroll.employee?._id || payroll.employee || (payroll.employeeSnapshot && payroll.employeeSnapshot._id);
+    const leaveBalance = await getEmployeeLeaveBalance(req.user._id, targetEmpId, payroll.year);
+    const { fyPayrolls, tdsMonths } = await getFyPayrollsAndTds(req.user._id, targetEmpId, payroll.month, payroll.year);
 
     const monthLabel = monthName(payroll.month);
     const payPeriodLabel = `${monthLabel} ${payroll.year}`;
     const employeeName = `${payroll.employeeSnapshot?.firstName || ''} ${payroll.employeeSnapshot?.lastName || ''}`.trim() || 'Employee';
 
-    const emailHtmlBody = buildPayslipHtml(payroll, payroll.employee, settings);
+    const config = await getOrCreateConfig(req.user._id, new Date(payroll.year, payroll.month - 1, 1), req.activeProfileId || payroll.profile || null);
+    const salaryComponents = config?.salaryComponents || [];
 
-    // Generate real PDF attachment
-    const pdfBuffer = await generateSinglePayslipPdf({ payroll, settings });
+    const emailHtmlBody = buildPayslipHtml(payroll, payroll.employee, settings, {
+      leaveBalance,
+      salaryComponents,
+      taxWorksheetOptions: { fyPayrolls, tdsMonths }
+    });
+
+    // Generate real PDF attachment with leave balance & complete tax schedule
+    const pdfBuffer = await generateSinglePayslipPdf({
+      payroll,
+      settings,
+      options: {
+        leaveBalance,
+        salaryComponents,
+        taxWorksheetOptions: { fyPayrolls, tdsMonths, salaryComponents }
+      }
+    });
     const attachmentFilename = `Payslip_${payroll.employeeSnapshot?.employeeId || 'EMP'}_${monthLabel}_${payroll.year}.pdf`;
 
     const brevoApiKey = process.env.BREVO_API_KEY || process.env.SMTP_PASS;
-    const senderEmail = process.env.EMAIL_FROM || process.env.SMTP_SENDER || 'ilumaaventures@gmail.com';
+    const senderEmail = settings.email || process.env.EMAIL_FROM || process.env.SMTP_SENDER || 'payroll@flance.com';
     const senderName = `${companyName} HR & Payroll`;
     const subjectStr = `Payslip Statement for ${payPeriodLabel} - ${employeeName}`;
 

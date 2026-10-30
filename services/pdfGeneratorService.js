@@ -10,7 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const { PDFDocument } = require('@cantoo/pdf-lib');
-const { buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems, buildTaxWorksheet } = require('../utils/payrollMath');
+const { buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems, buildPayslipEmployerContributionsLineItems, buildTaxWorksheet } = require('../utils/payrollMath');
 const { monthName } = require('../controllers/payroll/common');
 
 function getArchiver() {
@@ -45,14 +45,15 @@ function computeTaxWorksheet(payroll, employee, options = {}) {
 
   const fyPayrolls = Array.isArray(options) ? options : options?.fyPayrolls;
   const tdsMonthsInput = options?.tdsMonths || null;
+  const salaryComponents = options?.salaryComponents || options?.taxWorksheetOptions?.salaryComponents || payroll.salaryComponents || [];
 
-  return buildTaxWorksheet({ payroll, employee, fyPayrolls, tdsMonthsInput });
+  return buildTaxWorksheet({ payroll, employee, fyPayrolls, tdsMonthsInput, salaryComponents, options });
 }
 
 /**
  * Builds clean, responsive A4 HTML template for payslip PDF (Spreadsheet Style).
  */
-function buildPayslipHtml(payroll, employee, settings) {
+function buildPayslipHtml(payroll, employee, settings, options = {}) {
   const companyName = settings?.companyName || '';
   const logoInitials = companyName
     ? companyName.split(' ').filter(Boolean).map(w => w[0]).join('').slice(0, 3).toUpperCase()
@@ -86,21 +87,52 @@ function buildPayslipHtml(payroll, employee, settings) {
   const taxRegimeLabel = taxRegime.includes('OLD') ? 'OLD TAX REGIME' : 'NEW TAX REGIME';
 
   // Calculations for Earnings & Deductions table
-  const earningsItems = buildPayslipEarningsLineItems(payroll);
-  const deductionsItems = buildPayslipDeductionsLineItems(payroll);
+  const salaryComponents = options.salaryComponents || options.config?.salaryComponents || payroll.salaryComponents || [];
+  const earningsItems = buildPayslipEarningsLineItems(payroll, { salaryComponents, ...options });
+  const deductionsItems = buildPayslipDeductionsLineItems(payroll, { salaryComponents, ...options });
 
-  const earnings = earningsItems.map(item => ({
-    name: item.name,
-    rate: item.amount,
-    monthly: item.amount,
-    arrear: item.details || '-',
-    total: item.amount
-  }));
+  const genericLabels = [
+    'Custom Component', 'Custom Allowance', 'Component Deduction',
+    'Core Basic Earnings', 'Housing Exemption Component', 'Special Component',
+    'Flexible Component', 'Internet Allowance', 'Travel Reimbursement',
+    'Travel Concession', 'Commute Allowance', 'Medical Cover'
+  ];
 
-  const deductions = deductionsItems.map(item => ({
-    name: item.name + (item.details ? ` (${item.details})` : ''),
-    amount: item.amount
-  }));
+  const findCompName = (idOrKey) => {
+    if (!Array.isArray(salaryComponents) || salaryComponents.length === 0 || !idOrKey) return null;
+    const clean = String(idOrKey).toLowerCase().trim();
+    const comp = salaryComponents.find(c => {
+      if (!c) return false;
+      const cId = String(c.id || '').toLowerCase().trim();
+      const cName = String(c.name || '').toLowerCase().trim();
+      return cId === clean || cName === clean || clean.replace(/^custom_/, '') === cId.replace(/^custom_/, '');
+    });
+    return comp?.name || null;
+  };
+
+  const earnings = earningsItems.map(item => {
+    const resolvedName = findCompName(item.id) || findCompName(item.name) || item.name;
+    const arrearVal = item.arrear && item.arrear !== '-'
+      ? item.arrear
+      : (item.details && !genericLabels.includes(item.details) ? item.details : '-');
+
+    return {
+      name: resolvedName,
+      rate: item.amount,
+      monthly: item.amount,
+      arrear: arrearVal,
+      total: item.amount
+    };
+  });
+
+  const deductions = deductionsItems.map(item => {
+    const resolvedName = findCompName(item.id) || findCompName(item.name) || item.name;
+    const detailPart = (item.details && !genericLabels.includes(item.details)) ? ` (${item.details})` : '';
+    return {
+      name: resolvedName + detailPart,
+      amount: item.amount
+    };
+  });
 
   const maxRows = Math.max(earnings.length, deductions.length, 3);
 
@@ -108,6 +140,17 @@ function buildPayslipHtml(payroll, employee, settings) {
   const totalEarningMonthly = earnings.reduce((sum, item) => sum + (Number(item.monthly) || 0), 0);
   const totalDeductions = deductions.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
   const netTakeHome = totalEarningMonthly - totalDeductions;
+
+  // Employer Contributions & CTC breakdown
+  const employerContribItems = buildPayslipEmployerContributionsLineItems(payroll, { salaryComponents, ...options });
+  const employerContributions = employerContribItems.map(item => ({
+    name: item.name,
+    amount: item.amount,
+    details: item.details || '-'
+  }));
+
+  const totalEmployerContributions = employerContributions.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const totalMonthlyCTC = Number(payroll.monthlyCTC) || Number(emp.monthlyCTC) || Number(empSnap.monthlyCTC) || Number(payroll.employerContributions?.grossTotalSalary) || (totalEarningMonthly + totalEmployerContributions);
 
   // Tax Worksheet data
   const currentMonth = payroll.month;
@@ -124,7 +167,7 @@ function buildPayslipHtml(payroll, employee, settings) {
     }
   }
 
-  const worksheet = computeTaxWorksheet(payroll, emp);
+  const worksheet = payroll.taxWorksheet || options.taxWorksheet || computeTaxWorksheet(payroll, emp, options.taxWorksheetOptions || options);
   const compBreakdown = worksheet.componentBreakdown || [];
   const hraCalc = worksheet.hra || {};
   const tdsMonths = worksheet.tdsMonths || {};
@@ -215,6 +258,46 @@ function buildPayslipHtml(payroll, employee, settings) {
       </tr>
     `;
   });
+
+  let tableEmployerContributionsHtml = '';
+  if (employerContributions.length > 0) {
+    let contribRowsHtml = '';
+    employerContributions.forEach(contrib => {
+      contribRowsHtml += `
+        <tr style="font-size: 8px;">
+          <td style="width: 40%; text-align: left; font-weight: 500;">${contrib.name}</td>
+          <td style="width: 25%; text-align: right; font-weight: 600;">${formatCurrency(contrib.amount)}</td>
+          <td style="width: 35%; text-align: left; border-right: none; color: #475569;">${contrib.details || '-'}</td>
+        </tr>
+      `;
+    });
+
+    tableEmployerContributionsHtml = `
+      <!-- Employer Contributions / CTC Benefits Table -->
+      <table class="grid-table" style="border-top: none;">
+        <tr class="font-bold text-center" style="font-size: 8.5px; background: #f8fafc;">
+          <td colspan="3" style="border-bottom: 1px solid #000; border-right: none; letter-spacing: 0.03em; text-transform: uppercase;">
+            Employer Contributions & Benefits (Cost to Company)
+          </td>
+        </tr>
+        <tr class="font-bold text-center" style="font-size: 8px;">
+          <td style="width: 40%; text-align: left;">Contribution / Benefit Head</td>
+          <td style="width: 25%; text-align: right;">Monthly Amount</td>
+          <td style="width: 35%; text-align: left; border-right: none;">Description</td>
+        </tr>
+        ${contribRowsHtml}
+        <tr class="bg-gray font-bold" style="font-size: 8px;">
+          <td style="text-align: left;">Total Employer Contributions</td>
+          <td style="text-align: right; font-weight: 900;">${formatCurrency(totalEmployerContributions)}</td>
+          <td style="text-align: left; border-right: none;">Benefits included in CTC</td>
+        </tr>
+      </table>
+      <div class="flex-between" style="border-bottom: 1px solid #000; padding: 3px 12px; font-weight: 800; background: #f1f5f9; font-size: 8.5px;">
+        <span style="letter-spacing: 0.03em;">TOTAL COST TO COMPANY (MONTHLY CTC)</span>
+        <span style="font-size: 10px; font-weight: 900;">${formatCurrency(totalMonthlyCTC)}</span>
+      </div>
+    `;
+  }
 
   return `
   <!DOCTYPE html>
@@ -404,7 +487,7 @@ function buildPayslipHtml(payroll, employee, settings) {
         ${tableRowsHtml}
         <!-- Totals Row -->
         <tr class="bg-gray font-bold" style="font-size: 8.5px;">
-          <td style="text-align: left;">CTC</td>
+          <td style="text-align: left;">Gross Earnings</td>
           <td style="text-align: right;">${formatCurrency(totalEarningMonthly)}</td>
           <td style="text-align: right;">${formatCurrency(totalEarningMonthly)}</td>
           <td style="text-align: center;">-</td>
@@ -419,6 +502,8 @@ function buildPayslipHtml(payroll, employee, settings) {
         <span>NET TAKE HOME FOR THE MONTH</span>
         <span style="font-size: 11px; font-weight: 900;">${formatCurrency(netTakeHome)}</span>
       </div>
+
+      ${tableEmployerContributionsHtml}
 
       <!-- Income Tax Worksheet Banner -->
       <div class="bg-dark-section">
@@ -438,9 +523,6 @@ function buildPayslipHtml(payroll, employee, settings) {
                 <td style="width: 25%; text-align: right; border-right: none;">Taxable</td>
               </tr>
               ${compBreakdownHtml}
-              <tr style="font-size: 8px;"><td style="text-align: left;">Other</td><td style="text-align: center;">-</td><td style="text-align: center;">-</td><td style="text-align: center; border-right: none;">-</td></tr>
-              <tr style="font-size: 8px;"><td style="text-align: left;">Bonus</td><td style="text-align: center;">-</td><td style="text-align: center;">-</td><td style="text-align: center; border-right: none;">-</td></tr>
-              <tr style="font-size: 8px;"><td style="text-align: left;">Arrear</td><td style="text-align: center;">-</td><td style="text-align: center;">-</td><td style="text-align: center; border-right: none;">-</td></tr>
               <tr class="bg-gray font-bold" style="font-size: 8px; border-top: 1px solid #000;">
                 <td style="text-align: left;">Gross Salary</td>
                 <td style="text-align: right;">${formatCurrency(annualGross)}</td>
@@ -523,7 +605,7 @@ function buildPayslipHtml(payroll, employee, settings) {
             <div style="border-top: 1px solid #000000; padding: 4px; background-color: #f9fafb;">
               <div class="flex-between font-bold" style="font-size: 8px;">
                 <span>LEAVE BALANCE AS ON MONTH END</span>
-                <span>${Number(payroll.leaveBalance || 0).toFixed(2)}</span>
+                <span>${Number(payroll.leaveBalance ?? options.leaveBalance ?? 0).toFixed(2)}</span>
               </div>
             </div>
           </td>
@@ -551,11 +633,11 @@ function buildPayslipHtml(payroll, employee, settings) {
           <td>${formatCurrency(hraCalc.actualHRA || ((worksheetEarnings.find(e => e.name.toLowerCase().includes('hra'))?.gross) || 0))}</td>
           <td>${formatCurrency(hraCalc.basicPercent || (((worksheetEarnings.find(e => e.name.toLowerCase().includes('basic'))?.gross) || 0) * 0.4))}</td>
           <td>${formatCurrency(hraCalc.rentMinusBasic10)}</td>
-          <td class="bg-gray font-bold" style="border-right: none;">${formatCurrency(hraCalc.exemptHRA || ((worksheetEarnings.find(e => e.name.toLowerCase().includes('hra'))?.gross) || 0))}</td>
+          <td class="bg-gray font-bold" style="border-right: none;">${formatCurrency(hraCalc.exemptHRA !== undefined && hraCalc.exemptHRA !== null ? hraCalc.exemptHRA : 0)}</td>
         </tr>
         <tr class="bg-gray font-bold text-center">
           <td colspan="2">Total</td>
-          <td colspan="5" style="border-right: none;">-</td>
+          <td colspan="5" style="border-right: none;">${formatCurrency(hraCalc.exemptHRA !== undefined && hraCalc.exemptHRA !== null ? hraCalc.exemptHRA : 0)}</td>
         </tr>
       </table>
 
@@ -592,25 +674,32 @@ async function renderHtmlToPdf(htmlString, options = {}) {
   }
 
   const puppeteer = getPuppeteer();
-  const browser = await puppeteer.launch({
+  const shouldCloseBrowser = !options.browser;
+  const browser = options.browser || await puppeteer.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   });
 
   try {
     const page = await browser.newPage();
-    await page.setContent(htmlString, { waitUntil: 'networkidle0' });
-    const margin = options.margin || { top: '8mm', bottom: '8mm', left: '8mm', right: '8mm' };
-    const pdfBuffer = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin,
-      preferCSSPageSize: true,
-      ...options,
-    });
-    return Buffer.from(pdfBuffer);
+    try {
+      await page.setContent(htmlString, { waitUntil: 'networkidle0' });
+      const margin = options.margin || { top: '8mm', bottom: '8mm', left: '8mm', right: '8mm' };
+      const pdfBuffer = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin,
+        preferCSSPageSize: true,
+        ...options,
+      });
+      return Buffer.from(pdfBuffer);
+    } finally {
+      await page.close();
+    }
   } finally {
-    await browser.close();
+    if (shouldCloseBrowser && browser) {
+      await browser.close();
+    }
   }
 }
 
@@ -640,13 +729,22 @@ async function encryptPdfBuffer(pdfBuffer, userPassword) {
 /**
  * Generates single PDF buffer for a payroll record.
  */
-async function generateSinglePayslipPdf({ payroll, settings, userPassword = null }) {
-  const html = buildPayslipHtml(payroll, payroll.employee, settings);
-  const rawPdfBuffer = await renderHtmlToPdf(html);
+async function generateSinglePayslipPdf({ payroll, settings, userPassword = null, options = {}, browser = null }) {
+  const html = buildPayslipHtml(payroll, payroll.employee, settings, options);
+  const rawPdfBuffer = await renderHtmlToPdf(html, { ...options, browser });
   if (userPassword) {
     return encryptPdfBuffer(rawPdfBuffer, userPassword);
   }
   return rawPdfBuffer;
+}
+
+async function launchSharedBrowser() {
+  if (process.env.NODE_ENV === 'test') return null;
+  const puppeteer = getPuppeteer();
+  return puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+  });
 }
 
 /**
@@ -687,6 +785,7 @@ module.exports = {
   renderHtmlToPdf,
   encryptPdfBuffer,
   generateSinglePayslipPdf,
+  launchSharedBrowser,
   generateInvoicePdf,
   createBulkPayslipsZip,
   getStoredPayslipPath,

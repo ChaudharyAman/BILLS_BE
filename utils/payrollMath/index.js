@@ -11,7 +11,7 @@ const { calculateHRAExemption, calculateTaxForRegime, calculateTaxDetails } = re
 const { computeStatutoryAndTax, calculateGratuityEntitlement, getConfigForDate, getOrCreateConfig } = require('./statutory');
 const { DEFAULT_PAYROLL_CONFIG, normalizeConfig, getMonthlyCTCValue, buildMasterSalaryStructure, getSalarySplits } = require('./salaryStructure');
 const { buildPayrollSnapshot } = require('./snapshot');
-const { buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems } = require('./payslipLineItems');
+const { buildPayslipEarningsLineItems, buildPayslipDeductionsLineItems, buildPayslipEmployerContributionsLineItems } = require('./payslipLineItems');
 const { buildTaxWorksheet } = require('./taxWorksheet');
 const { NON_COMPONENT_TYPES, resolveNonComponentRowSpec } = require('./compensationRowSpec');
 
@@ -36,6 +36,7 @@ module.exports = {
   buildPayrollSnapshot,
   buildPayslipEarningsLineItems,
   buildPayslipDeductionsLineItems,
+  buildPayslipEmployerContributionsLineItems,
   buildTaxWorksheet,
   NON_COMPONENT_TYPES,
   resolveNonComponentRowSpec,
