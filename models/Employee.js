@@ -150,7 +150,7 @@ const EmployeeSchema = new mongoose.Schema({
   includePfInCTC: { type: Boolean, default: false },
   includeGratuityInCTC: { type: Boolean, default: true },
 
-  salaryStructure: {
+  salaryStructure: new mongoose.Schema({
     basic: { type: Number, required: true, default: 0, min: 0 },
     hra: { type: Number, default: 0, min: 0 },
     conveyance: { type: Number, default: 0, min: 0 },
@@ -159,15 +159,15 @@ const EmployeeSchema = new mongoose.Schema({
     otherAllowances: [AllowanceSchema],
     grossSalary: { type: Number, default: 0, min: 0 },
     ctc: { type: Number, default: 0, min: 0 },
-  },
+  }, { _id: false, strict: false }),
 
-  deductions: {
+  deductions: new mongoose.Schema({
     pf: { type: Number, default: 0, min: 0 },
     esi: { type: Number, default: 0, min: 0 },
     professionalTax: { type: Number, default: 0, min: 0 },
     tds: { type: Number, default: 0, min: 0 },
     otherDeductions: [AllowanceSchema],
-  },
+  }, { _id: false, strict: false }),
 
   bankDetails: {
     accountName: String,

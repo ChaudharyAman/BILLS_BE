@@ -892,17 +892,17 @@ exports.getEmployeeById = async (req, res) => {
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const empObj = employee.toObject ? employee.toObject() : employee;
-    if ((!empObj.broadband || empObj.broadband === 0) && empObj.salaryStructure?.broadband) {
-      empObj.broadband = empObj.salaryStructure.broadband;
+    if ((!empObj.broadband || empObj.broadband === 0) && (empObj.salaryStructure?.broadband || empObj.deductions?.broadband)) {
+      empObj.broadband = empObj.salaryStructure?.broadband || empObj.deductions?.broadband;
     }
-    if ((!empObj.petrol || empObj.petrol === 0) && empObj.salaryStructure?.petrol) {
-      empObj.petrol = empObj.salaryStructure.petrol;
+    if ((!empObj.petrol || empObj.petrol === 0) && (empObj.salaryStructure?.petrol || empObj.deductions?.petrol)) {
+      empObj.petrol = empObj.salaryStructure?.petrol || empObj.deductions?.petrol;
     }
-    if ((!empObj.lta || empObj.lta === 0) && empObj.salaryStructure?.lta) {
-      empObj.lta = empObj.salaryStructure.lta;
+    if ((!empObj.lta || empObj.lta === 0) && (empObj.salaryStructure?.lta || empObj.deductions?.lta)) {
+      empObj.lta = empObj.salaryStructure?.lta || empObj.deductions?.lta;
     }
-    if ((!empObj.flexiAmount || empObj.flexiAmount === 0) && (empObj.salaryStructure?.flexi || empObj.salaryStructure?.flexiAmount)) {
-      empObj.flexiAmount = empObj.salaryStructure.flexi || empObj.salaryStructure.flexiAmount;
+    if ((!empObj.flexiAmount || empObj.flexiAmount === 0) && (empObj.salaryStructure?.flexi || empObj.salaryStructure?.flexiAmount || empObj.deductions?.flexi || empObj.deductions?.flexiAmount)) {
+      empObj.flexiAmount = empObj.salaryStructure?.flexi || empObj.salaryStructure?.flexiAmount || empObj.deductions?.flexi || empObj.deductions?.flexiAmount;
     }
     res.json(empObj);
   } catch (error) {
@@ -1001,22 +1001,31 @@ exports.updateEmployee = async (req, res) => {
       existingEmployee.broadband = Number(updateData.broadband) || 0;
       if (!existingEmployee.salaryStructure) existingEmployee.salaryStructure = {};
       existingEmployee.salaryStructure.broadband = existingEmployee.broadband;
+      if (!existingEmployee.deductions) existingEmployee.deductions = {};
+      existingEmployee.deductions.broadband = existingEmployee.broadband;
     }
     if (updateData.petrol !== undefined) {
       existingEmployee.petrol = Number(updateData.petrol) || 0;
       if (!existingEmployee.salaryStructure) existingEmployee.salaryStructure = {};
       existingEmployee.salaryStructure.petrol = existingEmployee.petrol;
+      if (!existingEmployee.deductions) existingEmployee.deductions = {};
+      existingEmployee.deductions.petrol = existingEmployee.petrol;
     }
     if (updateData.lta !== undefined) {
       existingEmployee.lta = Number(updateData.lta) || 0;
       if (!existingEmployee.salaryStructure) existingEmployee.salaryStructure = {};
       existingEmployee.salaryStructure.lta = existingEmployee.lta;
+      if (!existingEmployee.deductions) existingEmployee.deductions = {};
+      existingEmployee.deductions.lta = existingEmployee.lta;
     }
     if (updateData.flexiAmount !== undefined) {
       existingEmployee.flexiAmount = Number(updateData.flexiAmount) || 0;
       if (!existingEmployee.salaryStructure) existingEmployee.salaryStructure = {};
       existingEmployee.salaryStructure.flexiAmount = existingEmployee.flexiAmount;
       existingEmployee.salaryStructure.flexi = existingEmployee.flexiAmount;
+      if (!existingEmployee.deductions) existingEmployee.deductions = {};
+      existingEmployee.deductions.flexiAmount = existingEmployee.flexiAmount;
+      existingEmployee.deductions.flexi = existingEmployee.flexiAmount;
     }
 
     Object.assign(existingEmployee, updateData);
@@ -1029,17 +1038,17 @@ exports.updateEmployee = async (req, res) => {
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const empObj = employee.toObject ? employee.toObject() : employee;
-    if ((!empObj.broadband || empObj.broadband === 0) && empObj.salaryStructure?.broadband) {
-      empObj.broadband = empObj.salaryStructure.broadband;
+    if ((!empObj.broadband || empObj.broadband === 0) && (empObj.salaryStructure?.broadband || empObj.deductions?.broadband)) {
+      empObj.broadband = empObj.salaryStructure?.broadband || empObj.deductions?.broadband;
     }
-    if ((!empObj.petrol || empObj.petrol === 0) && empObj.salaryStructure?.petrol) {
-      empObj.petrol = empObj.salaryStructure.petrol;
+    if ((!empObj.petrol || empObj.petrol === 0) && (empObj.salaryStructure?.petrol || empObj.deductions?.petrol)) {
+      empObj.petrol = empObj.salaryStructure?.petrol || empObj.deductions?.petrol;
     }
-    if ((!empObj.lta || empObj.lta === 0) && empObj.salaryStructure?.lta) {
-      empObj.lta = empObj.salaryStructure.lta;
+    if ((!empObj.lta || empObj.lta === 0) && (empObj.salaryStructure?.lta || empObj.deductions?.lta)) {
+      empObj.lta = empObj.salaryStructure?.lta || empObj.deductions?.lta;
     }
-    if ((!empObj.flexiAmount || empObj.flexiAmount === 0) && (empObj.salaryStructure?.flexi || empObj.salaryStructure?.flexiAmount)) {
-      empObj.flexiAmount = empObj.salaryStructure.flexi || empObj.salaryStructure.flexiAmount;
+    if ((!empObj.flexiAmount || empObj.flexiAmount === 0) && (empObj.salaryStructure?.flexi || empObj.salaryStructure?.flexiAmount || empObj.deductions?.flexi || empObj.deductions?.flexiAmount)) {
+      empObj.flexiAmount = empObj.salaryStructure?.flexi || empObj.salaryStructure?.flexiAmount || empObj.deductions?.flexi || empObj.deductions?.flexiAmount;
     }
     res.json(empObj);
   } catch (error) {
