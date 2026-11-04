@@ -1,17 +1,56 @@
 const MAX_GST_RATE = 28;
 
-function extractStateCode(value = '') {
-  const text = String(value || '').trim();
-  if (!text) return '';
-
-  const prefixMatch = text.match(/^(\d{2})\s*[-(]/);
-  if (prefixMatch) return prefixMatch[1];
-
-  const parenMatch = text.match(/\((\d{2})\)/);
-  if (parenMatch) return parenMatch[1];
-
-  return '';
-}
+const STATE_NAME_TO_CODE = {
+  'jammu and kashmir': '01',
+  'jammu & kashmir': '01',
+  'himachal pradesh': '02',
+  'punjab': '03',
+  'chandigarh': '04',
+  'uttarakhand': '05',
+  'uttaranchal': '05',
+  'haryana': '06',
+  'delhi': '07',
+  'new delhi': '07',
+  'nct of delhi': '07',
+  'rajasthan': '08',
+  'uttar pradesh': '09',
+  'bihar': '10',
+  'sikkim': '11',
+  'arunachal pradesh': '12',
+  'nagaland': '13',
+  'manipur': '14',
+  'mizoram': '15',
+  'tripura': '16',
+  'meghalaya': '17',
+  'assam': '18',
+  'west bengal': '19',
+  'jharkhand': '20',
+  'odisha': '21',
+  'orissa': '21',
+  'chhattisgarh': '22',
+  'madhya pradesh': '23',
+  'gujarat': '24',
+  'daman and diu': '25',
+  'daman & diu': '25',
+  'dadra and nagar haveli': '26',
+  'dadra & nagar haveli': '26',
+  'maharashtra': '27',
+  'andhra pradesh': '37',
+  'karnataka': '29',
+  'goa': '30',
+  'lakshadweep': '31',
+  'kerala': '32',
+  'tamil nadu': '33',
+  'tamilnadu': '33',
+  'puducherry': '34',
+  'pondicherry': '34',
+  'andaman and nicobar islands': '35',
+  'andaman & nicobar': '35',
+  'telangana': '36',
+  'ladakh': '38',
+  'other territory': '97',
+  'centre jurisdiction': '99',
+};
 
 function normalizeStateName(value = '') {
   return String(value || '')
@@ -21,14 +60,44 @@ function normalizeStateName(value = '') {
     .toLowerCase();
 }
 
+function extractStateCode(value = '') {
+  const text = String(value || '').trim();
+  if (!text) return '';
+
+  if (/^\d{2}$/.test(text)) return text;
+
+  const prefixMatch = text.match(/^(\d{2})\s*[-(]/);
+  if (prefixMatch) return prefixMatch[1];
+
+  const parenMatch = text.match(/\((\d{2})\)/);
+  if (parenMatch) return parenMatch[1];
+
+  const gstinMatch = text.match(/^(\d{2})[A-Z0-9]{13}$/i);
+  if (gstinMatch) return gstinMatch[1];
+
+  return '';
+}
+
+function resolveStateCode(value = '') {
+  const directCode = extractStateCode(value);
+  if (directCode) return directCode;
+
+  const normalized = normalizeStateName(value);
+  if (normalized && STATE_NAME_TO_CODE[normalized]) {
+    return STATE_NAME_TO_CODE[normalized];
+  }
+
+  return '';
+}
+
 function isInterStateSupply(placeOfSupply, companyState, companyGstin) {
   const supply = String(placeOfSupply || '').trim();
   if (!supply) return false;
 
-  const supplyStateCode = extractStateCode(supply);
-  const companyStateCode = String(companyGstin || '').trim().slice(0, 2);
+  const supplyStateCode = resolveStateCode(supply);
+  const companyStateCode = resolveStateCode(companyGstin) || resolveStateCode(companyState);
 
-  if (supplyStateCode && /^\d{2}$/.test(companyStateCode)) {
+  if (supplyStateCode && companyStateCode) {
     return supplyStateCode !== companyStateCode;
   }
 
@@ -73,20 +142,29 @@ function processDocumentItems(items = [], { invoiceType = 'Tax Invoice', isIntra
 
     const baseAmount = roundTwo(qty * effectiveRate * (1 - discountPct / 100));
     const isTaxExempt = Boolean(item.isTaxExempt) || (item.taxableAmount === 0 && Number(item.taxRate) === 0);
-    const taxableValue = isTaxExempt ? 0 : (item.taxableAmount !== undefined && item.taxableAmount !== null && Number(item.taxableAmount) >= 0 ? roundTwo(Number(item.taxableAmount)) : baseAmount);
+
+    const hasExplicitTaxable = item.taxableAmount !== undefined &&
+      item.taxableAmount !== null &&
+      String(item.taxableAmount).trim() !== '' &&
+      !isNaN(Number(item.taxableAmount)) &&
+      Number(item.taxableAmount) >= 0;
+
+    const taxableValue = isTaxExempt ? 0 : (hasExplicitTaxable ? roundTwo(Number(item.taxableAmount)) : baseAmount);
     const taxRate = (hasTax && !isTaxExempt) ? sanitizeGstRate(item.taxRate) : 0;
 
     let cgst = 0;
     let sgst = 0;
     let igst = 0;
-    const itemTax = roundTwo(taxableValue * (taxRate / 100));
+    let itemTax = 0;
 
-    if (hasTax && !isTaxExempt) {
+    if (hasTax && !isTaxExempt && taxRate > 0) {
       if (isIntraState) {
-        cgst = roundTwo(itemTax / 2);
-        sgst = roundTwo(itemTax / 2);
+        cgst = roundTwo(taxableValue * ((taxRate / 2) / 100));
+        sgst = roundTwo(taxableValue * ((taxRate / 2) / 100));
+        itemTax = roundTwo(cgst + sgst);
       } else {
-        igst = roundTwo(itemTax);
+        igst = roundTwo(taxableValue * (taxRate / 100));
+        itemTax = igst;
       }
     }
 
@@ -140,4 +218,8 @@ module.exports = {
   isInterStateSupply,
   processDocumentItems,
   sanitizeGstRate,
+  extractStateCode,
+  resolveStateCode,
+  normalizeStateName,
+  STATE_NAME_TO_CODE,
 };

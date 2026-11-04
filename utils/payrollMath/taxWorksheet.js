@@ -68,9 +68,12 @@ function buildTaxWorksheet({ payroll = {}, employee = {}, fyPayrolls = [], tdsMo
         const annualGross = (Number(item.amount) || 0) * 12;
         const isHra = item.id === 'hra' || String(item.name || '').toLowerCase().includes('hra');
         const exempt = isHra ? exemptHra : 0;
+        const name = (compType === 'salary_plus_commission' && String(item.name || '').startsWith('Commission'))
+          ? 'Commission'
+          : item.name;
         return {
           id: item.id,
-          name: item.name,
+          name,
           gross: annualGross,
           exempt,
           taxable: Math.max(0, annualGross - exempt)

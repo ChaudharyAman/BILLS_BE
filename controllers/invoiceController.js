@@ -80,7 +80,9 @@ function determineInvoiceType({ items = [], placeOfSupply = '', client } = {}) {
   if (invoiceItems.length && invoiceItems.every((item) => item.isNilRated === true || Number(item.taxRate) === 0)) {
     return 'NilRated';
   }
-  if (/international|export/i.test(String(placeOfSupply || ''))) {
+  const country = client?.billingAddress?.country || client?.address?.country || client?.shippingAddress?.country || '';
+  const isForeignCountry = country && !/^(india|ind)$/i.test(String(country).trim());
+  if (isForeignCountry || /international|export/i.test(String(placeOfSupply || ''))) {
     return 'Export';
   }
   if (hasValidGstin(client?.gstin || client?.client?.gstin)) {
